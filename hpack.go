@@ -1,0 +1,492 @@
+package fasthttp
+
+import (
+	"errors"
+	"io"
+	"strconv"
+	"sync"
+)
+
+// HPack represents header compression methods to
+// encode and decode header fields in HTTP/2
+//
+// Use AcquireHPack to acquire new HPack structure
+type HPack struct {
+	static  []argsKV
+	dynamic map[uint64]argsKV
+}
+
+var hpackPool = sync.Pool{
+	New: func() interface{} {
+		return &HPack{
+			static:  staticTable,
+			dynamic: make(map[uint64]argsKV),
+		}
+	},
+}
+
+func AcquireHPack() *HPack {
+	hpack := hpackPool.Get().(*HPack)
+	return hpack
+}
+
+func ReleaseHPack(hpack *HPack) {
+	hpack.Reset()
+	hpackPool.Put(hpack)
+}
+
+func (hpack *HPack) Reset() {
+	for k, _ := range hpack.dynamic {
+		delete(hpack.dynamic, k)
+	}
+}
+
+func (hpack *HPack) next(b, k, v []byte) ([]byte, []byte, []byte, error) {
+	if len(b) == 0 {
+		return b, k, v, io.EOF
+	}
+	var i uint64
+	var err error
+	c := b[0]
+	switch {
+	// An indexed header field representation identifies an
+	// entry in either the static table or the dynamic table
+	// This index values are limited to 7 bits (2 ^ 7 = 128)
+	// https://httpwg.org/specs/rfc7541.html#indexed.header.representation
+	case c&128 == 128: // 10000000 | 7 bits
+		var entry argsKV
+		b, i, err = readInt(7, b)
+		if i < uint64(len(hpack.static)) {
+			entry = hpack.static[i-1]
+		} else {
+			var ok bool
+			entry, ok = hpack.dynamic[i]
+			if !ok {
+				return b, k, v, errFieldNotFound
+			}
+		}
+		k = append(k, entry.key...)
+		v = append(v, entry.value...)
+	// A literal header field with incremental indexing representation
+	// starts with the '01' 2-bit pattern.
+	// https://httpwg.org/specs/rfc7541.html#literal.header.with.incremental.indexing
+	case c&192 == 64: // 11000000 | 6 bits
+		b, i, err = readInt(6, b)
+		if err == nil {
+			b, k, v, err = hpack.readField(i, b, k, v)
+			// A literal header field with incremental indexing representation
+			// results in appending a header field to the decoded header
+			// list and inserting it as a new entry into the dynamic table.
+			hpack.dynamic[i] = argsKV{
+				key:   k,
+				value: v,
+			}
+		}
+	// https://httpwg.org/specs/rfc7541.html#literal.header.without.indexing
+	case c&240 == 0: // 11110000 | 4 bits
+		b, i, err = readInt(4, b)
+		if err == nil {
+			b, k, v, err = hpack.readField(i, b, k, v)
+		}
+		// A literal header field without indexing representation
+		// results in appending a header field to the decoded header
+		// list without altering the dynamic table.
+
+	// https://httpwg.org/specs/rfc7541.html#literal.header.never.indexed
+	case c&240 == 16: // 11110000 | 4 bits
+		b, i, err = readInt(4, b)
+		if err == nil {
+			b, k, v, err = hpack.readField(i, b, k, v)
+		}
+		// A literal header field never-indexed representation
+		// results in appending a header field to the decoded header
+		// list without altering the dynamic table.
+		// Intermediaries MUST use the same representation for encoding this header field.
+		// TODO: Implement sensitive header fields
+
+	case c&224 == 32:
+		// TODO: Update
+	default:
+		err = errors.New("not found")
+	}
+	return b, k, v, err
+}
+
+func (hpack *HPack) appendStatus(dst []byte, status int) []byte {
+	n := 0
+	switch status {
+	case StatusOK:
+		n = 8
+	case StatusNoContent:
+		n = 9
+	case StatusPartialContent:
+		n = 10
+	case StatusNotModified:
+		n = 11
+	case StatusBadRequest:
+		n = 12
+	case StatusNotFound:
+		n = 13
+	case StatusInternalServerError:
+		n = 14
+	default:
+		return hpack.writeField(dst, nil, s2b(strconv.Itoa(status)), 4, 8)
+	}
+	return hpack.writeField(dst, nil, nil, 7, uint64(n))
+}
+
+func appendServer(dst, server []byte) []byte {
+	dst = writeInt(dst, 4, 54)
+	dst = writeString(dst, server)
+	return dst
+}
+
+func readInt(n int, b []byte) ([]byte, uint64, error) {
+	nn := 1
+	num := uint64(b[0])
+	num &= (1 << uint64(n)) - 1
+	if num < (1<<uint64(n))-1 {
+		return b[1:], num, nil
+	}
+	var m uint64
+	for nn < len(b) {
+		c := b[nn]
+		nn++
+		num += uint64(c&127) << m
+		if c&128 != 128 {
+			break
+		}
+		m += 7
+		if m >= 63 {
+			return b[nn:], 0, errBitOverflow
+		}
+	}
+	return b[nn:], num, nil
+}
+
+func writeInt(dst []byte, n uint, i uint64) []byte {
+	b := uint64(1<<n) - 1
+	if i < b {
+		dst = append(dst, byte(i))
+	} else {
+		dst = append(dst, byte(b))
+		i -= b
+		for i >= 128 {
+			dst = append(dst, byte(0x80|(i&0x7f)))
+			i >>= 7
+		}
+		dst = append(dst, byte(i))
+	}
+	return dst
+}
+
+func readString(b, s []byte) ([]byte, []byte, error) {
+	var length uint64
+	var err error
+	mustDecode := b[0]&128 == 128 // huffman encoded
+	b, length, err = readInt(7, b)
+	if err != nil {
+		return b, s, err
+	}
+	if mustDecode {
+		s = huffmanDecode(s, b[:length])
+	} else {
+		s = append(s[:0], b[:length]...)
+	}
+	b = b[length:]
+	return b, s, err
+}
+
+func writeString(dst, src []byte) []byte {
+	// TODO
+	edst := huffmanEncode(nil, src)
+	n := uint64(len(edst))
+	nn := len(dst)
+	dst = writeInt(dst, 7, n)
+	dst = append(dst, edst...)
+	dst[nn] |= 128
+	edst = nil
+	return dst
+}
+
+var errFieldNotFound = errors.New("Indexed field not found")
+
+func (hpack *HPack) readField(i uint64, b, k, v []byte) ([]byte, []byte, []byte, error) {
+	var err error
+	if i == 0 {
+		b, k, err = readString(b, k)
+		if err == nil {
+			b, v, err = readString(b, v)
+		}
+	} else {
+		var entry argsKV
+		if i < uint64(len(hpack.static)) {
+			entry = hpack.static[i-1]
+		} else {
+			var ok bool
+			entry, ok = hpack.dynamic[i]
+			if !ok {
+				return b, k, v, errFieldNotFound
+			}
+		}
+		k = append(k[:0], entry.key...)
+		b, v, err = readString(b, v)
+	}
+	return b, k, v, err
+}
+
+// TODO: Add sensible header fields
+func (hpack *HPack) writeField(dst, k, v []byte, n uint, index uint64) []byte {
+	if index > 0 {
+		dst = writeInt(dst, n, index)
+		if n < 7 && len(v) > 0 {
+			dst = writeString(dst, v)
+		}
+	} else {
+		// TODO: Search in dynamic table
+		dst = writeString(dst, k)
+		dst = writeString(dst, v)
+	}
+	return dst
+}
+
+func huffmanEncode(dst, src []byte) []byte {
+	var code uint32
+	var length uint8
+	for _, b := range src {
+		n := huffmanCodeLen[b]
+		code <<= n
+		length += n
+		code |= huffmanCodes[b]
+		for length >= 8 {
+			length -= 8
+			dst = append(dst, byte(code>>length))
+		}
+	}
+	if length > 0 {
+		n := 8 - length
+		code = code<<n | (1<<n - 1)
+		dst = append(dst, byte(code))
+	}
+	return dst
+}
+
+func huffmanDecode(dst, src []byte) []byte {
+	var cum uint32
+	var bits uint8
+	root := rootHuffmanNode
+	for _, b := range src {
+		cum = cum<<8 | uint32(b)
+		bits += 8
+		for bits >= 8 {
+			root = root.sub[byte(cum>>(bits-8))]
+			if root == nil {
+				return dst
+			}
+			if root.sub != nil {
+				bits -= 8
+			} else {
+				bits -= root.codeLen
+				dst = append(dst, byte(root.sym))
+				root = rootHuffmanNode
+			}
+		}
+	}
+	for bits > 0 {
+		root = root.sub[byte(cum<<(8-bits))]
+		if root == nil {
+			break
+		}
+		if root.sub != nil || root.codeLen > bits {
+			break
+		}
+		dst = append(dst, root.sym)
+		bits -= root.codeLen
+		root = rootHuffmanNode
+	}
+	return dst
+}
+
+var staticTable = []argsKV{
+	argsKV{key: []byte(":authority")},
+	argsKV{key: []byte(":method"), value: []byte("GET")},
+	argsKV{key: []byte(":method"), value: []byte("POST")},
+	argsKV{key: []byte(":path"), value: []byte("/")},
+	argsKV{key: []byte(":path"), value: []byte("/index.html")},
+	argsKV{key: []byte(":scheme"), value: []byte("http")},
+	argsKV{key: []byte(":scheme"), value: []byte("https")},
+	argsKV{key: []byte(":status"), value: []byte("200")},
+	argsKV{key: []byte(":status"), value: []byte("204")},
+	argsKV{key: []byte(":status"), value: []byte("206")},
+	argsKV{key: []byte(":status"), value: []byte("304")},
+	argsKV{key: []byte(":status"), value: []byte("400")},
+	argsKV{key: []byte(":status"), value: []byte("404")},
+	argsKV{key: []byte(":status"), value: []byte("500")},
+	argsKV{key: []byte("accept-charset")},
+	argsKV{key: []byte("accept-encoding"), value: []byte("gzip, deflate")},
+	argsKV{key: []byte("accept-language")},
+	argsKV{key: []byte("accept-ranges")},
+	argsKV{key: []byte("accept")},
+	argsKV{key: []byte("access-control-allow-origin")},
+	argsKV{key: []byte("age")},
+	argsKV{key: []byte("allow")},
+	argsKV{key: []byte("authorization")},
+	argsKV{key: []byte("cache-control")},
+	argsKV{key: []byte("content-disposition")},
+	argsKV{key: []byte("content-encoding")},
+	argsKV{key: []byte("content-language")},
+	argsKV{key: []byte("content-length")},
+	argsKV{key: []byte("content-location")},
+	argsKV{key: []byte("content-range")},
+	argsKV{key: []byte("content-type")},
+	argsKV{key: []byte("cookie")},
+	argsKV{key: []byte("date")},
+	argsKV{key: []byte("etag")},
+	argsKV{key: []byte("expect")},
+	argsKV{key: []byte("expires")},
+	argsKV{key: []byte("from")},
+	argsKV{key: []byte("host")},
+	argsKV{key: []byte("if-match")},
+	argsKV{key: []byte("if-modified-since")},
+	argsKV{key: []byte("if-none-match")},
+	argsKV{key: []byte("if-range")},
+	argsKV{key: []byte("if-unmodified-since")},
+	argsKV{key: []byte("last-modified")},
+	argsKV{key: []byte("link")},
+	argsKV{key: []byte("location")},
+	argsKV{key: []byte("max-forwards")},
+	argsKV{key: []byte("proxy-authenticate")},
+	argsKV{key: []byte("proxy-authorization")},
+	argsKV{key: []byte("range")},
+	argsKV{key: []byte("referer")},
+	argsKV{key: []byte("refresh")},
+	argsKV{key: []byte("retry-after")},
+	argsKV{key: []byte("server")},
+	argsKV{key: []byte("set-cookie")},
+	argsKV{key: []byte("strict-transport-security")},
+	argsKV{key: []byte("transfer-encoding")},
+	argsKV{key: []byte("user-agent")},
+	argsKV{key: []byte("vary")},
+	argsKV{key: []byte("via")},
+	argsKV{key: []byte("www-authenticate")},
+}
+
+var rootHuffmanNode = func() *huffmanNode {
+	node := &huffmanNode{
+		sub: make([]*huffmanNode, 256),
+	}
+	for i, code := range huffmanCodes {
+		node.add(byte(i), code, huffmanCodeLen[i])
+	}
+	return node
+}()
+
+type huffmanNode struct {
+	sub     []*huffmanNode
+	codeLen uint8
+	sym     byte
+}
+
+func (node *huffmanNode) add(sym byte, code uint32, length uint8) {
+	for length > 8 {
+		length -= 8
+		i := uint8(code >> length)
+		if node.sub[i] == nil {
+			node.sub[i] = &huffmanNode{
+				sub: make([]*huffmanNode, 256, 256),
+			}
+		}
+		node = node.sub[i]
+	}
+	n := 8 - length
+	start, end := int(uint8(code<<n)), int(1<<n)
+	for i := start; i < start+end; i++ {
+		node.sub[i] = &huffmanNode{sym: sym, codeLen: length}
+	}
+}
+
+// huffmanCodes have been copied from https://github.com/golang/net/blob/master/http2/hpack/tables.go#L203
+var huffmanCodes = [256]uint32{
+	0x1ff8, 0x7fffd8, 0xfffffe2, 0xfffffe3,
+	0xfffffe4, 0xfffffe5, 0xfffffe6, 0xfffffe7,
+	0xfffffe8, 0xffffea, 0x3ffffffc, 0xfffffe9,
+	0xfffffea, 0x3ffffffd, 0xfffffeb, 0xfffffec,
+	0xfffffed, 0xfffffee, 0xfffffef, 0xffffff0,
+	0xffffff1, 0xffffff2, 0x3ffffffe, 0xffffff3,
+	0xffffff4, 0xffffff5, 0xffffff6, 0xffffff7,
+	0xffffff8, 0xffffff9, 0xffffffa, 0xffffffb,
+	0x14, 0x3f8, 0x3f9, 0xffa,
+	0x1ff9, 0x15, 0xf8, 0x7fa,
+	0x3fa, 0x3fb, 0xf9, 0x7fb,
+	0xfa, 0x16, 0x17, 0x18,
+	0x0, 0x1, 0x2, 0x19,
+	0x1a, 0x1b, 0x1c, 0x1d,
+	0x1e, 0x1f, 0x5c, 0xfb,
+	0x7ffc, 0x20, 0xffb, 0x3fc,
+	0x1ffa, 0x21, 0x5d, 0x5e,
+	0x5f, 0x60, 0x61, 0x62,
+	0x63, 0x64, 0x65, 0x66,
+	0x67, 0x68, 0x69, 0x6a,
+	0x6b, 0x6c, 0x6d, 0x6e,
+	0x6f, 0x70, 0x71, 0x72,
+	0xfc, 0x73, 0xfd, 0x1ffb,
+	0x7fff0, 0x1ffc, 0x3ffc, 0x22,
+	0x7ffd, 0x3, 0x23, 0x4,
+	0x24, 0x5, 0x25, 0x26,
+	0x27, 0x6, 0x74, 0x75,
+	0x28, 0x29, 0x2a, 0x7,
+	0x2b, 0x76, 0x2c, 0x8,
+	0x9, 0x2d, 0x77, 0x78,
+	0x79, 0x7a, 0x7b, 0x7ffe,
+	0x7fc, 0x3ffd, 0x1ffd, 0xffffffc,
+	0xfffe6, 0x3fffd2, 0xfffe7, 0xfffe8,
+	0x3fffd3, 0x3fffd4, 0x3fffd5, 0x7fffd9,
+	0x3fffd6, 0x7fffda, 0x7fffdb, 0x7fffdc,
+	0x7fffdd, 0x7fffde, 0xffffeb, 0x7fffdf,
+	0xffffec, 0xffffed, 0x3fffd7, 0x7fffe0,
+	0xffffee, 0x7fffe1, 0x7fffe2, 0x7fffe3,
+	0x7fffe4, 0x1fffdc, 0x3fffd8, 0x7fffe5,
+	0x3fffd9, 0x7fffe6, 0x7fffe7, 0xffffef,
+	0x3fffda, 0x1fffdd, 0xfffe9, 0x3fffdb,
+	0x3fffdc, 0x7fffe8, 0x7fffe9, 0x1fffde,
+	0x7fffea, 0x3fffdd, 0x3fffde, 0xfffff0,
+	0x1fffdf, 0x3fffdf, 0x7fffeb, 0x7fffec,
+	0x1fffe0, 0x1fffe1, 0x3fffe0, 0x1fffe2,
+	0x7fffed, 0x3fffe1, 0x7fffee, 0x7fffef,
+	0xfffea, 0x3fffe2, 0x3fffe3, 0x3fffe4,
+	0x7ffff0, 0x3fffe5, 0x3fffe6, 0x7ffff1,
+	0x3ffffe0, 0x3ffffe1, 0xfffeb, 0x7fff1,
+	0x3fffe7, 0x7ffff2, 0x3fffe8, 0x1ffffec,
+	0x3ffffe2, 0x3ffffe3, 0x3ffffe4, 0x7ffffde,
+	0x7ffffdf, 0x3ffffe5, 0xfffff1, 0x1ffffed,
+	0x7fff2, 0x1fffe3, 0x3ffffe6, 0x7ffffe0,
+	0x7ffffe1, 0x3ffffe7, 0x7ffffe2, 0xfffff2,
+	0x1fffe4, 0x1fffe5, 0x3ffffe8, 0x3ffffe9,
+	0xffffffd, 0x7ffffe3, 0x7ffffe4, 0x7ffffe5,
+	0xfffec, 0xfffff3, 0xfffed, 0x1fffe6,
+	0x3fffe9, 0x1fffe7, 0x1fffe8, 0x7ffff3,
+	0x3fffea, 0x3fffeb, 0x1ffffee, 0x1ffffef,
+	0xfffff4, 0xfffff5, 0x3ffffea, 0x7ffff4,
+	0x3ffffeb, 0x7ffffe6, 0x3ffffec, 0x3ffffed,
+	0x7ffffe7, 0x7ffffe8, 0x7ffffe9, 0x7ffffea,
+	0x7ffffeb, 0xffffffe, 0x7ffffec, 0x7ffffed,
+	0x7ffffee, 0x7ffffef, 0x7fffff0, 0x3ffffee,
+}
+var huffmanCodeLen = [256]uint8{
+	13, 23, 28, 28, 28, 28, 28, 28, 28, 24, 30, 28, 28, 30, 28, 28,
+	28, 28, 28, 28, 28, 28, 30, 28, 28, 28, 28, 28, 28, 28, 28, 28,
+	6, 10, 10, 12, 13, 6, 8, 11, 10, 10, 8, 11, 8, 6, 6, 6,
+	5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 7, 8, 15, 6, 12, 10,
+	13, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+	7, 7, 7, 7, 7, 7, 7, 7, 8, 7, 8, 13, 19, 13, 14, 6,
+	15, 5, 6, 5, 6, 5, 6, 6, 6, 5, 7, 7, 6, 6, 6, 5,
+	6, 7, 6, 5, 5, 6, 7, 7, 7, 7, 7, 15, 11, 14, 13, 28,
+	20, 22, 20, 20, 22, 22, 22, 23, 22, 23, 23, 23, 23, 23, 24, 23,
+	24, 24, 22, 23, 24, 23, 23, 23, 23, 21, 22, 23, 22, 23, 23, 24,
+	22, 21, 20, 22, 22, 23, 23, 21, 23, 22, 22, 24, 21, 22, 23, 23,
+	21, 21, 22, 21, 23, 22, 23, 23, 20, 22, 22, 22, 23, 22, 22, 23,
+	26, 26, 20, 19, 22, 23, 22, 25, 26, 26, 26, 27, 27, 26, 24, 25,
+	19, 21, 26, 27, 27, 26, 27, 24, 21, 21, 26, 26, 28, 27, 27, 27,
+	20, 24, 20, 21, 22, 21, 21, 23, 22, 22, 25, 25, 24, 24, 26, 23,
+	26, 27, 26, 26, 27, 27, 27, 27, 27, 28, 27, 27, 27, 27, 27, 26,
+}
