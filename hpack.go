@@ -7,54 +7,54 @@ import (
 	"sync"
 )
 
-// Field represents a field in HPACK tables.
-type Field struct {
+// HeaderField represents a field in HPACK tables.
+type HeaderField struct {
 	name, value []byte
 	sensible    bool
 }
 
 // Name returns the name of the field
-func (f *Field) Name() string {
+func (hf *HeaderField) Name() string {
 	return string(f.name)
 }
 
 // Value returns the value of the field
-func (f *Field) Value() string {
+func (hf *HeaderField) Value() string {
 	return string(f.value)
 }
 
 // NameBytes returns the name bytes of the field.
-func (f *Field) NameBytes() []byte {
+func (hf *HeaderField) NameBytes() []byte {
 	return f.name
 }
 
 // ValueBytes returns the value bytes of the field.
-func (f *Field) ValueBytes() []byte {
+func (hf *HeaderField) ValueBytes() []byte {
 	return f.value
 }
 
 // SetName sets name b to the field.
-func (f *Field) SetName(b string) {
+func (hf *HeaderField) SetName(b string) {
 	f.name = append(f.name[:0], b...)
 }
 
 // SetValue sets value b to the field.
-func (f *Field) SetValue(b string) {
+func (hf *HeaderField) SetValue(b string) {
 	f.value = append(f.value[:0], b...)
 }
 
 // SetNameBytes sets name bytes b to the field.
-func (f *Field) SetNameBytes(b []byte) {
+func (hf *HeaderField) SetNameBytes(b []byte) {
 	f.name = append(f.name[:0], b...)
 }
 
 // SetValueBytes sets value bytes b to the field.
-func (f *Field) SetValueBytes(b []byte) {
+func (hf *HeaderField) SetValueBytes(b []byte) {
 	f.value = append(f.value[:0], b...)
 }
 
 // IsPseudo returns true if field is pseudo header
-func (f *Field) IsPseudo() bool {
+func (hf *HeaderField) IsPseudo() bool {
 	return len(f.name) > 0 && f.name[0] == ':'
 }
 
@@ -63,14 +63,14 @@ func (f *Field) IsPseudo() bool {
 //
 // Use AcquireHPack to acquire new HPack structure
 type HPack struct {
-	// fields represents fields table fields
-	fields map[uint64]*Field
+	// fields represents dynamic table fields
+	fields map[uint64]*HeaderField
 }
 
 var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPack{
-			fields: make(map[uint64]*Fields),
+			fields: make(map[uint64]*HeaderFields),
 		}
 	},
 }
@@ -90,7 +90,7 @@ func (hpack *HPack) Reset() {
 	}
 }
 
-func (field *Field) next(b []byte) ([]byte, error) {
+func (field *HeaderField) next(b []byte) ([]byte, error) {
 	if len(b) == 0 {
 		return b, k, v, io.EOF
 	}
@@ -103,7 +103,7 @@ func (field *Field) next(b []byte) ([]byte, error) {
 	// This index values are limited to 7 bits (2 ^ 7 = 128)
 	// https://httpwg.org/specs/rfc7541.html#indexed.header.representation
 	case c&128 == 128: // 10000000 | 7 bits
-		var entry Field
+		var entry HeaderField
 		b, i, err = readInt(7, b)
 		if i < uint64(len(staticTable)) {
 			entry = staticTable[i-1]
@@ -111,7 +111,7 @@ func (field *Field) next(b []byte) ([]byte, error) {
 			var ok bool
 			entry, ok = hpack.fields[i]
 			if !ok {
-				return b, k, v, errFieldNotFound
+				return b, k, v, errHeaderFieldNotFound
 			}
 		}
 		k = append(k, entry.name...)
@@ -122,11 +122,11 @@ func (field *Field) next(b []byte) ([]byte, error) {
 	case c&192 == 64: // 11000000 | 6 bits
 		b, i, err = readInt(6, b)
 		if err == nil {
-			b, k, v, err = hpack.readField(i, b, k, v)
+			b, k, v, err = hpack.readHeaderField(i, b, k, v)
 			// A literal header field with incremental indexing representation
 			// results in appending a header field to the decoded header
 			// list and inserting it as a new entry into the fields table.
-			hpack.fields[i] = Field{
+			hpack.fields[i] = HeaderField{
 				name:  k,
 				value: v,
 			}
@@ -135,7 +135,7 @@ func (field *Field) next(b []byte) ([]byte, error) {
 	case c&240 == 0: // 11110000 | 4 bits
 		b, i, err = readInt(4, b)
 		if err == nil {
-			b, k, v, err = hpack.readField(i, b, k, v)
+			b, k, v, err = hpack.readHeaderField(i, b, k, v)
 		}
 		// A literal header field without indexing representation
 		// results in appending a header field to the decoded header
@@ -145,7 +145,7 @@ func (field *Field) next(b []byte) ([]byte, error) {
 	case c&240 == 16: // 11110000 | 4 bits
 		b, i, err = readInt(4, b)
 		if err == nil {
-			b, k, v, err = hpack.readField(i, b, k, v)
+			b, k, v, err = hpack.readHeaderField(i, b, k, v)
 		}
 		// A literal header field never-indexed representation
 		// results in appending a header field to the decoded header
@@ -179,9 +179,9 @@ func (hpack *HPack) appendStatus(dst []byte, status int) []byte {
 	case StatusInternalServerError:
 		n = 14
 	default:
-		return hpack.writeField(dst, nil, s2b(strconv.Itoa(status)), 4, 8)
+		return hpack.writeHeaderField(dst, nil, s2b(strconv.Itoa(status)), 4, 8)
 	}
-	return hpack.writeField(dst, nil, nil, 7, uint64(n))
+	return hpack.writeHeaderField(dst, nil, nil, 7, uint64(n))
 }
 
 func appendServer(dst, server []byte) []byte {
@@ -258,9 +258,9 @@ func writeString(dst, src []byte) []byte {
 	return dst
 }
 
-var errFieldNotFound = errors.New("Indexed field not found")
+var errHeaderFieldNotFound = errors.New("Indexed field not found")
 
-func (hpack *HPack) readField(i uint64, b, k, v []byte) ([]byte, []byte, []byte, error) {
+func (hpack *HPack) readHeaderField(i uint64, b, k, v []byte) ([]byte, []byte, []byte, error) {
 	var err error
 	if i == 0 {
 		b, k, err = readString(b, k)
@@ -268,14 +268,14 @@ func (hpack *HPack) readField(i uint64, b, k, v []byte) ([]byte, []byte, []byte,
 			b, v, err = readString(b, v)
 		}
 	} else {
-		var entry Field
+		var entry HeaderField
 		if i < uint64(len(hpack.static)) {
 			entry = hpack.static[i-1]
 		} else {
 			var ok bool
 			entry, ok = hpack.fields[i]
 			if !ok {
-				return b, k, v, errFieldNotFound
+				return b, k, v, errHeaderFieldNotFound
 			}
 		}
 		k = append(k[:0], entry.name...)
@@ -285,7 +285,7 @@ func (hpack *HPack) readField(i uint64, b, k, v []byte) ([]byte, []byte, []byte,
 }
 
 // TODO: Add sensible header fields
-func (hpack *HPack) writeField(dst, k, v []byte, n uint, index uint64) []byte {
+func (hpack *HPack) writeHeaderField(dst, k, v []byte, n uint, index uint64) []byte {
 	if index > 0 {
 		dst = writeInt(dst, n, index)
 		if n < 7 && len(v) > 0 {
@@ -299,66 +299,66 @@ func (hpack *HPack) writeField(dst, k, v []byte, n uint, index uint64) []byte {
 	return dst
 }
 
-var staticTable = []Field{
-	Field{name: []byte(":authority")},
-	Field{name: []byte(":method"), value: []byte("GET")},
-	Field{name: []byte(":method"), value: []byte("POST")},
-	Field{name: []byte(":path"), value: []byte("/")},
-	Field{name: []byte(":path"), value: []byte("/index.html")},
-	Field{name: []byte(":scheme"), value: []byte("http")},
-	Field{name: []byte(":scheme"), value: []byte("https")},
-	Field{name: []byte(":status"), value: []byte("200")},
-	Field{name: []byte(":status"), value: []byte("204")},
-	Field{name: []byte(":status"), value: []byte("206")},
-	Field{name: []byte(":status"), value: []byte("304")},
-	Field{name: []byte(":status"), value: []byte("400")},
-	Field{name: []byte(":status"), value: []byte("404")},
-	Field{name: []byte(":status"), value: []byte("500")},
-	Field{name: []byte("accept-charset")},
-	Field{name: []byte("accept-encoding"), value: []byte("gzip, deflate")},
-	Field{name: []byte("accept-language")},
-	Field{name: []byte("accept-ranges")},
-	Field{name: []byte("accept")},
-	Field{name: []byte("access-control-allow-origin")},
-	Field{name: []byte("age")},
-	Field{name: []byte("allow")},
-	Field{name: []byte("authorization")},
-	Field{name: []byte("cache-control")},
-	Field{name: []byte("content-disposition")},
-	Field{name: []byte("content-encoding")},
-	Field{name: []byte("content-language")},
-	Field{name: []byte("content-length")},
-	Field{name: []byte("content-location")},
-	Field{name: []byte("content-range")},
-	Field{name: []byte("content-type")},
-	Field{name: []byte("cookie")},
-	Field{name: []byte("date")},
-	Field{name: []byte("etag")},
-	Field{name: []byte("expect")},
-	Field{name: []byte("expires")},
-	Field{name: []byte("from")},
-	Field{name: []byte("host")},
-	Field{name: []byte("if-match")},
-	Field{name: []byte("if-modified-since")},
-	Field{name: []byte("if-none-match")},
-	Field{name: []byte("if-range")},
-	Field{name: []byte("if-unmodified-since")},
-	Field{name: []byte("last-modified")},
-	Field{name: []byte("link")},
-	Field{name: []byte("location")},
-	Field{name: []byte("max-forwards")},
-	Field{name: []byte("proxy-authenticate")},
-	Field{name: []byte("proxy-authorization")},
-	Field{name: []byte("range")},
-	Field{name: []byte("referer")},
-	Field{name: []byte("refresh")},
-	Field{name: []byte("retry-after")},
-	Field{name: []byte("server")},
-	Field{name: []byte("set-cookie")},
-	Field{name: []byte("strict-transport-security")},
-	Field{name: []byte("transfer-encoding")},
-	Field{name: []byte("user-agent")},
-	Field{name: []byte("vary")},
-	Field{name: []byte("via")},
-	Field{name: []byte("www-authenticate")},
+var staticTable = []HeaderField{
+	HeaderField{name: []byte(":authority")},
+	HeaderField{name: []byte(":method"), value: []byte("GET")},
+	HeaderField{name: []byte(":method"), value: []byte("POST")},
+	HeaderField{name: []byte(":path"), value: []byte("/")},
+	HeaderField{name: []byte(":path"), value: []byte("/index.html")},
+	HeaderField{name: []byte(":scheme"), value: []byte("http")},
+	HeaderField{name: []byte(":scheme"), value: []byte("https")},
+	HeaderField{name: []byte(":status"), value: []byte("200")},
+	HeaderField{name: []byte(":status"), value: []byte("204")},
+	HeaderField{name: []byte(":status"), value: []byte("206")},
+	HeaderField{name: []byte(":status"), value: []byte("304")},
+	HeaderField{name: []byte(":status"), value: []byte("400")},
+	HeaderField{name: []byte(":status"), value: []byte("404")},
+	HeaderField{name: []byte(":status"), value: []byte("500")},
+	HeaderField{name: []byte("accept-charset")},
+	HeaderField{name: []byte("accept-encoding"), value: []byte("gzip, deflate")},
+	HeaderField{name: []byte("accept-language")},
+	HeaderField{name: []byte("accept-ranges")},
+	HeaderField{name: []byte("accept")},
+	HeaderField{name: []byte("access-control-allow-origin")},
+	HeaderField{name: []byte("age")},
+	HeaderField{name: []byte("allow")},
+	HeaderField{name: []byte("authorization")},
+	HeaderField{name: []byte("cache-control")},
+	HeaderField{name: []byte("content-disposition")},
+	HeaderField{name: []byte("content-encoding")},
+	HeaderField{name: []byte("content-language")},
+	HeaderField{name: []byte("content-length")},
+	HeaderField{name: []byte("content-location")},
+	HeaderField{name: []byte("content-range")},
+	HeaderField{name: []byte("content-type")},
+	HeaderField{name: []byte("cookie")},
+	HeaderField{name: []byte("date")},
+	HeaderField{name: []byte("etag")},
+	HeaderField{name: []byte("expect")},
+	HeaderField{name: []byte("expires")},
+	HeaderField{name: []byte("from")},
+	HeaderField{name: []byte("host")},
+	HeaderField{name: []byte("if-match")},
+	HeaderField{name: []byte("if-modified-since")},
+	HeaderField{name: []byte("if-none-match")},
+	HeaderField{name: []byte("if-range")},
+	HeaderField{name: []byte("if-unmodified-since")},
+	HeaderField{name: []byte("last-modified")},
+	HeaderField{name: []byte("link")},
+	HeaderField{name: []byte("location")},
+	HeaderField{name: []byte("max-forwards")},
+	HeaderField{name: []byte("proxy-authenticate")},
+	HeaderField{name: []byte("proxy-authorization")},
+	HeaderField{name: []byte("range")},
+	HeaderField{name: []byte("referer")},
+	HeaderField{name: []byte("refresh")},
+	HeaderField{name: []byte("retry-after")},
+	HeaderField{name: []byte("server")},
+	HeaderField{name: []byte("set-cookie")},
+	HeaderField{name: []byte("strict-transport-security")},
+	HeaderField{name: []byte("transfer-encoding")},
+	HeaderField{name: []byte("user-agent")},
+	HeaderField{name: []byte("vary")},
+	HeaderField{name: []byte("via")},
+	HeaderField{name: []byte("www-authenticate")},
 }
