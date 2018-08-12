@@ -56,26 +56,8 @@ var framePool = sync.Pool{
 	},
 }
 
-// TODO: Implement https://tools.ietf.org/html/draft-ietf-httpbis-alt-svc-06#section-4
-
-// HTTP2 via http is not the same as following https schema.
-// HTTPS identifies HTTP2 connection using TLS-ALPN
-// HTTP  identifies HTTP2 connection using Upgrade header value.
-//
-// TLSConfig.NextProtos must be []string{"h2"}
-
-// Frame is frame representation of HTTP2 protocol
-//
-// Use AcquireFrame instead of creating Frame every time
-// if you are going to use Frame as your own and ReleaseFrame to
-// delete the Frame
-//
-// Frame instance MUST NOT be used from concurrently running goroutines.
-type Frame struct {
-	header  []byte // TODO: Get payload inside header?
-	payload []byte
-
-	decoded bool
+// Header represents HTTP/2 frame header.
+type Header struct {
 	// TODO: if length is granther than 16384 the body must not be
 	// readed unless settings specify it
 
@@ -90,130 +72,72 @@ type Frame struct {
 
 	// Stream is the id of the stream
 	Stream uint32 // 31 bits
+
+	rawHeader [defaultFrameSize]byte
 }
 
-// AcquireFrame returns a Frame from pool.
-func AcquireFrame() *Frame {
-	return framePool.Get().(*Frame)
-}
-
-// ReleaseFrame returns fr Frame to the pool.
-func ReleaseFrame(fr *Frame) {
-	fr.Reset()
-	framePool.Put(fr)
-}
-
-// Reset resets the frame
-func (fr *Frame) Reset() {
-	fr.Length = 0
+// Reset resets header values.
+func (h *Header) Reset() {
 	fr.Type = 0
 	fr.Flags = 0
 	fr.Stream = 0
 	fr.Length = 0
-	releaseByte(fr.payload[:cap(fr.payload)])
 }
 
-// Is returns boolean value indicating if frame Type is t
-func (fr *Frame) Is(t uint8) bool {
-	return (fr.Type == t)
-}
-
-// Has returns boolean value indicating if frame Flags has f
-func (fr *Frame) Has(f uint8) bool {
-	return (fr.Flags & f) == f
-}
-
-// Set sets type to fr
-func (fr *Frame) Set(t uint8) {
-	fr.Type = t
-}
-
-// Add adds a flag to fr
-func (fr *Frame) Add(f uint8) {
-	fr.Flags |= f
-}
-
-// Header returns header bytes of fr
-func (fr *Frame) Header() []byte {
-	return fr.header
-}
-
-// Payload returns processed payload deleting padding and additional headers.
-func (fr *Frame) Payload() []byte {
-	if fr.decoded {
-		return fr.payload
-	}
-	// TODO: Decode payload deleting padding...
-	fr.decoded = true
-	return nil
-}
-
-// SetPayload sets new payload to fr
-func (fr *Frame) SetPayload(b []byte) {
-	fr.payload = append(fr.payload[:0], b...)
-	fr.Length = uint32(len(fr.payload))
-}
-
-// Write writes b to frame payload.
+// ReadFrom reads header from reader.
 //
-// This function is compatible with io.Writer
-func (fr *Frame) Write(b []byte) (int, error) {
-	n := fr.AppendPayload(b)
-	return n, nil
-}
-
-// AppendPayload appends bytes to frame payload
-func (fr *Frame) AppendPayload(b []byte) int {
-	n := len(b)
-	fr.payload = append(fr.payload, b...)
-	fr.Length += uint32(n)
-	return n
-}
-
-// ReadFrom reads frame header and payload from br
-//
-// Frame.ReadFrom it's compatible with io.ReaderFrom
-// but this implementation does not read until io.EOF
-func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
-	n, err := br.Read(fr.header[:defaultFrameSize])
+// Unlike io.ReaderFrom this method does not read until io.EOF
+func (h *Header) ReadFrom(br io.Reader) (int64, error) {
+	n, err := h.Read(h.rawHeader[:])
 	if err != nil {
-		return 0, err
+		return n, err
 	}
 	if n != defaultFrameSize {
-		return 0, errParser[FrameSizeError]
+		return n, Error(FrameSizeError)
 	}
-	fr.rawToLength()               // 3
-	fr.Type = uint8(fr.header[3])  // 1
-	fr.Flags = uint8(fr.header[4]) // 1
-	fr.rawToStream()               // 4
-	nn := fr.Length
-	if n := int(nn) - len(fr.payload); n > 0 {
-		// resizing payload buffer
-		fr.payload = append(fr.payload, make([]byte, n)...)
-	}
-	n, err = br.Read(fr.payload[:nn])
-	if err == nil {
-		fr.payload = fr.payload[:n]
-	}
+	h.rawToLength()               // 3
+	h.Type = uint8(fr.header[3])  // 1
+	h.Flags = uint8(fr.header[4]) // 1
+	h.rawToStream()               // 4
 	return int64(n), err
 }
 
-// WriteTo writes frame to bw encoding fr values.
-func (fr *Frame) WriteTo(bw io.Writer) (nn int64, err error) {
+// WriteTo writes header to bw encoding the values.
+func (h *Header) WriteTo(bw io.Writer) (int64, error) {
 	var n int
-	// TODO: bw can be fr. Bug?
-	fr.lengthToRaw()
-	fr.header[3] = byte(fr.Type)
-	fr.header[4] = byte(fr.Flags)
-	fr.streamToRaw()
+	// encoding header
+	h.lengthToRaw()
+	h.rawHeader[3] = byte(fr.Type)
+	h.rawHeader[4] = byte(fr.Flags)
+	h.streamToRaw()
 
-	n, err = bw.Write(fr.header)
-	if err == nil {
-		nn += int64(n)
-		n, err = bw.Write(fr.payload)
-	}
-	nn += int64(n)
-	return nn, err
+	n, err = bw.Write(fr.rawHeader)
+	return int64(n), err
+}
+
+// Is returns boolean value indicating if frame Type is t
+func (h *Header) Is(t uint8) bool {
+	return (h.Type == t)
+}
+
+// Has returns boolean value indicating if frame Flags has f
+func (h *Header) Has(f uint8) bool {
+	return (h.Flags & f) == f
+}
+
+// Set sets type to fr
+func (h *Header) Set(t uint8) {
+	h.Type = t
+}
+
+// Add adds a flag to fr
+func (h *Header) Add(f uint8) {
+	h.Flags |= f
+}
+
+// Header returns header bytes of fr
+func (h *Header) RawHeader() []byte {
+	return h.rawHeader
 }
 
 func (fr *Frame) lengthToRaw() {
@@ -254,4 +178,102 @@ func (fr *Frame) rawToLength() {
 
 func (fr *Frame) rawToStream() {
 	fr.Stream = bytesToUint32(fr.header[5:])
+}
+
+// TODO: Implement https://tools.ietf.org/html/draft-ietf-httpbis-alt-svc-06#section-4
+
+// HTTP2 via http is not the same as following https schema.
+// HTTPS identifies HTTP2 connection using TLS-ALPN
+// HTTP  identifies HTTP2 connection using Upgrade header value.
+//
+// TLSConfig.NextProtos must be []string{"h2"}
+
+// Frame is frame representation of HTTP2 protocol
+//
+// Use AcquireFrame instead of creating Frame every time
+// if you are going to use Frame as your own and ReleaseFrame to
+// delete the Frame
+//
+// Frame instance MUST NOT be used from concurrently running goroutines.
+type Frame struct {
+	Header Header
+
+	payload []byte
+}
+
+// AcquireFrame returns a Frame from pool.
+func AcquireFrame() *Frame {
+	return framePool.Get().(*Frame)
+}
+
+// ReleaseFrame returns fr Frame to the pool.
+func ReleaseFrame(fr *Frame) {
+	fr.Reset()
+	framePool.Put(fr)
+}
+
+// Reset resets the frame
+func (fr *Frame) Reset() {
+	fr.Header.Reset()
+	releaseByte(fr.payload[:cap(fr.payload)])
+}
+
+// Payload returns processed payload deleting padding and additional headers.
+func (fr *Frame) Payload() []byte {
+	return fr.payload
+}
+
+// SetPayload sets new payload to fr
+func (fr *Frame) SetPayload(b []byte) {
+	fr.payload = append(fr.payload[:0], b...)
+	fr.Header.Length = uint32(len(fr.payload))
+}
+
+// Write writes b to frame payload.
+//
+// This function is compatible with io.Writer
+func (fr *Frame) Write(b []byte) (int, error) {
+	n := fr.AppendPayload(b)
+	return n, nil
+}
+
+// AppendPayload appends bytes to frame payload
+func (fr *Frame) AppendPayload(b []byte) int {
+	n := len(b)
+	fr.payload = append(fr.payload, b...)
+	fr.Header.Length += uint32(n)
+	return n
+}
+
+// ReadFrom reads frame header and payload from br
+//
+// Frame.ReadFrom it's compatible with io.ReaderFrom
+// but this implementation does not read until io.eof
+func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
+	_, err := fr.Header.ReadFrom(br)
+	if err != nil {
+		return 0, err
+	}
+	nn := fr.Length
+	if n := int(nn) - len(fr.payload); n > 0 {
+		// resizing payload buffer
+		fr.payload = append(fr.payload, make([]byte, n)...)
+	}
+	n, err = br.Read(fr.payload[:nn])
+	if err == nil {
+		fr.payload = fr.payload[:n]
+	}
+	return int64(n), err
+}
+
+// WriteTo writes header and payload to bw encoding fr values.
+func (fr *Frame) WriteTo(bw io.Writer) (nn int64, err error) {
+	var n int
+	n, err = fr.Header.WriteTo(bw)
+	if err == nil {
+		nn += int64(n)
+		n, err = bw.Write(fr.payload)
+	}
+	nn += int64(n)
+	return nn, err
 }
