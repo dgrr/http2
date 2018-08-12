@@ -1,12 +1,5 @@
 package fasthttp2
 
-import (
-	"errors"
-	"io"
-	"strconv"
-	"sync"
-)
-
 func huffmanEncode(dst, src []byte) []byte {
 	var code uint32
 	var length uint8
@@ -62,70 +55,6 @@ func huffmanDecode(dst, src []byte) []byte {
 		root = rootHuffmanNode
 	}
 	return dst
-}
-
-var staticTable = []argsKV{
-	argsKV{key: []byte(":authority")},
-	argsKV{key: []byte(":method"), value: []byte("GET")},
-	argsKV{key: []byte(":method"), value: []byte("POST")},
-	argsKV{key: []byte(":path"), value: []byte("/")},
-	argsKV{key: []byte(":path"), value: []byte("/index.html")},
-	argsKV{key: []byte(":scheme"), value: []byte("http")},
-	argsKV{key: []byte(":scheme"), value: []byte("https")},
-	argsKV{key: []byte(":status"), value: []byte("200")},
-	argsKV{key: []byte(":status"), value: []byte("204")},
-	argsKV{key: []byte(":status"), value: []byte("206")},
-	argsKV{key: []byte(":status"), value: []byte("304")},
-	argsKV{key: []byte(":status"), value: []byte("400")},
-	argsKV{key: []byte(":status"), value: []byte("404")},
-	argsKV{key: []byte(":status"), value: []byte("500")},
-	argsKV{key: []byte("accept-charset")},
-	argsKV{key: []byte("accept-encoding"), value: []byte("gzip, deflate")},
-	argsKV{key: []byte("accept-language")},
-	argsKV{key: []byte("accept-ranges")},
-	argsKV{key: []byte("accept")},
-	argsKV{key: []byte("access-control-allow-origin")},
-	argsKV{key: []byte("age")},
-	argsKV{key: []byte("allow")},
-	argsKV{key: []byte("authorization")},
-	argsKV{key: []byte("cache-control")},
-	argsKV{key: []byte("content-disposition")},
-	argsKV{key: []byte("content-encoding")},
-	argsKV{key: []byte("content-language")},
-	argsKV{key: []byte("content-length")},
-	argsKV{key: []byte("content-location")},
-	argsKV{key: []byte("content-range")},
-	argsKV{key: []byte("content-type")},
-	argsKV{key: []byte("cookie")},
-	argsKV{key: []byte("date")},
-	argsKV{key: []byte("etag")},
-	argsKV{key: []byte("expect")},
-	argsKV{key: []byte("expires")},
-	argsKV{key: []byte("from")},
-	argsKV{key: []byte("host")},
-	argsKV{key: []byte("if-match")},
-	argsKV{key: []byte("if-modified-since")},
-	argsKV{key: []byte("if-none-match")},
-	argsKV{key: []byte("if-range")},
-	argsKV{key: []byte("if-unmodified-since")},
-	argsKV{key: []byte("last-modified")},
-	argsKV{key: []byte("link")},
-	argsKV{key: []byte("location")},
-	argsKV{key: []byte("max-forwards")},
-	argsKV{key: []byte("proxy-authenticate")},
-	argsKV{key: []byte("proxy-authorization")},
-	argsKV{key: []byte("range")},
-	argsKV{key: []byte("referer")},
-	argsKV{key: []byte("refresh")},
-	argsKV{key: []byte("retry-after")},
-	argsKV{key: []byte("server")},
-	argsKV{key: []byte("set-cookie")},
-	argsKV{key: []byte("strict-transport-security")},
-	argsKV{key: []byte("transfer-encoding")},
-	argsKV{key: []byte("user-agent")},
-	argsKV{key: []byte("vary")},
-	argsKV{key: []byte("via")},
-	argsKV{key: []byte("www-authenticate")},
 }
 
 var rootHuffmanNode = func() *huffmanNode {
@@ -229,6 +158,7 @@ var huffmanCodes = [256]uint32{
 	0x7ffffeb, 0xffffffe, 0x7ffffec, 0x7ffffed,
 	0x7ffffee, 0x7ffffef, 0x7fffff0, 0x3ffffee,
 }
+
 var huffmanCodeLen = [256]uint8{
 	13, 23, 28, 28, 28, 28, 28, 28, 28, 24, 30, 28, 28, 30, 28, 28,
 	28, 28, 28, 28, 28, 28, 30, 28, 28, 28, 28, 28, 28, 28, 28, 28,
