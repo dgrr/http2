@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -23,49 +22,55 @@ const (
 var (
 	// http://httpwg.org/specs/rfc7540.html#ConnectionHeader
 	http2Preface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+	prefaceLen   = len(http2Preface)
+	// TODO: Make a pool for prefaces?
+	prefacePool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, prefaceLen)
+		},
+	}
 )
 
 // Stream states
 const (
-	h2idle = iota
-	h2open
-	h2half_closed
-	h2closed
+	StateIdle = iota
+	StateOpen
+	StateHalfClosed
+	StateClosed
 )
 
-func readPreface(br *bufio.Reader) bool {
-	n := len(http2Preface)
-	b, err := br.Peek(n)
-	if err == nil {
+// copied from github.com/erikdubbelboer/fasthttp
+type connTLSer interface {
+	ConnectionState() tls.ConnectionState
+}
+
+func readPreface(br io.Reader) bool {
+	b := prefacePool.Get().([]byte)
+	defer prefacePool.Put(b)
+
+	n, err := br.Read(b[:prefaceLen])
+	if err == nil && n == prefaceLen {
 		if bytes.Equal(b, http2Preface) {
-			// Discard HTTP2 preface
-			br.Discard(n)
-			b = nil
 			return true
 		}
 	}
-	b = nil
 	return false
 }
 
-func upgradeTLS(c net.Conn) *bufio.Reader {
+// upgradeTLS returns true if TLS upgrading have been successful
+func upgradeTLS(c net.Conn) bool {
 	cc, isTLS := c.(connTLSer)
 	if isTLS {
 		state := cc.ConnectionState()
 		if state.NegotiatedProtocol != h2TLSProto || state.Version < tls.VersionTLS12 {
-			br := bufio.NewReader(c)
-			if readPreface(br) {
-				return br
-			}
-			return nil
+			// TODO: Follow security recommendations?
+			return false
 		}
-		// HTTP2 using TLS must be used with TLS1.2 or higher (https://httpwg.org/specs/rfc7540.html#TLSUsage)
-		//
-		// successful HTTP2 protocol negotiation
-		return bufio.NewReader(c)
+		// HTTP2 using TLS must be used with TLS1.2 or higher
+		// (https://httpwg.org/specs/rfc7540.html#TLSUsage)
+		return readPreface(c)
 	}
-
-	return nil
+	return false
 }
 
 // Only TLS Upgrade
