@@ -13,6 +13,30 @@ type HeaderField struct {
 	sensible    bool
 }
 
+var headerPool = sync.Pool{
+	New: func() interface{} {
+		return &HeaderField{}
+	},
+}
+
+// AcquireHeaderField gets HeaderField from the pool.
+func AcquireHeaderField() *HeaderField {
+	return headerPool.Get().(*HeaderField)
+}
+
+// ReleaseHeaderField puts HeaderField to the pool.
+func ReleaseHeaderField(hf *HeaderField) {
+	hf.Reset()
+	headerPool.Put(hf)
+}
+
+// Reset resets header field values.
+func (hf *HeaderField) Reset() {
+	hf.name = hf.name[:0]
+	hf.value = hf.value[:0]
+	hf.sensible = false
+}
+
 // Name returns the name of the field
 func (hf *HeaderField) Name() string {
 	return string(f.name)
