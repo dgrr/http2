@@ -125,14 +125,19 @@ func (h *Header) Has(f uint8) bool {
 	return (h.Flags & f) == f
 }
 
-// Set sets type to fr
+// Set sets type to h.
 func (h *Header) Set(t uint8) {
 	h.Type = t
 }
 
-// Add adds a flag to fr
+// Add adds a flag to h.
 func (h *Header) Add(f uint8) {
 	h.Flags |= f
+}
+
+// Delete deletes f from Flags
+func (h *Header) Delete(f uint8) {
+	h.Flags ^= f
 }
 
 // Header returns header bytes of fr
@@ -215,7 +220,8 @@ func ReleaseFrame(fr *Frame) {
 // Reset resets the frame
 func (fr *Frame) Reset() {
 	fr.Header.Reset()
-	releaseByte(fr.payload[:cap(fr.payload)])
+	fr.payload = fr.payload[:0]
+	//releaseByte(fr.payload[:cap(fr.payload)])
 }
 
 // Payload returns processed payload deleting padding and additional headers.
