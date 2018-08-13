@@ -50,9 +50,7 @@ func releaseByte(b []byte) {
 
 var framePool = sync.Pool{
 	New: func() interface{} {
-		return &Frame{
-			header: make([]byte, defaultFrameSize),
-		}
+		return &Frame{}
 	},
 }
 
@@ -78,27 +76,27 @@ type Header struct {
 
 // Reset resets header values.
 func (h *Header) Reset() {
-	fr.Type = 0
-	fr.Flags = 0
-	fr.Stream = 0
-	fr.Length = 0
+	h.Type = 0
+	h.Flags = 0
+	h.Stream = 0
+	h.Length = 0
 }
 
 // ReadFrom reads header from reader.
 //
 // Unlike io.ReaderFrom this method does not read until io.EOF
 func (h *Header) ReadFrom(br io.Reader) (int64, error) {
-	n, err := h.Read(h.rawHeader[:])
+	n, err := br.Read(h.rawHeader[:])
 	if err != nil {
-		return n, err
+		return 0, err
 	}
 	if n != defaultFrameSize {
-		return n, Error(FrameSizeError)
+		return 0, Error(FrameSizeError)
 	}
-	h.rawToLength()               // 3
-	h.Type = uint8(fr.header[3])  // 1
-	h.Flags = uint8(fr.header[4]) // 1
-	h.rawToStream()               // 4
+	h.rawToLength()                 // 3
+	h.Type = uint8(h.rawHeader[3])  // 1
+	h.Flags = uint8(h.rawHeader[4]) // 1
+	h.rawToStream()                 // 4
 	return int64(n), err
 }
 
@@ -107,11 +105,11 @@ func (h *Header) WriteTo(bw io.Writer) (int64, error) {
 	var n int
 	// encoding header
 	h.lengthToRaw()
-	h.rawHeader[3] = byte(fr.Type)
-	h.rawHeader[4] = byte(fr.Flags)
+	h.rawHeader[3] = byte(h.Type)
+	h.rawHeader[4] = byte(h.Flags)
 	h.streamToRaw()
 
-	n, err = bw.Write(fr.rawHeader)
+	n, err := bw.Write(h.rawHeader[:])
 	return int64(n), err
 }
 
@@ -142,14 +140,7 @@ func (h *Header) Delete(f uint8) {
 
 // Header returns header bytes of fr
 func (h *Header) RawHeader() []byte {
-	return h.rawHeader
-}
-
-func (fr *Frame) lengthToRaw() {
-	_ = fr.header[2] // bound checking
-	fr.header[0] = byte(fr.Length >> 16)
-	fr.header[1] = byte(fr.Length >> 8)
-	fr.header[2] = byte(fr.Length)
+	return h.rawHeader[:]
 }
 
 func uint32ToBytes(b []byte, n uint32) {
@@ -170,19 +161,26 @@ func bytesToUint32(b []byte) uint32 {
 	return n & (1<<31 - 1)
 }
 
-func (fr *Frame) streamToRaw() {
-	uint32ToBytes(fr.header[5:], fr.Stream)
+func (h *Header) lengthToRaw() {
+	_ = h.rawHeader[2] // bound checking
+	h.rawHeader[0] = byte(h.Length >> 16)
+	h.rawHeader[1] = byte(h.Length >> 8)
+	h.rawHeader[2] = byte(h.Length)
 }
 
-func (fr *Frame) rawToLength() {
-	_ = fr.header[2] // bound checking
-	fr.Length = uint32(fr.header[0])<<16 |
-		uint32(fr.header[1])<<8 |
-		uint32(fr.header[2])
+func (h *Header) streamToRaw() {
+	uint32ToBytes(h.rawHeader[5:], h.Stream)
 }
 
-func (fr *Frame) rawToStream() {
-	fr.Stream = bytesToUint32(fr.header[5:])
+func (h *Header) rawToLength() {
+	_ = h.rawHeader[2] // bound checking
+	h.Length = uint32(h.rawHeader[0])<<16 |
+		uint32(h.rawHeader[1])<<8 |
+		uint32(h.rawHeader[2])
+}
+
+func (h *Header) rawToStream() {
+	h.Stream = bytesToUint32(h.rawHeader[5:])
 }
 
 // TODO: Implement https://tools.ietf.org/html/draft-ietf-httpbis-alt-svc-06#section-4
@@ -260,12 +258,12 @@ func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	nn := fr.Length
+	nn := fr.Header.Length
 	if n := int(nn) - len(fr.payload); n > 0 {
 		// resizing payload buffer
 		fr.payload = append(fr.payload, make([]byte, n)...)
 	}
-	n, err = br.Read(fr.payload[:nn])
+	n, err := br.Read(fr.payload[:nn])
 	if err == nil {
 		fr.payload = fr.payload[:n]
 	}
@@ -275,11 +273,10 @@ func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
 // WriteTo writes header and payload to bw encoding fr values.
 func (fr *Frame) WriteTo(bw io.Writer) (nn int64, err error) {
 	var n int
-	n, err = fr.Header.WriteTo(bw)
+	nn, err = fr.Header.WriteTo(bw)
 	if err == nil {
-		nn += int64(n)
 		n, err = bw.Write(fr.payload)
+		nn += int64(n)
 	}
-	nn += int64(n)
 	return nn, err
 }

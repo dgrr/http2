@@ -1,15 +1,8 @@
 package fasthttp2
 
 import (
-	"bufio"
-	"bytes"
-	"crypto/tls"
-	"errors"
-	"fmt"
 	"io"
-	"net"
 	"sync"
-	"sync/atomic"
 )
 
 var settingsPool = sync.Pool{
@@ -194,7 +187,7 @@ func (st *Settings) Encode() {
 
 // DecodeFrame decodes frame payload into st
 func (st *Settings) DecodeFrame(fr *Frame) error {
-	if !fr.Is(FrameSettings) { // TODO: Probably repeated checking
+	if !fr.Header.Is(FrameSettings) { // TODO: Probably repeated checking
 		return errFrameMismatch
 	}
 	st.Decode(fr.Payload())
@@ -218,9 +211,9 @@ func (st *Settings) WriteTo(bw io.Writer) (int64, error) {
 
 	st.Encode()
 	fr.Header.Set(FrameSettings)
-	if ack {
+	if st.ack {
 		fr.Header.Add(FlagAck)
 	}
 	fr.SetPayload(st.rawSettings)
-	return fr.WriteTo(br)
+	return fr.WriteTo(bw)
 }

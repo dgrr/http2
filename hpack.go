@@ -3,7 +3,6 @@ package fasthttp2
 import (
 	"errors"
 	"io"
-	"strconv"
 	"sync"
 )
 
@@ -46,47 +45,47 @@ func (hf *HeaderField) CopyTo(hf2 *HeaderField) {
 
 // Name returns the name of the field
 func (hf *HeaderField) Name() string {
-	return string(f.name)
+	return string(hf.name)
 }
 
 // Value returns the value of the field
 func (hf *HeaderField) Value() string {
-	return string(f.value)
+	return string(hf.value)
 }
 
 // NameBytes returns the name bytes of the field.
 func (hf *HeaderField) NameBytes() []byte {
-	return f.name
+	return hf.name
 }
 
 // ValueBytes returns the value bytes of the field.
 func (hf *HeaderField) ValueBytes() []byte {
-	return f.value
+	return hf.value
 }
 
 // SetName sets name b to the field.
 func (hf *HeaderField) SetName(b string) {
-	f.name = append(f.name[:0], b...)
+	hf.name = append(hf.name[:0], b...)
 }
 
 // SetValue sets value b to the field.
 func (hf *HeaderField) SetValue(b string) {
-	f.value = append(f.value[:0], b...)
+	hf.value = append(hf.value[:0], b...)
 }
 
 // SetNameBytes sets name bytes b to the field.
 func (hf *HeaderField) SetNameBytes(b []byte) {
-	f.name = append(f.name[:0], b...)
+	hf.name = append(hf.name[:0], b...)
 }
 
 // SetValueBytes sets value bytes b to the field.
 func (hf *HeaderField) SetValueBytes(b []byte) {
-	f.value = append(f.value[:0], b...)
+	hf.value = append(hf.value[:0], b...)
 }
 
 // IsPseudo returns true if field is pseudo header
 func (hf *HeaderField) IsPseudo() bool {
-	return len(f.name) > 0 && f.name[0] == ':'
+	return len(hf.name) > 0 && hf.name[0] == ':'
 }
 
 // HPack represents header compression methods to
@@ -103,7 +102,7 @@ type HPack struct {
 var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPack{
-			fields: make(map[uint64]*HeaderFields),
+			fields: make(map[uint64]*HeaderField),
 		}
 	},
 }
@@ -181,7 +180,7 @@ func (hpack *HPack) Parse(b []byte) ([]byte, *HeaderField, error) {
 				// TODO: Check and increment table size
 				field := AcquireHeaderField()
 				hf.CopyTo(field)
-				hf.fields[i] = field
+				hpack.fields[i] = field
 			}
 		}
 	// A literal header field without indexing representation
@@ -300,8 +299,8 @@ func (hpack *HPack) readHeaderField(i uint64, b []byte, hf *HeaderField) ([]byte
 		}
 	} else {
 		var field *HeaderField
-		if i < uint64(len(hpack.static)) {
-			field = &hpack.static[i-1]
+		if i < uint64(len(staticTable)) {
+			field = &staticTable[i-1]
 		} else {
 			field = hpack.fields[i]
 		}
@@ -309,7 +308,7 @@ func (hpack *HPack) readHeaderField(i uint64, b []byte, hf *HeaderField) ([]byte
 			return b, errHeaderFieldNotFound
 		}
 
-		hf.SetName(field.name)
+		hf.SetNameBytes(field.name)
 		b, hf.value, err = readString(b, hf.value)
 	}
 	return b, err
@@ -319,7 +318,7 @@ func (hpack *HPack) readHeaderField(i uint64, b []byte, hf *HeaderField) ([]byte
 func (hpack *HPack) writeHeaderField(dst []byte, hf *HeaderField, n uint, index uint64) []byte {
 	if index > 0 {
 		dst = writeInt(dst, n, index)
-		if n < 7 && len(v) > 0 {
+		if n < 7 && len(hf.value) > 0 {
 			dst = writeString(dst, hf.value)
 		}
 	} else {

@@ -1,14 +1,11 @@
 package fasthttp2
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/tls"
-	"fmt"
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 )
 
 // Byteorder must be big endian
