@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"sync"
+
+	"github.com/erikdubbelboer/fasthttp"
 )
 
 // Byteorder must be big endian
@@ -54,40 +56,31 @@ func readPreface(br io.Reader) bool {
 	return false
 }
 
-// upgradeTLS returns true if TLS upgrading have been successful
-func upgradeTLS(c net.Conn) bool {
-	cc, isTLS := c.(connTLSer)
-	if isTLS {
-		state := cc.ConnectionState()
-		if state.NegotiatedProtocol != h2TLSProto || state.Version < tls.VersionTLS12 {
-			// TODO: Follow security recommendations?
-			return false
-		}
-		// HTTP2 using TLS must be used with TLS1.2 or higher
-		// (https://httpwg.org/specs/rfc7540.html#TLSUsage)
-		return readPreface(c)
+func Upgrade(c net.Conn) bool {
+	cc, ok := c.(connTLSer)
+	if ok {
+		ok = upgradeTLS(cc)
+	} else {
+		ok = upgradeHTTP(cc)
 	}
-	return false
+	if ok {
+		ok = readPreace(c)
+	}
+	return ok
 }
 
-// Only TLS Upgrade
-/*
-func upgradeHTTP(ctx *RequestCtx) bool {
-	if ctx.Request.Header.ConnectionUpgrade() &&
-		b2s(ctx.Request.Header.Peek("Upgrade")) == h2Clean {
-		// HTTP2 connection stablished via HTTP
-		ctx.SetStatusCode(StatusSwitchingProtocols)
-		ctx.Response.Header.Add("Connection", "Upgrade")
-		ctx.Response.Header.Add("Upgrade", h2Clean)
-		// TODO: Add support for http2-settings header value
-		return true
+// upgradeTLS returns true if TLS upgrading have been successful
+func upgradeTLS(c net.Conn) bool {
+	state := cc.ConnectionState()
+	if state.NegotiatedProtocol != h2TLSProto || state.Version < tls.VersionTLS12 {
+		// TODO: Follow security recommendations?
+		return false
 	}
-	// The server connection preface consists of a potentially empty SETTINGS frame
-	// (Section 6.5) that MUST be the first frame the server sends in the HTTP/2 connection.
-	// (https://httpwg.org/specs/rfc7540.html#ConnectionHeader)
-	// TODO: Write settings frame
-	// TODO: receive preface
-	// TODO: Read settings and store it in Request.st
-	return false
+	// HTTP2 using TLS must be used with TLS1.2 or higher
+	// (https://httpwg.org/specs/rfc7540.html#TLSUsage)
+	return true
 }
-*/
+
+func upgradeHTTP(c net.Conn) bool {
+	// TODO:
+}
