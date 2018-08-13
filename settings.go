@@ -48,7 +48,7 @@ const (
 // This options have been humanize.
 type Settings struct {
 	// TODO: Add noCopy
-
+	ack         bool
 	rawSettings []byte
 
 	// Allows the sender to inform the remote endpoint
@@ -110,9 +110,10 @@ func (st *Settings) Reset() {
 	st.MaxConcurrentStreams = defaultConcurrentStreams
 	st.InitialWindowSize = defaultWindowSize
 	st.MaxFrameSize = defaultMaxFrameSize
-	st.rawSettings = st.rawSettings[:0]
 	st.DisablePush = false
 	st.MaxHeaderListSize = 0
+	st.rawSettings = st.rawSettings[:0]
+	st.ack = false
 }
 
 // Decode decodes frame payload into st
@@ -145,7 +146,7 @@ func (st *Settings) Decode(d []byte) {
 	}
 }
 
-// Encode encodes setting to be sended through the wire
+// Encode encodes settings to be sended through the wire
 func (st *Settings) Encode() {
 	st.rawSettings = st.rawSettings[:0]
 	if st.HeaderTableSize != 0 {
@@ -198,4 +199,28 @@ func (st *Settings) DecodeFrame(fr *Frame) error {
 	}
 	st.Decode(fr.Payload())
 	return nil
+}
+
+// IsAck returns true if in settings has been set FlagAck.
+func (st *Settings) IsAck() bool {
+	return st.ack
+}
+
+// SetAck sets FlagAck when frame is sended.
+func (st *Settings) SetAck(ack bool) {
+	st.ack = ack
+}
+
+// WriteTo writes settings frame to bw
+func (st *Settings) WriteTo(bw io.Writer) (int64, error) {
+	fr := AcquireFrame()
+	defer ReleaseFrame(fr)
+
+	st.Encode()
+	fr.Header.Set(FrameSettings)
+	if ack {
+		fr.Header.Add(FlagAck)
+	}
+	fr.SetPayload(st.rawSettings)
+	return fr.WriteTo(br)
 }
