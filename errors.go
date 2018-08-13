@@ -1,5 +1,9 @@
 package fasthttp2
 
+import (
+	"errors"
+)
+
 const (
 	// Error codes (http://httpwg.org/specs/rfc7540.html#ErrorCodes)
 	//
