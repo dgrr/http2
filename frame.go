@@ -34,20 +34,6 @@ const (
 	FlagPriority   uint8 = 0x20
 )
 
-var bytePool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, 512)
-	},
-}
-
-func acquireByte() []byte {
-	return bytePool.Get().([]byte)
-}
-
-func releaseByte(b []byte) {
-	bytePool.Put(b)
-}
-
 var framePool = sync.Pool{
 	New: func() interface{} {
 		return &Frame{}
@@ -144,9 +130,8 @@ func (h *Header) RawHeader() []byte {
 }
 
 func uint32ToBytes(b []byte, n uint32) {
-	// TODO: Delete first bit
 	_ = b[3] // bound checking
-	b[0] = byte(n >> 24)
+	b[0] = byte(n>>24) & (1<<8 - 1)
 	b[1] = byte(n >> 16)
 	b[2] = byte(n >> 8)
 	b[3] = byte(n)
