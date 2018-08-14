@@ -268,7 +268,7 @@ func readString(b, s []byte) ([]byte, []byte, error) {
 		return b, s, err
 	}
 	if mustDecode {
-		s = huffmanDecode(s, b[:length])
+		s = HuffmanDecode(s, b[:length])
 	} else {
 		s = append(s[:0], b[:length]...)
 	}
@@ -278,7 +278,7 @@ func readString(b, s []byte) ([]byte, []byte, error) {
 
 func writeString(dst, src []byte) []byte {
 	// TODO: Reduce allocations
-	edst := huffmanEncode(nil, src)
+	edst := HuffmanEncode(nil, src)
 	n := uint64(len(edst))
 	nn := len(dst)
 	dst = writeInt(dst, 7, n)

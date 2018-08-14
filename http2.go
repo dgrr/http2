@@ -6,8 +6,6 @@ import (
 	"io"
 	"net"
 	"sync"
-
-	"github.com/erikdubbelboer/fasthttp"
 )
 
 // Byteorder must be big endian
@@ -57,21 +55,21 @@ func readPreface(br io.Reader) bool {
 }
 
 func Upgrade(c net.Conn) bool {
-	cc, ok := c.(connTLSer)
+	_, ok := c.(connTLSer)
 	if ok {
-		ok = upgradeTLS(cc)
+		ok = upgradeTLS(c)
 	} else {
-		ok = upgradeHTTP(cc)
+		ok = upgradeHTTP(c)
 	}
 	if ok {
-		ok = readPreace(c)
+		ok = readPreface(c)
 	}
 	return ok
 }
 
 // upgradeTLS returns true if TLS upgrading have been successful
 func upgradeTLS(c net.Conn) bool {
-	state := cc.ConnectionState()
+	state := c.(connTLSer).ConnectionState()
 	if state.NegotiatedProtocol != h2TLSProto || state.Version < tls.VersionTLS12 {
 		// TODO: Follow security recommendations?
 		return false
@@ -83,4 +81,5 @@ func upgradeTLS(c net.Conn) bool {
 
 func upgradeHTTP(c net.Conn) bool {
 	// TODO:
+	return false
 }

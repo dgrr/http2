@@ -36,7 +36,9 @@ const (
 
 var framePool = sync.Pool{
 	New: func() interface{} {
-		return &Frame{}
+		fr := &Frame{}
+		fr.Header.Stream = StateIdle
+		return fr
 	},
 }
 
@@ -64,7 +66,7 @@ type Header struct {
 func (h *Header) Reset() {
 	h.Type = 0
 	h.Flags = 0
-	h.Stream = 0
+	h.Stream = StateIdle
 	h.Length = 0
 }
 
