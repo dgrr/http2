@@ -1,6 +1,6 @@
 package fasthttp2
 
-func huffmanEncode(dst, src []byte) []byte {
+func HuffmanEncode(dst, src []byte) []byte {
 	var code uint32
 	var length uint8
 	for _, b := range src {
@@ -21,7 +21,7 @@ func huffmanEncode(dst, src []byte) []byte {
 	return dst
 }
 
-func huffmanDecode(dst, src []byte) []byte {
+func HuffmanDecode(dst, src []byte) []byte {
 	var cum uint32
 	var bits uint8
 	root := rootHuffmanNode
