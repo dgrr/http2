@@ -1,13 +1,16 @@
 package fasthttp2
 
+// HuffmanEncode encodes src into dst using Huffman algorithm which
+// codes are specified in https://httpwg.org/specs/rfc7541.html#huffman.code.
+//
+// This function returns dst avoiding extra allocations.
 func HuffmanEncode(dst, src []byte) []byte {
-	var code uint32
+	var code uint64
 	var length uint8
 	for _, b := range src {
 		n := huffmanCodeLen[b]
-		code <<= n
 		length += n
-		code |= huffmanCodes[b]
+		code = code<<n | uint64(huffmanCodes[b])
 		for length >= 8 {
 			length -= 8
 			dst = append(dst, byte(code>>length))
@@ -21,6 +24,7 @@ func HuffmanEncode(dst, src []byte) []byte {
 	return dst
 }
 
+// HuffmanDecode decodes src into dst using Huffman codes.
 func HuffmanDecode(dst, src []byte) []byte {
 	var cum uint32
 	var bits uint8
