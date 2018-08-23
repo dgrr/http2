@@ -93,6 +93,8 @@ func (hf *HeaderField) IsPseudo() bool {
 //
 // Use AcquireHPack to acquire new HPack structure
 type HPack struct {
+	noCopy noCopy
+
 	// fields represents dynamic table fields
 	fields       map[uint64]*HeaderField
 	tableSize    int

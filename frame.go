@@ -44,11 +44,14 @@ var framePool = sync.Pool{
 
 // Header represents HTTP/2 frame header.
 type Header struct {
+	noCopy noCopy
+
 	// TODO: if length is granther than 16384 the body must not be
 	// readed unless settings specify it
 
 	// Length is the payload length
-	Length uint32 // 24 bits
+	Length    uint32 // 24 bits
+	maxLength uint32
 
 	// Type is the frame type (https://httpwg.org/specs/rfc7540.html#FrameTypes)
 	Type uint8 // 8 bits
@@ -170,14 +173,6 @@ func (h *Header) rawToStream() {
 	h.Stream = bytesToUint32(h.rawHeader[5:])
 }
 
-// TODO: Implement https://tools.ietf.org/html/draft-ietf-httpbis-alt-svc-06#section-4
-
-// HTTP2 via http is not the same as following https schema.
-// HTTPS identifies HTTP2 connection using TLS-ALPN
-// HTTP  identifies HTTP2 connection using Upgrade header value.
-//
-// TLSConfig.NextProtos must be []string{"h2"}
-
 // Frame is frame representation of HTTP2 protocol
 //
 // Use AcquireFrame instead of creating Frame every time
@@ -186,6 +181,8 @@ func (h *Header) rawToStream() {
 //
 // Frame instance MUST NOT be used from concurrently running goroutines.
 type Frame struct {
+	noCopy noCopy
+
 	Header Header
 
 	payload []byte
@@ -206,7 +203,6 @@ func ReleaseFrame(fr *Frame) {
 func (fr *Frame) Reset() {
 	fr.Header.Reset()
 	fr.payload = fr.payload[:0]
-	//releaseByte(fr.payload[:cap(fr.payload)])
 }
 
 // Payload returns processed payload deleting padding and additional headers.

@@ -40,7 +40,8 @@ const (
 //
 // This options have been humanize.
 type Settings struct {
-	// TODO: Add noCopy
+	noCopy noCopy
+
 	ack         bool
 	rawSettings []byte
 
@@ -85,12 +86,12 @@ type Settings struct {
 	MaxHeaderListSize uint32
 }
 
-// AcquireSettings returns a Settings object from the pool with default values.
+// AcquireSettings gets a Settings object from the pool with default values.
 func AcquireSettings() *Settings {
 	return settingsPool.Get().(*Settings)
 }
 
-// ReleaseSettings puts s into settings pool.
+// ReleaseSettings puts st into settings pool to be reused in the future.
 func ReleaseSettings(st *Settings) {
 	st.Reset()
 	settingsPool.Put(st)
@@ -190,26 +191,31 @@ func (st *Settings) DecodeFrame(fr *Frame) error {
 	if !fr.Header.Is(FrameSettings) { // TODO: Probably repeated checking
 		return errFrameMismatch
 	}
+	st.ack = fr.Header.Has(FlagAck)
 	st.Decode(fr.Payload())
 	return nil
 }
 
-// IsAck returns true if in settings has been set FlagAck.
+// IsAck returns true if settings has been set FlagAck.
 func (st *Settings) IsAck() bool {
 	return st.ack
 }
 
-// SetAck sets FlagAck when frame is sended.
+// SetAck sets FlagAck when WriteTo is called.
 func (st *Settings) SetAck(ack bool) {
 	st.ack = ack
 }
 
 // WriteTo writes settings frame to bw
+//
+// If this function is called as response of Settings Frame
+// SetAck(true) must be called.
 func (st *Settings) WriteTo(bw io.Writer) (int64, error) {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
 	st.Encode()
+
 	fr.Header.Set(FrameSettings)
 	if st.ack {
 		fr.Header.Add(FlagAck)

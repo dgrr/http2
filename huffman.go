@@ -5,6 +5,7 @@ package fasthttp2
 //
 // This function returns dst avoiding extra allocations.
 func HuffmanEncode(dst, src []byte) []byte {
+	// TODO: Error appending to dst
 	var code uint64
 	var length uint8
 	for _, b := range src {
@@ -26,6 +27,7 @@ func HuffmanEncode(dst, src []byte) []byte {
 
 // HuffmanDecode decodes src into dst using Huffman codes.
 func HuffmanDecode(dst, src []byte) []byte {
+	// TODO: error appending to dst
 	var cum uint32
 	var bits uint8
 	root := rootHuffmanNode
