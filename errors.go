@@ -24,21 +24,10 @@ const (
 	HTTP11Required       uint32 = 0xd
 )
 
-type errHTTP2 struct {
-	err         error
-	frameToSend byte
-}
-
-func (e errHTTP2) Error() string {
-	return e.err.Error()
-}
-
+// Error returns error of uint32 declared error codes.
 func Error(code uint32) error {
-	if code >= 0x0 && code <= 0x13 {
-		return errHTTP2{
-			err:         errParser[code],
-			frameToSend: FrameResetStream,
-		}
+	if code >= 0x0 && code <= 0xd {
+		return errParser[code]
 	}
 	return nil
 }
@@ -60,13 +49,14 @@ var (
 		InadequateSecurity:   errors.New("Inadequate security"),
 		HTTP11Required:       errors.New("HTTP/1.1 required"),
 	}
+
 	// This error codes must be used with FrameGoAway
-	errUnknowFrameType = errors.New("error bad frame type")
-	errZeroPayload     = errors.New("frame Payload len = 0")
-	errBadPreface      = errors.New("bad preface size")
-	errFrameMismatch   = errors.New("frame type mismatch from called function")
-	errNilWriter       = errors.New("Writer cannot be nil")
-	errNilReader       = errors.New("Reader cannot be nil")
-	errUnknown         = errors.New("Unknown error")
-	errBitOverflow     = errors.New("Bit overflow")
+	ErrUnknowFrameType = errors.New("error unknown frame type")
+	ErrZeroPayload     = errors.New("frame Payload len = 0")
+	ErrBadPreface      = errors.New("bad preface size")
+	ErrFrameMismatch   = errors.New("frame type mismatch from called function")
+	ErrNilWriter       = errors.New("Writer cannot be nil")
+	ErrNilReader       = errors.New("Reader cannot be nil")
+	ErrUnknown         = errors.New("Unknown error")
+	ErrBitOverflow     = errors.New("Bit overflow")
 )
