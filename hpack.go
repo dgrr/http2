@@ -126,6 +126,8 @@ func (hpack *HPack) Reset() {
 		ReleaseHeaderField(hf)
 		delete(hpack.fields, k)
 	}
+	hpack.tableSize = 0
+	hpack.maxTableSize = 0
 }
 
 // SetMaxTableSize sets the maximum dynamic table size.
@@ -291,6 +293,8 @@ func writeString(dst, src []byte) []byte {
 }
 
 var errHeaderFieldNotFound = errors.New("Indexed field not found")
+
+// TODO: Make public radHeaderField and writeHeaderField preparing it to be used correctly xd.
 
 func (hpack *HPack) readHeaderField(i uint64, b []byte, hf *HeaderField) ([]byte, error) {
 	var err error
