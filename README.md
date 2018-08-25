@@ -1,5 +1,3 @@
-# FastHTTP2
+# HTTP2
 
-FastHTTP2 is fast implementation of HTTP/2 protocol.
-
-Compatible with [fasthttp](https://github.com/erikdubbelboer/fasthttp)
+HTTP2 is fast implementation of HTTP/2 protocol.
