@@ -239,7 +239,7 @@ func readInt(n int, b []byte) ([]byte, uint64, error) {
 		}
 		m += 7
 		if m >= 63 {
-			return b[nn:], 0, errBitOverflow
+			return b[nn:], 0, ErrBitOverflow
 		}
 	}
 	return b[nn:], num, nil

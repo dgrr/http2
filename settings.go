@@ -189,7 +189,7 @@ func (st *Settings) Encode() {
 // DecodeFrame decodes frame payload into st
 func (st *Settings) DecodeFrame(fr *Frame) error {
 	if !fr.Header.Is(FrameSettings) { // TODO: Probably repeated checking
-		return errFrameMismatch
+		return ErrFrameMismatch
 	}
 	st.ack = fr.Header.Has(FlagAck)
 	st.Decode(fr.Payload())

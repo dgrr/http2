@@ -9,6 +9,9 @@ const (
 	// Frame default size
 	// http://httpwg.org/specs/rfc7540.html#FrameHeader
 	defaultFrameSize = 9
+	// https://httpwg.org/specs/rfc7540.html#SETTINGS_MAX_FRAME_SIZE
+	defaultMaxLength = 1 << 14
+	maxPayloadLength = 1<<24 - 1
 
 	// FrameType (http://httpwg.org/specs/rfc7540.html#FrameTypes)
 	FrameData         uint8 = 0x0
@@ -37,6 +40,7 @@ const (
 var framePool = sync.Pool{
 	New: func() interface{} {
 		fr := &Frame{}
+		fr.Header.maxLength = defaultMaxLength
 		fr.Header.Stream = StateIdle
 		return fr
 	},
@@ -71,6 +75,12 @@ func (h *Header) Reset() {
 	h.Flags = 0
 	h.Stream = StateIdle
 	h.Length = 0
+	h.maxLength = defaultMaxLength
+}
+
+// MaxLength returns maximum negotiated payload length.
+func (h *Header) MaxLength() uint32 {
+	return h.maxLength
 }
 
 // ReadFrom reads header from reader.
@@ -78,23 +88,24 @@ func (h *Header) Reset() {
 // Unlike io.ReaderFrom this method does not read until io.EOF
 func (h *Header) ReadFrom(br io.Reader) (int64, error) {
 	n, err := br.Read(h.rawHeader[:])
-	if err != nil {
-		return 0, err
+	if err == nil {
+		if n != defaultFrameSize {
+			err = Error(FrameSizeError)
+		} else {
+			h.rawToLength()                 // 3
+			h.Type = uint8(h.rawHeader[3])  // 1
+			h.Flags = uint8(h.rawHeader[4]) // 1
+			h.rawToStream()                 // 4
+		}
 	}
-	if n != defaultFrameSize {
-		return 0, Error(FrameSizeError)
-	}
-	h.rawToLength()                 // 3
-	h.Type = uint8(h.rawHeader[3])  // 1
-	h.Flags = uint8(h.rawHeader[4]) // 1
-	h.rawToStream()                 // 4
 	return int64(n), err
 }
 
 // WriteTo writes header to bw encoding the values.
+//
+// It is ready to be used with a net.Conn Writer.
 func (h *Header) WriteTo(bw io.Writer) (int64, error) {
-	var n int
-	// encoding header
+	// TODO: Bound checking? Debug.
 	h.lengthToRaw()
 	h.rawHeader[3] = byte(h.Type)
 	h.rawHeader[4] = byte(h.Flags)
@@ -183,17 +194,20 @@ func (h *Header) rawToStream() {
 type Frame struct {
 	noCopy noCopy
 
+	// Header is frame Header.
+	//
+	// Frame.Read function also fills Header values.
 	Header Header
 
 	payload []byte
 }
 
-// AcquireFrame returns a Frame from pool.
+// AcquireFrame gets a Frame from pool.
 func AcquireFrame() *Frame {
 	return framePool.Get().(*Frame)
 }
 
-// ReleaseFrame returns fr Frame to the pool.
+// ReleaseFrame reset and puts fr to the pool.
 func ReleaseFrame(fr *Frame) {
 	fr.Reset()
 	framePool.Put(fr)
@@ -211,31 +225,41 @@ func (fr *Frame) Payload() []byte {
 }
 
 // SetPayload sets new payload to fr
-func (fr *Frame) SetPayload(b []byte) {
-	fr.payload = append(fr.payload[:0], b...)
-	fr.Header.Length = uint32(len(fr.payload))
+//
+// This function returns ErrPayloadExceeds if
+// payload length exceeds negotiated maximum size.
+func (fr *Frame) SetPayload(b []byte) (err error) {
+	_, err = fr.appendToCheckingLength(fr.payload[:0], b)
+	return
 }
 
 // Write writes b to frame payload.
 //
 // This function is compatible with io.Writer
 func (fr *Frame) Write(b []byte) (int, error) {
-	n := fr.AppendPayload(b)
-	return n, nil
+	return fr.AppendPayload(b)
 }
 
 // AppendPayload appends bytes to frame payload
-func (fr *Frame) AppendPayload(b []byte) int {
-	n := len(b)
-	fr.payload = append(fr.payload, b...)
-	fr.Header.Length += uint32(n)
-	return n
+func (fr *Frame) AppendPayload(b []byte) (int, error) {
+	return fr.appendToCheckingLength(fr.payload, b)
+}
+
+func (fr *Frame) appendToCheckingLength(b, bb []byte) (n int, err error) {
+	n = len(bb)
+	if uint32(n+len(b)) > fr.Header.maxLength {
+		err = ErrPayloadExceeds
+	} else {
+		fr.payload = append(b, bb...)
+		fr.Header.Length = uint32(len(fr.payload))
+	}
+	return
 }
 
 // ReadFrom reads frame header and payload from br
 //
 // Frame.ReadFrom it's compatible with io.ReaderFrom
-// but this implementation does not read until io.eof
+// but this implementation does not read until io.EOF
 func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
 	_, err := fr.Header.ReadFrom(br)
 	if err != nil {

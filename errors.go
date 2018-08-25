@@ -59,4 +59,5 @@ var (
 	ErrNilReader       = errors.New("Reader cannot be nil")
 	ErrUnknown         = errors.New("Unknown error")
 	ErrBitOverflow     = errors.New("Bit overflow")
+	ErrPayloadExceeds  = errors.New("Frame payload exceeds the negotiated maximum size")
 )
