@@ -68,7 +68,7 @@ func TestHuffmanEncodeReusing(t *testing.T) {
 	encodeHuffman(t, b, b, encodedBytes)
 }
 
-func TestHuffmanReusingLittle(t *testing.T) {
+func TestHuffmanEncodeReusingLittle(t *testing.T) {
 	b := makeCopy(littleDecodedBytes)
 	encodeHuffman(t, b, b, littleEncodedBytes)
 }
