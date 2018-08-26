@@ -1,4 +1,4 @@
-package fasthttp2
+package http2
 
 // HuffmanEncode encodes src into dst using Huffman algorithm.
 //

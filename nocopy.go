@@ -1,4 +1,4 @@
-package fasthttp2
+package http2
 
 // Embed this type into a struct, which mustn't be copied,
 // so `go vet` gives a warning if this struct is copied.

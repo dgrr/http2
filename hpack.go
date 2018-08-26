@@ -1,4 +1,4 @@
-package fasthttp2
+package http2
 
 import (
 	"errors"
