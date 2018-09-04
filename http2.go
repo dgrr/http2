@@ -20,20 +20,16 @@ var (
 	// http://httpwg.org/specs/rfc7540.html#ConnectionHeader
 	http2Preface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 	prefaceLen   = len(http2Preface)
-	// TODO: Make a pool for prefaces?
-	prefacePool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, prefaceLen)
-		},
-	}
 )
+
+type State uint8
 
 // Stream states
 const (
-	StateIdle = iota
-	StateOpen
-	StateHalfClosed
-	StateClosed
+	Idle State = iota
+	Open
+	HalfClosed
+	Closed
 )
 
 // copied from github.com/erikdubbelboer/fasthttp
@@ -82,4 +78,8 @@ func upgradeTLS(c net.Conn) bool {
 func upgradeHTTP(c net.Conn) bool {
 	// TODO:
 	return false
+}
+
+func ConfigureServer(s *fasthttp.Server, hs *Server) {
+	s.NextProto(h2TLSProto, hs.serveConn)
 }
