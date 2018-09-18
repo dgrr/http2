@@ -10,8 +10,8 @@ const (
 	// http://httpwg.org/specs/rfc7540.html#FrameHeader
 	defaultFrameSize = 9
 	// https://httpwg.org/specs/rfc7540.html#SETTINGS_MAX_FRAME_SIZE
-	defaultMaxLength = 1 << 14
-	maxPayloadLength = 1<<24 - 1
+	defaultMaxLen = 1 << 14
+	maxPayloadLen = 1<<24 - 1
 
 	// FrameType (http://httpwg.org/specs/rfc7540.html#FrameTypes)
 	FrameData         uint8 = 0x0
@@ -40,8 +40,7 @@ const (
 var framePool = sync.Pool{
 	New: func() interface{} {
 		fr := &Frame{}
-		fr.Header.maxLength = defaultMaxLength
-		fr.Header.Stream = StateIdle
+		fr.Header.maxLen = defaultMaxLen
 		return fr
 	},
 }
@@ -53,9 +52,9 @@ type Header struct {
 	// TODO: if length is granther than 16384 the body must not be
 	// readed unless settings specify it
 
-	// Length is the payload length
-	Length    uint32 // 24 bits
-	maxLength uint32
+	// Len is the payload length
+	Len    uint32 // 24 bits
+	maxLen uint32
 
 	// Type is the frame type (https://httpwg.org/specs/rfc7540.html#FrameTypes)
 	Type uint8 // 8 bits
@@ -73,14 +72,14 @@ type Header struct {
 func (h *Header) Reset() {
 	h.Type = 0
 	h.Flags = 0
-	h.Stream = StateIdle
-	h.Length = 0
-	h.maxLength = defaultMaxLength
+	h.Stream = 0
+	h.Len = 0
+	h.maxLen = defaultMaxLen
 }
 
-// MaxLength returns maximum negotiated payload length.
-func (h *Header) MaxLength() uint32 {
-	return h.maxLength
+// MaxLen returns maximum negotiated payload length.
+func (h *Header) MaxLen() uint32 {
+	return h.maxLen
 }
 
 // ReadFrom reads header from reader.
@@ -92,7 +91,7 @@ func (h *Header) ReadFrom(br io.Reader) (int64, error) {
 		if n != defaultFrameSize {
 			err = Error(FrameSizeError)
 		} else {
-			h.rawToLength()                 // 3
+			h.rawToLen()                    // 3
 			h.Type = uint8(h.rawHeader[3])  // 1
 			h.Flags = uint8(h.rawHeader[4]) // 1
 			h.rawToStream()                 // 4
@@ -140,8 +139,8 @@ func (h *Header) Delete(f uint8) {
 	h.Flags ^= f
 }
 
-// Header returns header bytes of fr
-func (h *Header) RawHeader() []byte {
+// Header returns frame header bytes.
+func (h *Header) Header() []byte {
 	return h.rawHeader[:]
 }
 
@@ -164,18 +163,18 @@ func bytesToUint32(b []byte) uint32 {
 
 func (h *Header) lengthToRaw() {
 	_ = h.rawHeader[2] // bound checking
-	h.rawHeader[0] = byte(h.Length >> 16)
-	h.rawHeader[1] = byte(h.Length >> 8)
-	h.rawHeader[2] = byte(h.Length)
+	h.rawHeader[0] = byte(h.Len >> 16)
+	h.rawHeader[1] = byte(h.Len >> 8)
+	h.rawHeader[2] = byte(h.Len)
 }
 
 func (h *Header) streamToRaw() {
 	uint32ToBytes(h.rawHeader[5:], h.Stream)
 }
 
-func (h *Header) rawToLength() {
+func (h *Header) rawToLen() {
 	_ = h.rawHeader[2] // bound checking
-	h.Length = uint32(h.rawHeader[0])<<16 |
+	h.Len = uint32(h.rawHeader[0])<<16 |
 		uint32(h.rawHeader[1])<<8 |
 		uint32(h.rawHeader[2])
 }
@@ -229,7 +228,7 @@ func (fr *Frame) Payload() []byte {
 // This function returns ErrPayloadExceeds if
 // payload length exceeds negotiated maximum size.
 func (fr *Frame) SetPayload(b []byte) (err error) {
-	_, err = fr.appendToCheckingLength(fr.payload[:0], b)
+	_, err = fr.appendToCheckingLen(fr.payload[:0], b)
 	return
 }
 
@@ -242,16 +241,16 @@ func (fr *Frame) Write(b []byte) (int, error) {
 
 // AppendPayload appends bytes to frame payload
 func (fr *Frame) AppendPayload(b []byte) (int, error) {
-	return fr.appendToCheckingLength(fr.payload, b)
+	return fr.appendToCheckingLen(fr.payload, b)
 }
 
-func (fr *Frame) appendToCheckingLength(b, bb []byte) (n int, err error) {
+func (fr *Frame) appendToCheckingLen(b, bb []byte) (n int, err error) {
 	n = len(bb)
-	if uint32(n+len(b)) > fr.Header.maxLength {
+	if uint32(n+len(b)) > fr.Header.maxLen {
 		err = ErrPayloadExceeds
 	} else {
 		fr.payload = append(b, bb...)
-		fr.Header.Length = uint32(len(fr.payload))
+		fr.Header.Len = uint32(len(fr.payload))
 	}
 	return
 }
@@ -265,7 +264,7 @@ func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	nn := fr.Header.Length
+	nn := fr.Header.Len
 	if n := int(nn) - len(fr.payload); n > 0 {
 		// resizing payload buffer
 		fr.payload = append(fr.payload, make([]byte, n)...)

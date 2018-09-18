@@ -135,7 +135,7 @@ func (hpack *HPack) SetMaxTableSize(size int) {
 	hpack.maxTableSize = size
 }
 
-// Parse parses header using hpack algorithm.
+// Parse parses header from b.
 // Returned values are the new header, header field and/or error.
 //
 // It's safe to do ReleaseHeaderField after Parse call.

@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"io"
 	"net"
-	"sync"
 )
 
 // Byteorder must be big endian
@@ -38,15 +37,15 @@ type connTLSer interface {
 }
 
 func readPreface(br io.Reader) bool {
-	b := prefacePool.Get().([]byte)
-	defer prefacePool.Put(b)
-
+	b := make([]byte, prefaceLen)
 	n, err := br.Read(b[:prefaceLen])
 	if err == nil && n == prefaceLen {
 		if bytes.Equal(b, http2Preface) {
+			b = nil
 			return true
 		}
 	}
+	b = nil
 	return false
 }
 
@@ -78,8 +77,4 @@ func upgradeTLS(c net.Conn) bool {
 func upgradeHTTP(c net.Conn) bool {
 	// TODO:
 	return false
-}
-
-func ConfigureServer(s *fasthttp.Server, hs *Server) {
-	s.NextProto(h2TLSProto, hs.serveConn)
 }
