@@ -188,10 +188,10 @@ func (st *Settings) Encode() {
 
 // DecodeFrame decodes frame payload into st
 func (st *Settings) DecodeFrame(fr *Frame) error {
-	if !fr.Header.Is(FrameSettings) { // TODO: Probably repeated checking
+	if fr.Type != FrameSettings { // TODO: Probably repeated checking
 		return ErrFrameMismatch
 	}
-	st.ack = fr.Header.Has(FlagAck)
+	st.ack = fr.Has(FlagAck)
 	st.Decode(fr.Payload())
 	return nil
 }
@@ -216,9 +216,9 @@ func (st *Settings) WriteTo(bw io.Writer) (int64, error) {
 
 	st.Encode()
 
-	fr.Header.Set(FrameSettings)
+	fr.Type = FrameSettings
 	if st.ack {
-		fr.Header.Add(FlagAck)
+		fr.Add(FlagAck)
 	}
 	fr.SetPayload(st.rawSettings)
 	return fr.WriteTo(bw)
