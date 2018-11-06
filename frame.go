@@ -140,14 +140,16 @@ func (fr *Frame) ReadFrom(br io.Reader) (rdb int64, err error) {
 			if fr.Len > fr.maxLen {
 				// TODO: error oversize
 			} else if fr.Len > 0 {
-				nn := fr.Len - uint32(cap(fr.payload))
+				// uint32 must be extended to int64.
+				nn := int64(fr.Len) - int64(cap(fr.payload))
 				if nn > 0 {
 					fr.payload = append(fr.payload, make([]byte, nn)...)
 				}
-				nn = fr.Len
+				nn = int64(fr.Len) // TODO: Change nn by fr.Len?
 				n, err = br.Read(fr.payload[:nn])
 				if err == nil {
 					rdb += int64(n)
+					fr.payload = fr.payload[:n]
 				}
 			}
 		}
@@ -156,7 +158,7 @@ func (fr *Frame) ReadFrom(br io.Reader) (rdb int64, err error) {
 }
 
 func (fr *Frame) parseHeader() {
-	fr.lengthToRaw()
+	fr.lenToRaw()
 	fr.rawHeader[3] = byte(fr.Type)
 	fr.rawHeader[4] = byte(fr.Flags)
 	fr.streamToRaw()
@@ -200,6 +202,20 @@ func (fr *Frame) Header() []byte {
 	return fr.rawHeader[:]
 }
 
+func uint24ToBytes(b []byte, n uint32) {
+	_ = b[2] // bound cfrecking
+	b[0] = byte(n >> 16)
+	b[1] = byte(n >> 8)
+	b[2] = byte(n)
+}
+
+func bytesToUint24(b []byte) uint32 {
+	_ = b[2] // bound checking
+	return uint32(b[0])<<16 |
+		uint32(b[1])<<8 |
+		uint32(b[2])
+}
+
 func uint32ToBytes(b []byte, n uint32) {
 	_ = b[3] // bound checking
 	b[0] = byte(n>>24) & (1<<8 - 1)
@@ -217,11 +233,8 @@ func bytesToUint32(b []byte) uint32 {
 	return n & (1<<31 - 1)
 }
 
-func (fr *Frame) lengthToRaw() {
-	_ = fr.rawHeader[2] // bound cfrecking
-	fr.rawHeader[0] = byte(fr.Len >> 16)
-	fr.rawHeader[1] = byte(fr.Len >> 8)
-	fr.rawHeader[2] = byte(fr.Len)
+func (fr *Frame) rawToStream() {
+	fr.Stream = bytesToUint32(fr.rawHeader[5:])
 }
 
 func (fr *Frame) streamToRaw() {
@@ -229,14 +242,11 @@ func (fr *Frame) streamToRaw() {
 }
 
 func (fr *Frame) rawToLen() {
-	_ = fr.rawHeader[2] // bound cfrecking
-	fr.Len = uint32(fr.rawHeader[0])<<16 |
-		uint32(fr.rawHeader[1])<<8 |
-		uint32(fr.rawHeader[2])
+	fr.Len = bytesToUint24(fr.rawHeader[:3])
 }
 
-func (fr *Frame) rawToStream() {
-	fr.Stream = bytesToUint32(fr.rawHeader[5:])
+func (fr *Frame) lenToRaw() {
+	uint24ToBytes(fr.rawHeader[:3], fr.Len)
 }
 
 // Payload returns processed payload deleting padding and additional headers.
