@@ -11,9 +11,10 @@ const (
 	defaultFrameSize = 9
 	// https://httpwg.org/specs/rfc7540.html#SETTINGS_MAX_FRAME_SIZE
 	defaultMaxLen = 1 << 14
-	maxPayloadLen = 1<<24 - 1
+	maxPayloadLen = 1<<24 - 1 // this value cannot be exceeded because of the length frame field.
 
 	// FrameType (http://httpwg.org/specs/rfc7540.html#FrameTypes)
+	// TODO: Define new type? type Frame uint8. There are any disadvantage?
 	FrameData         uint8 = 0x0
 	FrameHeader       uint8 = 0x1
 	FramePriority     uint8 = 0x2
@@ -40,13 +41,19 @@ const (
 var framePool = sync.Pool{
 	New: func() interface{} {
 		fr := &Frame{}
-		fr.Header.maxLen = defaultMaxLen
+		fr.maxLen = defaultMaxLen
 		return fr
 	},
 }
 
-// Header represents HTTP/2 frame header.
-type Header struct {
+// Frame is frame representation of HTTP2 protocol
+//
+// Use AcquireFrame instead of creating Frame every time
+// if you are going to use Frame as your own and ReleaseFrame to
+// delete the Frame
+//
+// Frame instance MUST NOT be used from concurrently running goroutines.
+type Frame struct {
 	noCopy noCopy
 
 	// TODO: if length is granther than 16384 the body must not be
@@ -66,82 +73,131 @@ type Header struct {
 	Stream uint32 // 31 bits
 
 	rawHeader [defaultFrameSize]byte
+	payload   []byte
+}
+
+// AcquireFrame gets a Frame from pool.
+func AcquireFrame() *Frame {
+	return framePool.Get().(*Frame)
+}
+
+// ReleaseFrame reset and puts fr to the pool.
+func ReleaseFrame(fr *Frame) {
+	fr.Reset()
+	framePool.Put(fr)
 }
 
 // Reset resets header values.
-func (h *Header) Reset() {
-	h.Type = 0
-	h.Flags = 0
-	h.Stream = 0
-	h.Len = 0
-	h.maxLen = defaultMaxLen
+func (fr *Frame) Reset() {
+	fr.Type = 0
+	fr.Flags = 0
+	fr.Stream = 0
+	fr.Len = 0
+	fr.maxLen = defaultMaxLen
+	resetBytes(fr.rawHeader[:])
+	fr.payload = fr.payload[:0]
+}
+
+func resetBytes(b []byte) { // TODO: to asm using SSE if possible (github.com/tmthrgd/go-memset)
+	n := len(b)
+	for i := 0; i < n; i++ {
+		b[i] = 0
+	}
 }
 
 // MaxLen returns maximum negotiated payload length.
-func (h *Header) MaxLen() uint32 {
-	return h.maxLen
+func (fr *Frame) MaxLen() uint32 {
+	return fr.maxLen
 }
 
-// ReadFrom reads header from reader.
+// SetMaxLen sets max payload length to be readed.
+func (fr *Frame) SetMaxLen(maxLen uint32) {
+	fr.maxLen = maxLen
+}
+
+func (fr *Frame) parseValues() {
+	fr.rawToLen()                     // 3
+	fr.Type = uint8(fr.rawHeader[3])  // 1
+	fr.Flags = uint8(fr.rawHeader[4]) // 1
+	fr.rawToStream()                  // 4
+}
+
+// ReadFrom reads frame from Reader.
+//
+// This function returns readed bytes and/or error.
 //
 // Unlike io.ReaderFrom this method does not read until io.EOF
-func (h *Header) ReadFrom(br io.Reader) (int64, error) {
-	n, err := br.Read(h.rawHeader[:])
+func (fr *Frame) ReadFrom(br io.Reader) (rdb int64, err error) {
+	var n int
+	n, err = br.Read(fr.rawHeader[:])
 	if err == nil {
 		if n != defaultFrameSize {
 			err = Error(FrameSizeError)
 		} else {
-			h.rawToLen()                    // 3
-			h.Type = uint8(h.rawHeader[3])  // 1
-			h.Flags = uint8(h.rawHeader[4]) // 1
-			h.rawToStream()                 // 4
+			rdb += int64(n)
+			fr.parseValues()
+
+			if fr.Len > fr.maxLen {
+				// TODO: error oversize
+			} else if fr.Len > 0 {
+				nn := fr.Len - uint32(cap(fr.payload))
+				if nn > 0 {
+					fr.payload = append(fr.payload, make([]byte, nn)...)
+				}
+				nn = fr.Len
+				n, err = br.Read(fr.payload[:nn])
+				if err == nil {
+					rdb += int64(n)
+				}
+			}
 		}
 	}
-	return int64(n), err
+	return
 }
 
-// WriteTo writes header to bw encoding the values.
+func (fr *Frame) parseHeader() {
+	fr.lengthToRaw()
+	fr.rawHeader[3] = byte(fr.Type)
+	fr.rawHeader[4] = byte(fr.Flags)
+	fr.streamToRaw()
+}
+
+// WriteTo writes frame to the Writer.
 //
-// It is ready to be used with a net.Conn Writer.
-func (h *Header) WriteTo(bw io.Writer) (int64, error) {
-	// TODO: Bound checking? Debug.
-	h.lengthToRaw()
-	h.rawHeader[3] = byte(h.Type)
-	h.rawHeader[4] = byte(h.Flags)
-	h.streamToRaw()
+// This function returns Frame bytes written and/or error.
+func (fr *Frame) WriteTo(bw io.Writer) (wrb int64, err error) {
+	var n int
+	fr.parseHeader()
 
-	n, err := bw.Write(h.rawHeader[:])
-	return int64(n), err
-}
-
-// Is returns boolean value indicating if frame Type is t
-func (h *Header) Is(t uint8) bool {
-	return (h.Type == t)
+	n, err = bw.Write(fr.rawHeader[:])
+	if err == nil {
+		wrb += int64(n)
+		n, err = bw.Write(fr.payload[:fr.Len]) // TODO: Must payload be limited here?
+		if err == nil {
+			wrb += int64(n)
+		}
+	}
+	return
 }
 
 // Has returns boolean value indicating if frame Flags has f
-func (h *Header) Has(f uint8) bool {
-	return (h.Flags & f) == f
+func (fr *Frame) Has(f uint8) bool {
+	return (fr.Flags & f) == f
 }
 
-// Set sets type to h.
-func (h *Header) Set(t uint8) {
-	h.Type = t
+// Add adds a flag to frame flags.
+func (fr *Frame) Add(f uint8) {
+	fr.Flags |= f
 }
 
-// Add adds a flag to h.
-func (h *Header) Add(f uint8) {
-	h.Flags |= f
-}
-
-// Delete deletes f from Flags
-func (h *Header) Delete(f uint8) {
-	h.Flags ^= f
+// Delete deletes f from frame flags
+func (fr *Frame) Delete(f uint8) {
+	fr.Flags ^= f
 }
 
 // Header returns frame header bytes.
-func (h *Header) Header() []byte {
-	return h.rawHeader[:]
+func (fr *Frame) Header() []byte {
+	return fr.rawHeader[:]
 }
 
 func uint32ToBytes(b []byte, n uint32) {
@@ -161,61 +217,26 @@ func bytesToUint32(b []byte) uint32 {
 	return n & (1<<31 - 1)
 }
 
-func (h *Header) lengthToRaw() {
-	_ = h.rawHeader[2] // bound checking
-	h.rawHeader[0] = byte(h.Len >> 16)
-	h.rawHeader[1] = byte(h.Len >> 8)
-	h.rawHeader[2] = byte(h.Len)
+func (fr *Frame) lengthToRaw() {
+	_ = fr.rawHeader[2] // bound cfrecking
+	fr.rawHeader[0] = byte(fr.Len >> 16)
+	fr.rawHeader[1] = byte(fr.Len >> 8)
+	fr.rawHeader[2] = byte(fr.Len)
 }
 
-func (h *Header) streamToRaw() {
-	uint32ToBytes(h.rawHeader[5:], h.Stream)
+func (fr *Frame) streamToRaw() {
+	uint32ToBytes(fr.rawHeader[5:], fr.Stream)
 }
 
-func (h *Header) rawToLen() {
-	_ = h.rawHeader[2] // bound checking
-	h.Len = uint32(h.rawHeader[0])<<16 |
-		uint32(h.rawHeader[1])<<8 |
-		uint32(h.rawHeader[2])
+func (fr *Frame) rawToLen() {
+	_ = fr.rawHeader[2] // bound cfrecking
+	fr.Len = uint32(fr.rawHeader[0])<<16 |
+		uint32(fr.rawHeader[1])<<8 |
+		uint32(fr.rawHeader[2])
 }
 
-func (h *Header) rawToStream() {
-	h.Stream = bytesToUint32(h.rawHeader[5:])
-}
-
-// Frame is frame representation of HTTP2 protocol
-//
-// Use AcquireFrame instead of creating Frame every time
-// if you are going to use Frame as your own and ReleaseFrame to
-// delete the Frame
-//
-// Frame instance MUST NOT be used from concurrently running goroutines.
-type Frame struct {
-	noCopy noCopy
-
-	// Header is frame Header.
-	//
-	// Frame.Read function also fills Header values.
-	Header Header
-
-	payload []byte
-}
-
-// AcquireFrame gets a Frame from pool.
-func AcquireFrame() *Frame {
-	return framePool.Get().(*Frame)
-}
-
-// ReleaseFrame reset and puts fr to the pool.
-func ReleaseFrame(fr *Frame) {
-	fr.Reset()
-	framePool.Put(fr)
-}
-
-// Reset resets the frame
-func (fr *Frame) Reset() {
-	fr.Header.Reset()
-	fr.payload = fr.payload[:0]
+func (fr *Frame) rawToStream() {
+	fr.Stream = bytesToUint32(fr.rawHeader[5:])
 }
 
 // Payload returns processed payload deleting padding and additional headers.
@@ -228,61 +249,33 @@ func (fr *Frame) Payload() []byte {
 // This function returns ErrPayloadExceeds if
 // payload length exceeds negotiated maximum size.
 func (fr *Frame) SetPayload(b []byte) (err error) {
-	_, err = fr.appendToCheckingLen(fr.payload[:0], b)
+	_, err = fr.appendCheckingLen(fr.payload[:0], b)
 	return
 }
 
 // Write writes b to frame payload.
 //
-// This function is compatible with io.Writer
+// If the result payload exceeds the max length ErrPayloadExceeds is returned.
+// TODO: Add example of continuation frame
 func (fr *Frame) Write(b []byte) (int, error) {
 	return fr.AppendPayload(b)
 }
 
 // AppendPayload appends bytes to frame payload
+//
+// If the result payload exceeds the max length ErrPayloadExceeds is returned.
+// TODO: Add example of continuation frame
 func (fr *Frame) AppendPayload(b []byte) (int, error) {
-	return fr.appendToCheckingLen(fr.payload, b)
+	return fr.appendCheckingLen(fr.payload, b)
 }
 
-func (fr *Frame) appendToCheckingLen(b, bb []byte) (n int, err error) {
+func (fr *Frame) appendCheckingLen(b, bb []byte) (n int, err error) {
 	n = len(bb)
-	if uint32(n+len(b)) > fr.Header.maxLen {
+	if uint32(n+len(b)) > fr.maxLen {
 		err = ErrPayloadExceeds
 	} else {
 		fr.payload = append(b, bb...)
-		fr.Header.Len = uint32(len(fr.payload))
+		fr.Len = uint32(len(fr.payload))
 	}
 	return
-}
-
-// ReadFrom reads frame header and payload from br
-//
-// Frame.ReadFrom it's compatible with io.ReaderFrom
-// but this implementation does not read until io.EOF
-func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
-	_, err := fr.Header.ReadFrom(br)
-	if err != nil {
-		return 0, err
-	}
-	nn := fr.Header.Len
-	if n := int(nn) - len(fr.payload); n > 0 {
-		// resizing payload buffer
-		fr.payload = append(fr.payload, make([]byte, n)...)
-	}
-	n, err := br.Read(fr.payload[:nn])
-	if err == nil {
-		fr.payload = fr.payload[:n]
-	}
-	return int64(n), err
-}
-
-// WriteTo writes header and payload to bw encoding fr values.
-func (fr *Frame) WriteTo(bw io.Writer) (nn int64, err error) {
-	var n int
-	nn, err = fr.Header.WriteTo(bw)
-	if err == nil {
-		n, err = bw.Write(fr.payload)
-		nn += int64(n)
-	}
-	return nn, err
 }
