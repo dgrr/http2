@@ -1,3 +1,3 @@
 # HTTP2
 
-HTTP2 is fast implementation of HTTP/2 protocol.
+http2 is a implementation of HTTP/2 protocol for [fasthttp](https://github.com/valyala/fasthttp).
