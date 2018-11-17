@@ -242,6 +242,7 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 		// https://tools.ietf.org/html/rfc7541#section-6.1
 		case c&64 == 64:
 			hf = AcquireHeaderField()
+			// Reading name
 			if c != 64 { // Read name as index
 				b, n, err = readInt(6, b)
 				if err == nil {
@@ -263,6 +264,7 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 					b = b[n:]
 				}
 			}
+			// Reading value
 			if err == nil {
 				mustDecode = (b[0]&128 == 128)
 				b, n, err = readInt(7, b)
@@ -277,17 +279,20 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 
 		// Literal Header Field Never Indexed.
 		// This field must not be indexed and must be marked as sensible.
+		// https://tools.ietf.org/html/rfc7541#section-6.2.3
 		case c&240 == 16:
 			hf = AcquireHeaderField()
 			hf.sensible = true
 			fallthrough
 		// Header Field without Indexing.
 		// This header field must not be appended to the dynamic table.
+		// https://tools.ietf.org/html/rfc7541#section-6.2.2
 		case c&240 == 0:
 			if hf == nil {
 				hf = AcquireHeaderField()
 			}
-			if c != 0 { // reading name
+			// Reading name
+			if c != 0 { // Reading name as index
 				b, n, err = readInt(4, b)
 				if err == nil {
 					if hf2 := hpack.peek(n); hf2 != nil {
@@ -296,7 +301,7 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 						// TODO: error
 					}
 				}
-			} else {
+			} else { // Reading name as string literal
 				mustDecode = (b[0]&128 == 128)
 				b, n, err = readInt(7, b)
 				if err == nil {
@@ -307,6 +312,7 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 					b = b[n:]
 				}
 			}
+			// Reading value
 			if err == nil {
 				mustDecode = (b[0]&128 == 128)
 				b, n, err = readInt(7, b)
@@ -318,6 +324,12 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 					b = b[n:]
 				}
 			}
+
+		// Dynamic Table Size Update
+		// Changes the size of the dynamic table.
+		// https://tools.ietf.org/html/rfc7541#section-6.3
+		case c&32 == 32:
+			// TODO: xd
 		}
 
 		if err != nil {
