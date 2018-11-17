@@ -1,6 +1,7 @@
 package http2
 
 import (
+	"bufio"
 	"bytes"
 	"testing"
 )
@@ -30,40 +31,48 @@ func TestWriteInt(t *testing.T) {
 	}
 }
 
+func checkInt(t *testing.T, err error, n, e uint64, elen int, b []byte) {
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != e {
+		t.Fatalf("%d <> %d", n, e)
+	}
+	if b != nil && len(b) != elen {
+		t.Fatalf("bad length. Got %d. Expected %d", len(b), elen)
+	}
+}
+
 func TestReadInt(t *testing.T) {
 	var err error
 	n := uint64(0)
 	b := []byte{15, 31, 154, 10, 122}
 
 	b, n, err = readInt(5, b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 15 {
-		t.Fatalf("%d <> 15", n)
-	}
-	if len(b) != 4 {
-		t.Fatalf("bad length. Got %d. Expected 4", len(b))
-	}
+	checkInt(t, err, n, 15, 4, b)
 
 	b, n, err = readInt(5, b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1337 {
-		t.Fatalf("%d <> 1337", n)
-	}
-	if len(b) != 1 {
-		t.Fatalf("bad length. Got %d. Expected 2", len(b))
-	}
+	checkInt(t, err, n, 1337, 1, b)
 
 	b, n, err = readInt(7, b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(b) != 0 {
-		t.Fatalf("bad length. Got %d. Expected 0", len(b))
-	}
+	checkInt(t, err, n, 122, 0, b)
+}
+
+func TestReadIntFrom(t *testing.T) {
+	var n uint64
+	var err error
+	br := bufio.NewReader(
+		bytes.NewBuffer([]byte{15, 31, 154, 10, 122}),
+	)
+
+	n, err = readIntFrom(7, br)
+	checkInt(t, err, n, 15, 0, nil)
+
+	n, err = readIntFrom(5, br)
+	checkInt(t, err, n, 1337, 0, nil)
+
+	n, err = readIntFrom(7, br)
+	checkInt(t, err, n, 122, 0, nil)
 }
 
 func TestReadHeaderField(t *testing.T) {
