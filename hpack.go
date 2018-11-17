@@ -1,6 +1,8 @@
 package http2
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"io"
 	"sync"
@@ -119,11 +121,13 @@ const (
 type HPack struct {
 	noCopy noCopy
 
+	nextIndex uint64
+
 	// fields are the header fields
-	fields []HeaderField
+	fields []*HeaderField
 
 	// dynamic represents the dynamic table
-	dynamic      map[uint64]*HeaderField
+	dynamic      map[uint64]*HeaderField // TODO: Change to slice?
 	tableSize    int
 	maxTableSize int
 }
@@ -131,7 +135,8 @@ type HPack struct {
 var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPack{
-			dynamic: make(map[uint64]*HeaderField),
+			nextIndex: maxIndex + 1,
+			dynamic:   make(map[uint64]*HeaderField),
 		}
 	},
 }
@@ -153,6 +158,8 @@ func (hpack *HPack) Reset() {
 		ReleaseHeaderField(hf)
 		delete(hpack.dynamic, k)
 	}
+	hpack.fields = hpack.fields[:0]
+	hpack.nextIndex = maxIndex + 1
 	hpack.tableSize = 0
 	hpack.maxTableSize = 0
 }
@@ -162,93 +169,170 @@ func (hpack *HPack) SetMaxTableSize(size int) {
 	hpack.maxTableSize = size
 }
 
-// Parse parses header from b.
-// Returned values are the new header, header field and/or error.
+func (hpack *HPack) add(hf *HeaderField) {
+	// Create a copy
+	hf2 := AcquireHeaderField()
+	hf.CopyTo(hf2)
+	// TODO: Check if already exists
+	hpack.dynamic[hpack.nextIndex] = hf2
+	hpack.nextIndex++
+}
+
+// peek returns HeaderField from static or dynamic table.
 //
-// It's safe to do ReleaseHeaderField after Parse call.
-// If len(b) == 0 returns io.EOF.
-func (hpack *HPack) Parse(b []byte) ([]byte, *HeaderField, error) {
-	if len(b) == 0 {
-		return b, nil, io.EOF
+// n must be the index in the table.
+func (hpack *HPack) peek(n uint64) (hf *HeaderField) {
+	if n > maxIndex { // search in dynamic table
+		hf = hpack.dynamic[n]
+	} else {
+		hf = staticTable[n-1] // must sub 1 because of indexing
 	}
+	return
+}
 
-	var i uint64
-	var err error
-	var hf *HeaderField
-
-	c := b[0]
-	switch {
-	// An indexed header field representation identifies an
-	// field in either the static table or the fields table
-	// This index values are limited to 7 bits (2 ^ 7 = 128)
-	// https://httpwg.org/specs/rfc7541.html#indexed.header.representation
-	case c&128 == 128: // 10000000 | 7 bits
-		var field *HeaderField
-		b, i, err = readInt(7, b)
-		if i < uint64(len(staticTable)) {
-			field = &staticTable[i-1]
-		} else {
-			field = hpack.dynamic[i]
+// find gets the index of existent name in static or dynamic tables.
+func (hpack *HPack) find(name []byte) (n uint64) {
+	for i := 0; i < len(staticTable); i++ {
+		if bytes.Equal(staticTable[i].name, name) {
+			n = uint64(i + 1) // must add 1 because of indexing
+			break
 		}
-		if field == nil {
-			return b, hf, errHeaderFieldNotFound
+	}
+	if n == 0 {
+		for i, v := range hpack.dynamic {
+			if bytes.Equal(v.name, name) {
+				n = i
+				break
+			}
 		}
-		hf = AcquireHeaderField()
-		field.CopyTo(hf)
+	}
+	return
+}
 
-	// A literal header field with incremental indexing representation
-	// starts with the '01' 2-bit pattern.
-	// https://httpwg.org/specs/rfc7541.html#literal.header.with.incremental.indexing
-	case c&192 == 64: // 11000000 | 6 bits
-		b, i, err = readInt(6, b)
-		if err == nil {
-			hf = AcquireHeaderField()
-			b, err = hpack.readHeaderField(i, b, hf)
-			// A literal header field with incremental indexing representation
-			// results in appending a header field to the decoded header
-			// list and inserting it as a new field into the fields table.
+// Read reads header fields from br and stores in hpack.
+//
+// This function must receive the payload of Header frame.
+func (hpack *HPack) Read(b []byte) ([]byte, error) {
+	var (
+		n          uint64
+		c          byte
+		err        error
+		mustDecode bool
+		hf         *HeaderField
+	)
+	for len(b) > 0 {
+		c = b[0]
+		b = b[1:]
+		switch {
+		// Indexed Header Field.
+		// The value must be indexed in the static or the dynamic table.
+		// https://httpwg.org/specs/rfc7541.html#indexed.header.representation
+		case c&128 == 128:
+			b, n, err = readInt(7, b)
 			if err == nil {
-				// TODO: Check and increment table size
-				field := AcquireHeaderField()
-				hf.CopyTo(field)
-				hpack.dynamic[i] = field
+				if hf2 := hpack.peek(n); hf2 != nil {
+					hf = AcquireHeaderField()
+					hf2.CopyTo(hf)
+				}
 			}
-		}
-	// A literal header field without indexing representation
-	// results in appending a header field to the decoded header
-	// list without altering the fields table.
-	// https://httpwg.org/specs/rfc7541.html#literal.header.without.indexing
-	case c&240 == 0: // 11110000 | 4 bits
-		b, i, err = readInt(4, b)
-		if err == nil {
+
+		// Literal Header Field with Incremental Indexing.
+		// Name can be indexed or not. So if the first byte is equal to 64
+		// the name value must be appended to the dynamic table.
+		// https://tools.ietf.org/html/rfc7541#section-6.1
+		case c&64 == 64:
 			hf = AcquireHeaderField()
-			b, err = hpack.readHeaderField(i, b, hf)
+			if c != 64 { // Read name as index
+				b, n, err = readInt(6, b)
+				if err == nil {
+					if hf2 := hpack.peek(n); hf2 != nil {
+						hf.SetNameBytes(hf2.name)
+					} else {
+						// TODO: error
+					}
+				}
+			} else { // Read name literal string
+				// Huffman encoded or not
+				mustDecode = (b[0]&128 == 128)
+				b, n, err = readInt(7, b)
+				if err == nil {
+					if mustDecode {
+						// TODO: Huffman decode b...
+					}
+					hf.SetNameBytes(b[:n])
+					b = b[n:]
+				}
+			}
+			if err == nil {
+				mustDecode = (b[0]&128 == 128)
+				b, n, err = readInt(7, b)
+				if mustDecode {
+					// TODO: Huffman decode. b ...
+				}
+				// add to the table as RFC specifies.
+				hpack.add(hf)
+				hf.SetValueBytes(b[:n]) // TODO: Set value after or before adding? Now it is after. (as you can see xd)
+				b = b[n:]
+			}
+
+		// Literal Header Field Never Indexed.
+		// This field must not be indexed and must be marked as sensible.
+		case c&240 == 16:
+			hf = AcquireHeaderField()
+			hf.sensible = true
+			fallthrough
+		// Header Field without Indexing.
+		// This header field must not be appended to the dynamic table.
+		case c&240 == 0:
+			if hf == nil {
+				hf = AcquireHeaderField()
+			}
+			if c != 0 { // reading name
+				b, n, err = readInt(4, b)
+				if err == nil {
+					if hf2 := hpack.peek(n); hf2 != nil {
+						hf.SetNameBytes(hf2.name)
+					} else {
+						// TODO: error
+					}
+				}
+			} else {
+				mustDecode = (b[0]&128 == 128)
+				b, n, err = readInt(7, b)
+				if err == nil {
+					if mustDecode {
+						// TODO: Huffman decode
+					}
+					hf.SetNameBytes(b[:n])
+					b = b[n:]
+				}
+			}
+			if err == nil {
+				mustDecode = (b[0]&128 == 128)
+				b, n, err = readInt(7, b)
+				if err == nil {
+					if mustDecode {
+						// TODO: Huffman decode
+					}
+					hf.SetValueBytes(b[:n])
+					b = b[n:]
+				}
+			}
 		}
 
-	// A literal header field never-indexed representation
-	// results in appending a header field to the decoded header
-	// list without altering the fields table.
-	// Intermediaries MUST use the same representation for encoding this header field.
-	// https://httpwg.org/specs/rfc7541.html#literal.header.never.indexed
-	case c&240 == 16: // 11110000 | 4 bits
-		b, i, err = readInt(4, b)
-		if err == nil {
-			hf = AcquireHeaderField()
-			b, err = hpack.readHeaderField(i, b, hf)
+		if err != nil {
 			if hf != nil {
-				hf.sensible = true
+				ReleaseHeaderField(hf)
 			}
+			break
 		}
-	case c&224 == 32:
-		// TODO: Update
-	default:
-		err = errors.New("not found")
+
+		if hf != nil {
+			hpack.fields = append(hpack.fields, hf)
+			hf = nil
+		}
 	}
-	if err != nil && hf != nil {
-		ReleaseHeaderField(hf)
-		hf = nil
-	}
-	return b, hf, err
+	return b, err
 }
 
 // readInt reads int type from header field.
@@ -277,6 +361,40 @@ func readInt(n int, b []byte) ([]byte, uint64, error) {
 		}
 	}
 	return b[i:], nn + nu, nil
+}
+
+func readIntFrom(n int, br *bufio.Reader) (nn uint64, err error) {
+	var b byte
+	b, err = br.ReadByte()
+	if err == nil {
+		nu := uint64(1<<uint64(n) - 1)
+		nn = uint64(b)
+		nn &= nu
+		if nn < nu {
+			return
+		}
+		nn = 0
+		i := 1
+		m := uint64(0)
+		for {
+			b, err = br.ReadByte()
+			if err != nil {
+				break
+			}
+			nn |= (uint64(b&127) << m)
+			m += 7
+			if m > 63 {
+				err = ErrBitOverflow
+				break
+			}
+			i++
+			if b&128 != 128 {
+				break
+			}
+		}
+		nn += nu
+	}
+	return
 }
 
 // writeInt writes int type to header field.
@@ -344,113 +462,75 @@ func writeString(dst, src []byte) []byte {
 
 var errHeaderFieldNotFound = errors.New("Indexed field not found")
 
-// TODO: Make public radHeaderField and writeHeaderField preparing it to be used correctly xd.
-
-func (hpack *HPack) readHeaderField(i uint64, b []byte, hf *HeaderField) ([]byte, error) {
-	// TODO:
-	var err error
-	if i == 0 {
-		b, hf.name, err = readString(b, hf.name)
-		if err == nil {
-			b, hf.value, err = readString(b, hf.value)
-		}
-	} else {
-		var field *HeaderField
-		if i < uint64(len(staticTable)) {
-			field = &staticTable[i-1]
-		} else {
-			field = hpack.dynamic[i]
-		}
-		if field == nil {
-			return b, errHeaderFieldNotFound
-		}
-
-		hf.SetNameBytes(field.name)
-		b, hf.value, err = readString(b, hf.value)
-	}
-	return b, err
-}
-
 func (hpack *HPack) WriteTo(bw io.Writer) (int64, error) {
 	// TODO: Replace writeHeaderField with this function.
 	// and write all hpack header fields to bw.
 	return 0, nil
 }
 
-// TODO: Add sensible header fields
-func (hpack *HPack) writeHeaderField(dst []byte, hf *HeaderField, n uint8, index uint64) []byte {
-	if index > 0 {
-		dst = writeInt(dst, n, index)
-		if n < 7 && len(hf.value) > 0 {
-			dst = writeString(dst, hf.value)
-		}
-	} else {
-		dst = writeString(dst, hf.name)
-		dst = writeString(dst, hf.value)
-	}
-	return dst
+var staticTable = []*HeaderField{ // entry + 1
+	&HeaderField{name: []byte(":authority")}, // 1
+	&HeaderField{name: []byte(":method"), value: []byte("GET")},
+	&HeaderField{name: []byte(":method"), value: []byte("POST")},
+	&HeaderField{name: []byte(":path"), value: []byte("/")},
+	&HeaderField{name: []byte(":path"), value: []byte("/index.html")},
+	&HeaderField{name: []byte(":scheme"), value: []byte("http")},
+	&HeaderField{name: []byte(":scheme"), value: []byte("https")},
+	&HeaderField{name: []byte(":status"), value: []byte("200")},
+	&HeaderField{name: []byte(":status"), value: []byte("204")},
+	&HeaderField{name: []byte(":status"), value: []byte("206")},
+	&HeaderField{name: []byte(":status"), value: []byte("304")},
+	&HeaderField{name: []byte(":status"), value: []byte("400")},
+	&HeaderField{name: []byte(":status"), value: []byte("404")},
+	&HeaderField{name: []byte(":status"), value: []byte("500")},
+	&HeaderField{name: []byte("accept-charset")},
+	&HeaderField{name: []byte("accept-encoding"), value: []byte("gzip, deflate")},
+	&HeaderField{name: []byte("accept-language")},
+	&HeaderField{name: []byte("accept-ranges")},
+	&HeaderField{name: []byte("accept")},
+	&HeaderField{name: []byte("access-control-allow-origin")},
+	&HeaderField{name: []byte("age")},
+	&HeaderField{name: []byte("allow")},
+	&HeaderField{name: []byte("authorization")},
+	&HeaderField{name: []byte("cache-control")},
+	&HeaderField{name: []byte("content-disposition")},
+	&HeaderField{name: []byte("content-encoding")},
+	&HeaderField{name: []byte("content-language")},
+	&HeaderField{name: []byte("content-length")},
+	&HeaderField{name: []byte("content-location")},
+	&HeaderField{name: []byte("content-range")},
+	&HeaderField{name: []byte("content-type")},
+	&HeaderField{name: []byte("cookie")},
+	&HeaderField{name: []byte("date")},
+	&HeaderField{name: []byte("etag")},
+	&HeaderField{name: []byte("expect")},
+	&HeaderField{name: []byte("expires")},
+	&HeaderField{name: []byte("from")},
+	&HeaderField{name: []byte("host")},
+	&HeaderField{name: []byte("if-match")},
+	&HeaderField{name: []byte("if-modified-since")},
+	&HeaderField{name: []byte("if-none-match")},
+	&HeaderField{name: []byte("if-range")},
+	&HeaderField{name: []byte("if-unmodified-since")},
+	&HeaderField{name: []byte("last-modified")},
+	&HeaderField{name: []byte("link")},
+	&HeaderField{name: []byte("location")},
+	&HeaderField{name: []byte("max-forwards")},
+	&HeaderField{name: []byte("proxy-authenticate")},
+	&HeaderField{name: []byte("proxy-authorization")},
+	&HeaderField{name: []byte("range")},
+	&HeaderField{name: []byte("referer")},
+	&HeaderField{name: []byte("refresh")},
+	&HeaderField{name: []byte("retry-after")},
+	&HeaderField{name: []byte("server")},
+	&HeaderField{name: []byte("set-cookie")},
+	&HeaderField{name: []byte("strict-transport-security")},
+	&HeaderField{name: []byte("transfer-encoding")},
+	&HeaderField{name: []byte("user-agent")},
+	&HeaderField{name: []byte("vary")},
+	&HeaderField{name: []byte("via")},
+	&HeaderField{name: []byte("www-authenticate")}, // 61
 }
 
-var staticTable = []HeaderField{
-	HeaderField{name: []byte(":authority")},
-	HeaderField{name: []byte(":method"), value: []byte("GET")},
-	HeaderField{name: []byte(":method"), value: []byte("POST")},
-	HeaderField{name: []byte(":path"), value: []byte("/")},
-	HeaderField{name: []byte(":path"), value: []byte("/index.html")},
-	HeaderField{name: []byte(":scheme"), value: []byte("http")},
-	HeaderField{name: []byte(":scheme"), value: []byte("https")},
-	HeaderField{name: []byte(":status"), value: []byte("200")},
-	HeaderField{name: []byte(":status"), value: []byte("204")},
-	HeaderField{name: []byte(":status"), value: []byte("206")},
-	HeaderField{name: []byte(":status"), value: []byte("304")},
-	HeaderField{name: []byte(":status"), value: []byte("400")},
-	HeaderField{name: []byte(":status"), value: []byte("404")},
-	HeaderField{name: []byte(":status"), value: []byte("500")},
-	HeaderField{name: []byte("accept-charset")},
-	HeaderField{name: []byte("accept-encoding"), value: []byte("gzip, deflate")},
-	HeaderField{name: []byte("accept-language")},
-	HeaderField{name: []byte("accept-ranges")},
-	HeaderField{name: []byte("accept")},
-	HeaderField{name: []byte("access-control-allow-origin")},
-	HeaderField{name: []byte("age")},
-	HeaderField{name: []byte("allow")},
-	HeaderField{name: []byte("authorization")},
-	HeaderField{name: []byte("cache-control")},
-	HeaderField{name: []byte("content-disposition")},
-	HeaderField{name: []byte("content-encoding")},
-	HeaderField{name: []byte("content-language")},
-	HeaderField{name: []byte("content-length")},
-	HeaderField{name: []byte("content-location")},
-	HeaderField{name: []byte("content-range")},
-	HeaderField{name: []byte("content-type")},
-	HeaderField{name: []byte("cookie")},
-	HeaderField{name: []byte("date")},
-	HeaderField{name: []byte("etag")},
-	HeaderField{name: []byte("expect")},
-	HeaderField{name: []byte("expires")},
-	HeaderField{name: []byte("from")},
-	HeaderField{name: []byte("host")},
-	HeaderField{name: []byte("if-match")},
-	HeaderField{name: []byte("if-modified-since")},
-	HeaderField{name: []byte("if-none-match")},
-	HeaderField{name: []byte("if-range")},
-	HeaderField{name: []byte("if-unmodified-since")},
-	HeaderField{name: []byte("last-modified")},
-	HeaderField{name: []byte("link")},
-	HeaderField{name: []byte("location")},
-	HeaderField{name: []byte("max-forwards")},
-	HeaderField{name: []byte("proxy-authenticate")},
-	HeaderField{name: []byte("proxy-authorization")},
-	HeaderField{name: []byte("range")},
-	HeaderField{name: []byte("referer")},
-	HeaderField{name: []byte("refresh")},
-	HeaderField{name: []byte("retry-after")},
-	HeaderField{name: []byte("server")},
-	HeaderField{name: []byte("set-cookie")},
-	HeaderField{name: []byte("strict-transport-security")},
-	HeaderField{name: []byte("transfer-encoding")},
-	HeaderField{name: []byte("user-agent")},
-	HeaderField{name: []byte("vary")},
-	HeaderField{name: []byte("via")},
-	HeaderField{name: []byte("www-authenticate")},
-}
+// maxIndex defines the maximum index number of the static table.
+const maxIndex = 61
