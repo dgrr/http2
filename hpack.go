@@ -7,6 +7,8 @@ import (
 )
 
 // HeaderField represents a field in HPACK tables.
+//
+// Use AcquireHeaderField to acquire HeaderField.
 type HeaderField struct {
 	name, value []byte
 	sensible    bool
@@ -88,15 +90,40 @@ func (hf *HeaderField) IsPseudo() bool {
 	return len(hf.name) > 0 && hf.name[0] == ':'
 }
 
+// IsSensible returns if header field have been marked as sensible.
+func (hf *HeaderField) IsSensible() bool {
+	return hf.sensible
+}
+
+// https://tools.ietf.org/html/rfc7541#section-6
+type binaryFormat uint8
+
+const (
+	// https://tools.ietf.org/html/rfc7541#section-6.1
+	indexed binaryFormat = iota
+	// https://tools.ietf.org/html/rfc7541#section-6.2
+	literalIndexed
+	// https://tools.ietf.org/html/rfc7541#section-6.3
+	literalNoIndexed
+	// https://tools.ietf.org/html/rfc7541#section-6.4
+	literalNeverIndexed
+)
+
 // HPack represents header compression methods to
-// encode and decode header fields in HTTP/2
+// encode and decode header fields in HTTP/2.
+//
+// HPack is the same as HTTP/1.1 header.
 //
 // Use AcquireHPack to acquire new HPack structure
+// TODO: HPack to Headers?
 type HPack struct {
 	noCopy noCopy
 
-	// fields represents dynamic table fields
-	fields       map[uint64]*HeaderField
+	// fields are the header fields
+	fields []HeaderField
+
+	// dynamic represents the dynamic table
+	dynamic      map[uint64]*HeaderField
 	tableSize    int
 	maxTableSize int
 }
@@ -104,7 +131,7 @@ type HPack struct {
 var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPack{
-			fields: make(map[uint64]*HeaderField),
+			dynamic: make(map[uint64]*HeaderField),
 		}
 	},
 }
@@ -122,9 +149,9 @@ func ReleaseHPack(hpack *HPack) {
 
 // Reset deletes and realeases all dynamic header fields
 func (hpack *HPack) Reset() {
-	for k, hf := range hpack.fields {
+	for k, hf := range hpack.dynamic {
 		ReleaseHeaderField(hf)
-		delete(hpack.fields, k)
+		delete(hpack.dynamic, k)
 	}
 	hpack.tableSize = 0
 	hpack.maxTableSize = 0
@@ -161,7 +188,7 @@ func (hpack *HPack) Parse(b []byte) ([]byte, *HeaderField, error) {
 		if i < uint64(len(staticTable)) {
 			field = &staticTable[i-1]
 		} else {
-			field = hpack.fields[i]
+			field = hpack.dynamic[i]
 		}
 		if field == nil {
 			return b, hf, errHeaderFieldNotFound
@@ -184,7 +211,7 @@ func (hpack *HPack) Parse(b []byte) ([]byte, *HeaderField, error) {
 				// TODO: Check and increment table size
 				field := AcquireHeaderField()
 				hf.CopyTo(field)
-				hpack.fields[i] = field
+				hpack.dynamic[i] = field
 			}
 		}
 	// A literal header field without indexing representation
@@ -224,62 +251,85 @@ func (hpack *HPack) Parse(b []byte) ([]byte, *HeaderField, error) {
 	return b, hf, err
 }
 
+// readInt reads int type from header field.
+// https://tools.ietf.org/html/rfc7541#section-5.1
 func readInt(n int, b []byte) ([]byte, uint64, error) {
-	nn := 1
-	num := uint64(b[0])
-	num &= (1 << uint64(n)) - 1
-	if num < (1<<uint64(n))-1 {
-		return b[1:], num, nil
+	nu := uint64(1<<uint64(n) - 1)
+	nn := uint64(b[0])
+	nn &= nu
+	if nn < nu {
+		return b[1:], nn, nil
 	}
-	var m uint64
-	for nn < len(b) {
-		c := b[nn]
-		nn++
-		num += uint64(c&127) << m
+
+	nn = 0
+	i := 1
+	m := uint64(0)
+	for i < len(b) {
+		c := b[i]
+		nn |= (uint64(c&127) << m)
+		m += 7
+		if m > 63 {
+			return b[i:], 0, ErrBitOverflow
+		}
+		i++
 		if c&128 != 128 {
 			break
 		}
-		m += 7
-		if m >= 63 {
-			return b[nn:], 0, ErrBitOverflow
-		}
 	}
-	return b[nn:], num, nil
+	return b[i:], nn + nu, nil
 }
 
-func writeInt(dst []byte, n uint, i uint64) []byte {
-	b := uint64(1<<n) - 1
-	if i < b {
-		dst = append(dst, byte(i))
+// writeInt writes int type to header field.
+// https://tools.ietf.org/html/rfc7541#section-5.1
+func writeInt(dst []byte, n uint8, nn uint64) []byte {
+	nu := uint64(1<<n - 1)
+	if nn < nu {
+		dst[0] = byte(nn)
 	} else {
-		dst = append(dst, byte(b))
-		i -= b
-		for i >= 128 {
-			dst = append(dst, byte(0x80|(i&0x7f)))
-			i >>= 7
+		// TODO: Grow slice efficiently
+		dst = dst[:cap(dst)]
+		if i := 8 - len(dst); i > 0 {
+			dst = append(dst, make([]byte, i)...)
 		}
-		dst = append(dst, byte(i))
+		nn -= nu
+		dst[0] = byte(nu)
+		nu = 1 << (n + 1)
+		i := 0
+		for nn > 0 {
+			i++
+			dst[i] = byte(nn | 128)
+			nn >>= 7
+		}
+		dst[i] &= 127
 	}
 	return dst
 }
 
-func readString(b, s []byte) ([]byte, []byte, error) {
-	var length uint64
+// readString reads string from a header field.
+// https://tools.ietf.org/html/rfc7541#section-5.2
+func readString(dst, b []byte) ([]byte, []byte, error) {
+	if b[0] > 126 {
+		return dst, b, errors.New("error") // TODO: Define error
+	}
+
+	var n uint64
 	var err error
-	mustDecode := b[0]&128 == 128 // huffman encoded
-	b, length, err = readInt(7, b)
+	mustDecode := (b[0]&128 == 128) // huffman encoded
+	b, n, err = readInt(7, b)
 	if err != nil {
-		return b, s, err
+		return dst, b, err
 	}
 	if mustDecode {
-		s = HuffmanDecode(s, b[:length])
+		dst = HuffmanDecode(dst, b[:n])
 	} else {
-		s = append(s[:0], b[:length]...)
+		dst = append(dst[:0], b[:n]...)
 	}
-	b = b[length:]
-	return b, s, err
+	b = b[n:]
+	return dst, b, err
 }
 
+// writeString writes string to a header field.
+// https://tools.ietf.org/html/rfc7541#section-5.2
 func writeString(dst, src []byte) []byte {
 	// TODO: Reduce allocations
 	edst := HuffmanEncode(nil, src)
@@ -297,6 +347,7 @@ var errHeaderFieldNotFound = errors.New("Indexed field not found")
 // TODO: Make public radHeaderField and writeHeaderField preparing it to be used correctly xd.
 
 func (hpack *HPack) readHeaderField(i uint64, b []byte, hf *HeaderField) ([]byte, error) {
+	// TODO:
 	var err error
 	if i == 0 {
 		b, hf.name, err = readString(b, hf.name)
@@ -308,7 +359,7 @@ func (hpack *HPack) readHeaderField(i uint64, b []byte, hf *HeaderField) ([]byte
 		if i < uint64(len(staticTable)) {
 			field = &staticTable[i-1]
 		} else {
-			field = hpack.fields[i]
+			field = hpack.dynamic[i]
 		}
 		if field == nil {
 			return b, errHeaderFieldNotFound
@@ -320,8 +371,14 @@ func (hpack *HPack) readHeaderField(i uint64, b []byte, hf *HeaderField) ([]byte
 	return b, err
 }
 
+func (hpack *HPack) WriteTo(bw io.Writer) (int64, error) {
+	// TODO: Replace writeHeaderField with this function.
+	// and write all hpack header fields to bw.
+	return 0, nil
+}
+
 // TODO: Add sensible header fields
-func (hpack *HPack) writeHeaderField(dst []byte, hf *HeaderField, n uint, index uint64) []byte {
+func (hpack *HPack) writeHeaderField(dst []byte, hf *HeaderField, n uint8, index uint64) []byte {
 	if index > 0 {
 		dst = writeInt(dst, n, index)
 		if n < 7 && len(hf.value) > 0 {

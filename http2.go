@@ -11,8 +11,10 @@ import (
 // Values are unsigned unless otherwise indicated
 
 const (
-	h2TLSProto = "h2"
-	h2Clean    = "h2c"
+	// H2TLSProto is the string used in ALPN-TLS negotiation.
+	H2TLSProto = "h2"
+	// H2Clean is the string used in HTTP headers by the client to upgrade the connection.
+	H2Clean = "h2c"
 )
 
 var (
@@ -31,12 +33,14 @@ const (
 	Closed
 )
 
-// copied from github.com/erikdubbelboer/fasthttp
+// copied from github.com/valyala/fasthttp
 type connTLSer interface {
+	Handshake() error
 	ConnectionState() tls.ConnectionState
 }
 
 func readPreface(br io.Reader) bool {
+	// TODO: make a preface pool?
 	b := make([]byte, prefaceLen)
 	n, err := br.Read(b[:prefaceLen])
 	if err == nil && n == prefaceLen {
@@ -49,31 +53,36 @@ func readPreface(br io.Reader) bool {
 	return false
 }
 
-func Upgrade(c net.Conn) bool {
-	_, ok := c.(connTLSer)
-	if ok {
-		ok = upgradeTLS(c)
+// Upgrade upgrades the HTTP(S) connection.
+//
+// returns a boolean value indicating if the upgrade was successfully
+func Upgrade(c net.Conn) (ok bool) {
+	var tlsConn connTLSer
+	if tlsConn, ok = c.(connTLSer); ok {
+		ok = upgradeTLS(tlsConn)
 	} else {
 		ok = upgradeHTTP(c)
 	}
-	if ok {
-		ok = readPreface(c)
-	}
-	return ok
+	return
 }
 
 // upgradeTLS returns true if TLS upgrading have been successful
-func upgradeTLS(c net.Conn) bool {
-	state := c.(connTLSer).ConnectionState()
-	if state.NegotiatedProtocol != h2TLSProto || state.Version < tls.VersionTLS12 {
-		// TODO: Follow security recommendations?
-		return false
+// TODO: Public?
+func upgradeTLS(c connTLSer) (ok bool) {
+	// TODO: return error or false
+	if err := c.Handshake(); err == nil {
+		state := c.ConnectionState()
+		// HTTP2 using TLS must be used with TLS1.2 or higher
+		// (https://httpwg.org/specs/rfc7540.html#TLSUsage)
+		if state.Version < tls.VersionTLS12 {
+			ok = state.NegotiatedProtocol == H2TLSProto &&
+				state.NegotiatedProtocolIsMutual
+		}
 	}
-	// HTTP2 using TLS must be used with TLS1.2 or higher
-	// (https://httpwg.org/specs/rfc7540.html#TLSUsage)
-	return true
+	return
 }
 
+// TODO: public?
 func upgradeHTTP(c net.Conn) bool {
 	// TODO:
 	return false
