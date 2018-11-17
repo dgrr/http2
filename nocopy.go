@@ -6,4 +6,5 @@ package http2
 // See https://github.com/golang/go/issues/8005#issuecomment-190753527 for details.
 type noCopy struct{}
 
-func (*noCopy) Lock() {}
+func (*noCopy) Lock()   {}
+func (*noCopy) Unlock() {}
