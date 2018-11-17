@@ -2,15 +2,15 @@ package http2
 
 // HuffmanEncode encodes src into dst using Huffman algorithm.
 //
-// Do not use src and dst with the same variable.
+// src must be a different pointer of dst.
 func HuffmanEncode(dst, src []byte) []byte {
-	// TODO: make dst be reused.
 	var code uint64
 	var length uint8
 	for _, b := range src {
 		n := huffmanCodeLen[b]
+		c := uint64(huffmanCodes[b])
 		length += n
-		code = code<<n | uint64(huffmanCodes[b])
+		code = code<<n | c
 		for length >= 8 {
 			length -= 8
 			dst = append(dst, byte(code>>length))

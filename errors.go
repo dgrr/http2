@@ -26,7 +26,7 @@ const (
 
 // Error returns error of uint32 declared error codes.
 func Error(code uint32) error {
-	if code >= 0x0 && code <= 0xd {
+	if code >= 0x0 && code <= 0xd { // TODO: Declare max and min error?
 		return errParser[code]
 	}
 	return nil

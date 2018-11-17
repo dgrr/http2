@@ -122,6 +122,13 @@ func (fr *Frame) parseValues() {
 	fr.rawToStream()                  // 4
 }
 
+func (fr *Frame) parseHeader() {
+	fr.lenToRaw()                    // 2
+	fr.rawHeader[3] = byte(fr.Type)  // 1
+	fr.rawHeader[4] = byte(fr.Flags) // 1
+	fr.streamToRaw()                 // 4
+}
+
 // ReadFrom reads frame from Reader.
 //
 // This function returns readed bytes and/or error.
@@ -132,17 +139,18 @@ func (fr *Frame) ReadFrom(br io.Reader) (rdb int64, err error) {
 	n, err = br.Read(fr.rawHeader[:])
 	if err == nil {
 		if n != defaultFrameSize {
-			err = Error(FrameSizeError)
+			err = Error(FrameSizeError) // TODO: ?
 		} else {
 			rdb += int64(n)
+			// parsing length and other fields.
 			fr.parseValues()
-
 			if fr.Len > fr.maxLen {
 				// TODO: error oversize
 			} else if fr.Len > 0 {
 				// uint32 must be extended to int64.
 				nn := int64(fr.Len) - int64(cap(fr.payload))
 				if nn > 0 {
+					// TODO: ...
 					fr.payload = append(fr.payload, make([]byte, nn)...)
 				}
 				nn = int64(fr.Len) // TODO: Change nn by fr.Len?
@@ -155,13 +163,6 @@ func (fr *Frame) ReadFrom(br io.Reader) (rdb int64, err error) {
 		}
 	}
 	return
-}
-
-func (fr *Frame) parseHeader() {
-	fr.lenToRaw()
-	fr.rawHeader[3] = byte(fr.Type)
-	fr.rawHeader[4] = byte(fr.Flags)
-	fr.streamToRaw()
 }
 
 // WriteTo writes frame to the Writer.
