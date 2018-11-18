@@ -2,7 +2,7 @@ package http2
 
 // HuffmanEncode encodes src into dst using Huffman algorithm.
 //
-// src must be a different pointer of dst.
+// src and dst must not point to the same address.
 func HuffmanEncode(dst, src []byte) []byte {
 	var code uint64
 	var length uint8
@@ -26,9 +26,8 @@ func HuffmanEncode(dst, src []byte) []byte {
 
 // HuffmanDecode decodes src into dst using Huffman codes.
 //
-// Do not use src and dst with the same variable.
+// src and dst must not point to the same address.
 func HuffmanDecode(dst, src []byte) []byte {
-	// TODO: make dst be reused.
 	var cum uint32
 	var bits uint8
 	root := rootHuffmanNode

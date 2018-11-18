@@ -38,10 +38,15 @@ func decodeHuffman(t *testing.T, b, bb, toCompare []byte) {
 	}
 }
 
-func TestHuffmanDecode(t *testing.T) {
+func TestHuffmanDecodeHuge(t *testing.T) {
 	decodeHuffman(t, nil, encodedBytes, decodedBytes)
 }
 
+func TestHuffmanDecode(t *testing.T) {
+	decodeHuffman(t, nil, littleEncodedBytes, littleDecodedBytes)
+}
+
+/* This algorithm cannot reuse bytes
 func TestHuffmanDecodeReusing(t *testing.T) {
 	b := makeCopy(encodedBytes)
 	decodeHuffman(t, b, b, decodedBytes)
@@ -51,6 +56,7 @@ func TestHuffmanDecodeReusingLittle(t *testing.T) {
 	b := makeCopy(littleEncodedBytes)
 	decodeHuffman(t, b, b, littleDecodedBytes)
 }
+*/
 
 func encodeHuffman(t *testing.T, b, bb, toCompare []byte) {
 	b = HuffmanEncode(b[:0], bb)
@@ -59,10 +65,15 @@ func encodeHuffman(t *testing.T, b, bb, toCompare []byte) {
 	}
 }
 
-func TestHuffmanEncode(t *testing.T) {
+func TestHuffmanEncodeHuge(t *testing.T) {
 	encodeHuffman(t, nil, decodedBytes, encodedBytes)
 }
 
+func TestHuffmanEncode(t *testing.T) {
+	encodeHuffman(t, nil, littleDecodedBytes, littleEncodedBytes)
+}
+
+/* This algorithm cannot reuse bytes
 func TestHuffmanEncodeReusing(t *testing.T) {
 	b := makeCopy(decodedBytes)
 	encodeHuffman(t, b, b, encodedBytes)
@@ -72,3 +83,4 @@ func TestHuffmanEncodeReusingLittle(t *testing.T) {
 	b := makeCopy(littleDecodedBytes)
 	encodeHuffman(t, b, b, littleEncodedBytes)
 }
+*/
