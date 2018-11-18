@@ -165,9 +165,7 @@ func (hpack *HPack) add(hf *HeaderField) {
 
 	if !mustAdd {
 		hf = hpack.dynamic[i]
-		for n := i; n > 0; n-- {
-			hpack.dynamic[n] = hpack.dynamic[n-1]
-		}
+		hpack.dynamic = append(hpack.dynamic[:1], hpack.dynamic[:i]...)
 		hpack.dynamic[0] = hf
 	} else {
 		hf2 := AcquireHeaderField()
