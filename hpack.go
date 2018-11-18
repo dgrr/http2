@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"sort"
 	"sync"
 )
 
@@ -111,8 +112,7 @@ type HPack struct {
 	fields []*HeaderField
 
 	// dynamic represents the dynamic table
-	dynamic  []*HeaderField
-	tableLen uint64
+	dynamic []*HeaderField
 
 	tableSize    int
 	maxTableSize int
@@ -142,7 +142,6 @@ func (hpack *HPack) Reset() {
 	}
 	hpack.dynamic = hpack.dynamic[:0]
 	hpack.fields = hpack.fields[:0]
-	hpack.tableLen = 0
 	hpack.tableSize = 0
 	hpack.maxTableSize = 0
 }
@@ -153,12 +152,33 @@ func (hpack *HPack) SetMaxTableSize(size int) {
 }
 
 func (hpack *HPack) add(hf *HeaderField) {
-	// Create a copy
-	hf2 := AcquireHeaderField()
-	hf.CopyTo(hf2)
-	// TODO: Check if already exists
-	hpack.dynamic = append(hpack.dynamic, hf2)
-	hpack.tableLen++
+	mustAdd := true
+	// TODO: Use sort?
+	i := sort.Search(len(hpack.dynamic), func(i int) bool {
+		hf2 := hpack.dynamic[i]
+		if bytes.Equal(hf.name, hf2.name) {
+			mustAdd = false
+			hf2.SetValueBytes(hf.value)
+		}
+		return !mustAdd
+	})
+
+	if !mustAdd {
+		hf = hpack.dynamic[i]
+		for n := i; n > 0; n-- {
+			hpack.dynamic[n] = hpack.dynamic[n-1]
+		}
+		hpack.dynamic[0] = hf
+	} else {
+		hf2 := AcquireHeaderField()
+		hf.CopyTo(hf2)
+		if len(hpack.dynamic) == 0 {
+			hpack.dynamic = append(hpack.dynamic, hf2)
+		} else {
+			hpack.dynamic = append(hpack.dynamic[:1], hpack.dynamic...)
+			hpack.dynamic[0] = hf2
+		}
+	}
 }
 
 // Peek returns HeaderField value of the given name.
@@ -221,8 +241,8 @@ func (hpack *HPack) PeekFieldBytes(name []byte) (hf *HeaderField) {
 func (hpack *HPack) peek(n uint64) (hf *HeaderField) {
 	// TODO: Change peek function name
 	if n > maxIndex { // search in dynamic table
-		nn := n - maxIndex - 1
-		if nn < hpack.tableLen {
+		nn := int(n - maxIndex - 1)
+		if nn < len(hpack.dynamic) {
 			hf = hpack.dynamic[nn]
 		}
 	} else {
@@ -282,15 +302,13 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 		// the name value must be appended to the dynamic table.
 		// https://tools.ietf.org/html/rfc7541#section-6.1
 		case c&64 == 64:
-			hf = AcquireHeaderField()
 			// Reading name
 			if c != 64 { // Read name as index
 				b, n, err = readInt(6, b)
 				if err == nil {
-					if hf2 := hpack.peek(n); hf2 != nil {
-						hf.SetNameBytes(hf2.name)
-					} else {
+					if hf = hpack.peek(n); hf == nil {
 						// TODO: error
+						panic("error")
 					}
 				}
 			} else { // Read name literal string
@@ -298,7 +316,9 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 				mustDecode = (b[0]&128 == 128)
 				b, n, err = readInt(7, b)
 				if err == nil {
+					hf = AcquireHeaderField()
 					if !mustDecode {
+						// TODO: Bound checking
 						hf.SetNameBytes(b[:n])
 					} else {
 						bb := bytePool.Get().([]byte)
@@ -325,10 +345,8 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 					b = b[n:]
 				}
 			}
-			if hf != nil {
-				// add to the table as RFC specifies.
-				hpack.add(hf)
-			}
+			// add to the table as RFC specifies.
+			hpack.add(hf)
 
 		// Literal Header Field Never Indexed.
 		// This field must not be indexed and must be marked as sensible.

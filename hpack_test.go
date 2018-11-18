@@ -123,9 +123,9 @@ func TestReadHeaderField(t *testing.T) {
 	}
 
 	checkField(t, hpack, 0, ":status", "307")
-	checkField(t, hpack, 1, "location", "https://www.example.com")
+	checkField(t, hpack, 1, "cache-control", "private")
 	checkField(t, hpack, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	checkField(t, hpack, 3, "cache-control", "private")
+	checkField(t, hpack, 3, "location", "https://www.example.com")
 
 	ReleaseHPack(hpack)
 }
