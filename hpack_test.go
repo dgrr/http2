@@ -113,6 +113,20 @@ func TestReadHeaderField(t *testing.T) {
 	checkField(t, hpack, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
 	checkField(t, hpack, 3, "location", "https://www.example.com")
 
+	// Checking if dynamic table works.
+	hpack.fields = hpack.fields[:0]
+
+	b = []byte{0x48, 0x83, 0x64, 0x0e, 0xff, 0xc1, 0xc0, 0xbf}
+	b, err = hpack.Read(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checkField(t, hpack, 0, ":status", "307")
+	checkField(t, hpack, 1, "location", "https://www.example.com")
+	checkField(t, hpack, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
+	checkField(t, hpack, 3, "cache-control", "private")
+
 	ReleaseHPack(hpack)
 }
 

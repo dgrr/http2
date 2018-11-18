@@ -97,20 +97,6 @@ func (hf *HeaderField) IsSensible() bool {
 	return hf.sensible
 }
 
-// https://tools.ietf.org/html/rfc7541#section-6
-type binaryFormat uint8
-
-const (
-	// https://tools.ietf.org/html/rfc7541#section-6.1
-	indexed binaryFormat = iota
-	// https://tools.ietf.org/html/rfc7541#section-6.2
-	literalIndexed
-	// https://tools.ietf.org/html/rfc7541#section-6.3
-	literalNoIndexed
-	// https://tools.ietf.org/html/rfc7541#section-6.4
-	literalNeverIndexed
-)
-
 // HPack represents header compression methods to
 // encode and decode header fields in HTTP/2.
 //
@@ -121,23 +107,20 @@ const (
 type HPack struct {
 	noCopy noCopy
 
-	nextIndex uint64
-
 	// fields are the header fields
 	fields []*HeaderField
 
 	// dynamic represents the dynamic table
-	dynamic      map[uint64]*HeaderField // TODO: Change to slice?
+	dynamic  []*HeaderField
+	tableLen uint64
+
 	tableSize    int
 	maxTableSize int
 }
 
 var hpackPool = sync.Pool{
 	New: func() interface{} {
-		return &HPack{
-			nextIndex: maxIndex + 1,
-			dynamic:   make(map[uint64]*HeaderField),
-		}
+		return &HPack{}
 	},
 }
 
@@ -154,12 +137,12 @@ func ReleaseHPack(hpack *HPack) {
 
 // Reset deletes and realeases all dynamic header fields
 func (hpack *HPack) Reset() {
-	for k, hf := range hpack.dynamic {
+	for _, hf := range hpack.dynamic {
 		ReleaseHeaderField(hf)
-		delete(hpack.dynamic, k)
 	}
+	hpack.dynamic = hpack.dynamic[:0]
 	hpack.fields = hpack.fields[:0]
-	hpack.nextIndex = maxIndex + 1
+	hpack.tableLen = 0
 	hpack.tableSize = 0
 	hpack.maxTableSize = 0
 }
@@ -174,8 +157,8 @@ func (hpack *HPack) add(hf *HeaderField) {
 	hf2 := AcquireHeaderField()
 	hf.CopyTo(hf2)
 	// TODO: Check if already exists
-	hpack.dynamic[hpack.nextIndex] = hf2
-	hpack.nextIndex++
+	hpack.dynamic = append(hpack.dynamic, hf2)
+	hpack.tableLen++
 }
 
 // Peek returns HeaderField value of the given name.
@@ -238,7 +221,10 @@ func (hpack *HPack) PeekFieldBytes(name []byte) (hf *HeaderField) {
 func (hpack *HPack) peek(n uint64) (hf *HeaderField) {
 	// TODO: Change peek function name
 	if n > maxIndex { // search in dynamic table
-		hf = hpack.dynamic[n]
+		nn := n - maxIndex - 1
+		if nn < hpack.tableLen {
+			hf = hpack.dynamic[nn]
+		}
 	} else {
 		hf = staticTable[n-1] // must sub 1 because of indexing
 	}
@@ -256,7 +242,7 @@ func (hpack *HPack) find(name []byte) (n uint64) {
 	if n == 0 {
 		for i, v := range hpack.dynamic {
 			if bytes.Equal(v.name, name) {
-				n = i
+				n = uint64(i + maxIndex)
 				break
 			}
 		}
@@ -321,8 +307,6 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 						bytePool.Put(bb)
 					}
 					b = b[n:]
-					// add to the table as RFC specifies.
-					hpack.add(hf)
 				}
 			}
 			// Reading value
@@ -340,6 +324,10 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 					}
 					b = b[n:]
 				}
+			}
+			if hf != nil {
+				// add to the table as RFC specifies.
+				hpack.add(hf)
 			}
 
 		// Literal Header Field Never Indexed.
