@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"sort"
 	"sync"
 )
 
@@ -151,21 +150,26 @@ func (hpack *HPack) SetMaxTableSize(size int) {
 	hpack.maxTableSize = size
 }
 
+// add adds header field to the dynamic table.
 func (hpack *HPack) add(hf *HeaderField) {
 	mustAdd := true
 	// TODO: Use sort?
-	i := sort.Search(len(hpack.dynamic), func(i int) bool {
+	i := 0
+	for i = range hpack.dynamic {
 		hf2 := hpack.dynamic[i]
 		if bytes.Equal(hf.name, hf2.name) {
 			mustAdd = false
 			hf2.SetValueBytes(hf.value)
+			break
 		}
-		return !mustAdd
-	})
+	}
 
 	if !mustAdd {
 		hf = hpack.dynamic[i]
-		hpack.dynamic = append(hpack.dynamic[:1], hpack.dynamic[:i]...)
+		for i > 0 {
+			hpack.dynamic[i] = hpack.dynamic[i-1]
+			i--
+		}
 		hpack.dynamic[0] = hf
 	} else {
 		hf2 := AcquireHeaderField()
@@ -251,15 +255,15 @@ func (hpack *HPack) peek(n uint64) (hf *HeaderField) {
 
 // find gets the index of existent name in static or dynamic tables.
 func (hpack *HPack) find(name []byte) (n uint64) {
-	for i := 0; i < len(staticTable); i++ {
-		if bytes.Equal(staticTable[i].name, name) {
+	for i, hf := range staticTable {
+		if bytes.Equal(hf.name, name) {
 			n = uint64(i + 1) // must add 1 because of indexing
 			break
 		}
 	}
 	if n == 0 {
-		for i, v := range hpack.dynamic {
-			if bytes.Equal(v.name, name) {
+		for i, hf := range hpack.dynamic {
+			if bytes.Equal(hf.name, name) {
 				n = uint64(i + maxIndex)
 				break
 			}
@@ -304,7 +308,13 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 			if c != 64 { // Read name as index
 				b, n, err = readInt(6, b)
 				if err == nil {
-					if hf = hpack.peek(n); hf == nil {
+					if hf = hpack.peek(n); hf != nil {
+						if n < maxIndex { // peek from static table. MUST not be modified
+							hf2 := AcquireHeaderField()
+							hf.CopyTo(hf2)
+							hf = hf2
+						}
+					} else {
 						// TODO: error
 						panic("error")
 					}
@@ -341,10 +351,10 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 						bytePool.Put(bb)
 					}
 					b = b[n:]
+					// add to the table as RFC specifies.
+					hpack.add(hf)
 				}
 			}
-			// add to the table as RFC specifies.
-			hpack.add(hf)
 
 		// Literal Header Field Never Indexed.
 		// This field must not be indexed and must be marked as sensible.
@@ -557,15 +567,16 @@ func (hpack *HPack) WriteTo(bw io.Writer) (int64, error) {
 	return 0, nil
 }
 
+// TODO: Change to non-pointer?
 var staticTable = []*HeaderField{ // entry + 1
-	&HeaderField{name: []byte(":authority")}, // 1
-	&HeaderField{name: []byte(":method"), value: []byte("GET")},
-	&HeaderField{name: []byte(":method"), value: []byte("POST")},
-	&HeaderField{name: []byte(":path"), value: []byte("/")},
-	&HeaderField{name: []byte(":path"), value: []byte("/index.html")},
-	&HeaderField{name: []byte(":scheme"), value: []byte("http")},
-	&HeaderField{name: []byte(":scheme"), value: []byte("https")},
-	&HeaderField{name: []byte(":status"), value: []byte("200")},
+	&HeaderField{name: []byte(":authority")},                          // 1
+	&HeaderField{name: []byte(":method"), value: []byte("GET")},       // 2
+	&HeaderField{name: []byte(":method"), value: []byte("POST")},      // 3
+	&HeaderField{name: []byte(":path"), value: []byte("/")},           // 4
+	&HeaderField{name: []byte(":path"), value: []byte("/index.html")}, // 5
+	&HeaderField{name: []byte(":scheme"), value: []byte("http")},      // 6
+	&HeaderField{name: []byte(":scheme"), value: []byte("https")},     // 7
+	&HeaderField{name: []byte(":status"), value: []byte("200")},       // 8
 	&HeaderField{name: []byte(":status"), value: []byte("204")},
 	&HeaderField{name: []byte(":status"), value: []byte("206")},
 	&HeaderField{name: []byte(":status"), value: []byte("304")},
