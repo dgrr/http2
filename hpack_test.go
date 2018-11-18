@@ -75,11 +75,11 @@ func TestReadIntFrom(t *testing.T) {
 	checkInt(t, err, n, 122, 0, nil)
 }
 
-func checkField(t *testing.T, hpack *HPack, i int, k, v string) {
-	if len(hpack.fields) <= i {
-		t.Fatalf("fields len exceeded. %d <> %d", len(hpack.fields), i)
+func check(t *testing.T, slice []*HeaderField, i int, k, v string) {
+	if len(slice) <= i {
+		t.Fatalf("fields len exceeded. %d <> %d", len(slice), i)
 	}
-	hf := hpack.fields[i]
+	hf := slice[i]
 	if b2s(hf.name) != k {
 		t.Fatalf("unexpected key: %s<>%s", hf.name, k)
 	}
@@ -108,10 +108,10 @@ func TestReadHeaderField(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checkField(t, hpack, 0, ":status", "302")
-	checkField(t, hpack, 1, "cache-control", "private")
-	checkField(t, hpack, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	checkField(t, hpack, 3, "location", "https://www.example.com")
+	check(t, hpack.fields, 0, ":status", "302")
+	check(t, hpack.fields, 1, "cache-control", "private")
+	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
+	check(t, hpack.fields, 3, "location", "https://www.example.com")
 
 	// Checking if dynamic table works.
 	hpack.fields = hpack.fields[:0]
@@ -122,10 +122,10 @@ func TestReadHeaderField(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checkField(t, hpack, 0, ":status", "307")
-	checkField(t, hpack, 1, "cache-control", "private")
-	checkField(t, hpack, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	checkField(t, hpack, 3, "location", "https://www.example.com")
+	check(t, hpack.fields, 0, ":status", "307")
+	check(t, hpack.fields, 1, "cache-control", "private")
+	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
+	check(t, hpack.fields, 3, "location", "https://www.example.com")
 
 	hpack.fields = hpack.fields[:0]
 
@@ -151,12 +151,12 @@ func TestReadHeaderField(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checkField(t, hpack, 0, ":status", "200")
-	checkField(t, hpack, 1, "cache-control", "private")
-	checkField(t, hpack, 2, "date", "Mon, 21 Oct 2013 20:13:22 GMT")
-	checkField(t, hpack, 3, "location", "https://www.example.com")
-	checkField(t, hpack, 4, "content-encoding", "gzip")
-	checkField(t, hpack, 5, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
+	check(t, hpack.fields, 0, ":status", "200")
+	check(t, hpack.fields, 1, "cache-control", "private")
+	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:22 GMT")
+	check(t, hpack.fields, 3, "location", "https://www.example.com")
+	check(t, hpack.fields, 4, "content-encoding", "gzip")
+	check(t, hpack.fields, 5, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
 
 	ReleaseHPack(hpack)
 }
