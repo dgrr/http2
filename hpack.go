@@ -178,10 +178,65 @@ func (hpack *HPack) add(hf *HeaderField) {
 	hpack.nextIndex++
 }
 
+// Peek returns HeaderField value of the given name.
+//
+// value will be nil if name is not found.
+func (hpack *HPack) Peek(name string) (value []byte) {
+	for _, hf := range hpack.fields {
+		if b2s(hf.name) == name {
+			value = hf.value
+			break
+		}
+	}
+	return
+}
+
+// PeekBytes returns HeaderField value of the given name in bytes.
+//
+// value will be nil if name is not found.
+func (hpack *HPack) PeekBytes(name []byte) (value []byte) {
+	for _, hf := range hpack.fields {
+		if bytes.Equal(hf.name, name) {
+			value = hf.value
+			break
+		}
+	}
+	return
+}
+
+// PeekField returns HeaderField structure of the given name.
+//
+// hf will be nil in case name is not found.
+func (hpack *HPack) PeekField(name string) (hf *HeaderField) {
+	// TODO: hf must be a copy or pointer?
+	for _, hf2 := range hpack.fields {
+		if b2s(hf2.name) == name {
+			hf = hf2
+			break
+		}
+	}
+	return
+}
+
+// PeekFieldBytes returns HeaderField structure of the given name in bytes.
+//
+// hf will be nil in case name is not found.
+func (hpack *HPack) PeekFieldBytes(name []byte) (hf *HeaderField) {
+	// TODO: hf must be a copy or pointer?
+	for _, hf2 := range hpack.fields {
+		if bytes.Equal(hf2.name, name) {
+			hf = hf2
+			break
+		}
+	}
+	return
+}
+
 // peek returns HeaderField from static or dynamic table.
 //
 // n must be the index in the table.
 func (hpack *HPack) peek(n uint64) (hf *HeaderField) {
+	// TODO: Change peek function name
 	if n > maxIndex { // search in dynamic table
 		hf = hpack.dynamic[n]
 	} else {
@@ -213,6 +268,7 @@ func (hpack *HPack) find(name []byte) (n uint64) {
 //
 // This function must receive the payload of Header frame.
 func (hpack *HPack) Read(b []byte) ([]byte, error) {
+	// TODO: Change Read to Write?
 	var (
 		n          uint64
 		c          byte
@@ -222,7 +278,6 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 	)
 	for len(b) > 0 {
 		c = b[0]
-		b = b[1:]
 		switch {
 		// Indexed Header Field.
 		// The value must be indexed in the static or the dynamic table.
@@ -257,24 +312,34 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 				mustDecode = (b[0]&128 == 128)
 				b, n, err = readInt(7, b)
 				if err == nil {
-					if mustDecode {
-						// TODO: Huffman decode b...
+					if !mustDecode {
+						hf.SetNameBytes(b[:n])
+					} else {
+						bb := bytePool.Get().([]byte)
+						bb = HuffmanDecode(bb[:0], b[:n])
+						hf.SetNameBytes(bb)
+						bytePool.Put(bb)
 					}
-					hf.SetNameBytes(b[:n])
 					b = b[n:]
+					// add to the table as RFC specifies.
+					hpack.add(hf)
 				}
 			}
 			// Reading value
 			if err == nil {
 				mustDecode = (b[0]&128 == 128)
 				b, n, err = readInt(7, b)
-				if mustDecode {
-					// TODO: Huffman decode. b ...
+				if err == nil {
+					if !mustDecode {
+						hf.SetValueBytes(b[:n])
+					} else {
+						bb := bytePool.Get().([]byte)
+						bb = HuffmanDecode(bb[:0], b[:n])
+						hf.SetValueBytes(bb)
+						bytePool.Put(bb)
+					}
+					b = b[n:]
 				}
-				// add to the table as RFC specifies.
-				hpack.add(hf)
-				hf.SetValueBytes(b[:n]) // TODO: Set value after or before adding? Now it is after. (as you can see xd)
-				b = b[n:]
 			}
 
 		// Literal Header Field Never Indexed.
@@ -305,10 +370,14 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 				mustDecode = (b[0]&128 == 128)
 				b, n, err = readInt(7, b)
 				if err == nil {
-					if mustDecode {
-						// TODO: Huffman decode
+					if !mustDecode {
+						hf.SetNameBytes(b[:n])
+					} else {
+						bb := bytePool.Get().([]byte)
+						bb = HuffmanDecode(bb[:0], b[:n])
+						hf.SetNameBytes(bb)
+						bytePool.Put(bb)
 					}
-					hf.SetNameBytes(b[:n])
 					b = b[n:]
 				}
 			}
@@ -317,10 +386,14 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 				mustDecode = (b[0]&128 == 128)
 				b, n, err = readInt(7, b)
 				if err == nil {
-					if mustDecode {
-						// TODO: Huffman decode
+					if !mustDecode {
+						hf.SetValueBytes(b[:n])
+					} else {
+						bb := bytePool.Get().([]byte)
+						bb = HuffmanDecode(bb[:0], b[:n])
+						hf.SetNameBytes(bb)
+						bytePool.Put(bb)
 					}
-					hf.SetValueBytes(b[:n])
 					b = b[n:]
 				}
 			}
