@@ -2,8 +2,15 @@ package http2
 
 import (
 	"reflect"
+	"sync"
 	"unsafe"
 )
+
+var bytePool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 128)
+	},
+}
 
 // copied from https://github.com/valyala/fasthttp
 
