@@ -102,6 +102,7 @@ func TestReadHeaderField(t *testing.T) {
 		0xe9, 0xae, 0x82, 0xae, 0x43, 0xd3,
 	}
 	hpack := AcquireHPack()
+	hpack.SetMaxTableSize(256)
 
 	b, err = hpack.Read(b)
 	if err != nil {
@@ -112,6 +113,15 @@ func TestReadHeaderField(t *testing.T) {
 	check(t, hpack.fields, 1, "cache-control", "private")
 	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
 	check(t, hpack.fields, 3, "location", "https://www.example.com")
+
+	check(t, hpack.dynamic, 2, "cache-control", "private")
+	check(t, hpack.dynamic, 3, ":status", "302")
+	check(t, hpack.dynamic, 1, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
+	check(t, hpack.dynamic, 2, "cache-control", "private")
+	check(t, hpack.dynamic, 3, ":status", "302")
+	if hpack.tableSize != 222 {
+		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 222)
+	}
 
 	// Checking if dynamic table works.
 	hpack.fields = hpack.fields[:0]
@@ -126,6 +136,14 @@ func TestReadHeaderField(t *testing.T) {
 	check(t, hpack.fields, 1, "cache-control", "private")
 	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
 	check(t, hpack.fields, 3, "location", "https://www.example.com")
+
+	check(t, hpack.dynamic, 0, ":status", "307")
+	check(t, hpack.dynamic, 1, "location", "https://www.example.com")
+	check(t, hpack.dynamic, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
+	check(t, hpack.dynamic, 3, "cache-control", "private")
+	if hpack.tableSize != 222 {
+		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 222)
+	}
 
 	hpack.fields = hpack.fields[:0]
 
@@ -157,6 +175,13 @@ func TestReadHeaderField(t *testing.T) {
 	check(t, hpack.fields, 3, "location", "https://www.example.com")
 	check(t, hpack.fields, 4, "content-encoding", "gzip")
 	check(t, hpack.fields, 5, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
+
+	check(t, hpack.dynamic, 0, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
+	check(t, hpack.dynamic, 1, "content-encoding", "gzip")
+	check(t, hpack.dynamic, 2, "date", "Mon, 21 Oct 2013 20:13:22 GMT")
+	if hpack.tableSize != 215 {
+		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 215)
+	}
 
 	ReleaseHPack(hpack)
 }

@@ -40,6 +40,13 @@ func (hf *HeaderField) Reset() {
 	hf.sensible = false
 }
 
+// Size returns the header field size as RFC specifies.
+//
+// https://tools.ietf.org/html/rfc7541#section-4.1
+func (hf *HeaderField) Size() int {
+	return len(hf.name) + len(hf.value) + 32
+}
+
 // CopyTo copies hf to hf2
 func (hf *HeaderField) CopyTo(hf2 *HeaderField) {
 	hf2.name = append(hf2.name[:0], hf.name...)
@@ -134,13 +141,24 @@ func ReleaseHPack(hpack *HPack) {
 	hpackPool.Put(hpack)
 }
 
-// Reset deletes and realeases all dynamic header fields
-func (hpack *HPack) Reset() {
+func (hpack *HPack) releaseTable() {
 	for _, hf := range hpack.dynamic {
 		ReleaseHeaderField(hf)
 	}
 	hpack.dynamic = hpack.dynamic[:0]
+}
+
+func (hpack *HPack) releaseFields() {
+	for _, hf := range hpack.fields {
+		ReleaseHeaderField(hf)
+	}
 	hpack.fields = hpack.fields[:0]
+}
+
+// Reset deletes and realeases all dynamic header fields
+func (hpack *HPack) Reset() {
+	hpack.releaseTable()
+	hpack.releaseFields()
 	hpack.tableSize = 0
 	hpack.maxTableSize = 0
 }
@@ -150,10 +168,19 @@ func (hpack *HPack) SetMaxTableSize(size int) {
 	hpack.maxTableSize = size
 }
 
+func (hpack *HPack) calcSize() {
+	hpack.tableSize = 0
+	for _, hf := range hpack.dynamic {
+		hpack.tableSize += hf.Size()
+	}
+}
+
 // add adds header field to the dynamic table.
 func (hpack *HPack) add(hf *HeaderField) {
+	// TODO: https://tools.ietf.org/html/rfc7541#section-2.3.2
+	// apply duplicate entries
 	mustAdd := true
-	// TODO: Use sort?
+
 	i := 0
 	for i = range hpack.dynamic {
 		hf2 := hpack.dynamic[i]
@@ -171,7 +198,21 @@ func (hpack *HPack) add(hf *HeaderField) {
 			i--
 		}
 		hpack.dynamic[0] = hf
+		hpack.calcSize()
 	} else {
+		// checking table size
+		for {
+			n := hpack.tableSize + hf.Size()
+			if hpack.maxTableSize == 0 || n <= hpack.maxTableSize {
+				hpack.tableSize = n
+				break
+			}
+			n = len(hpack.dynamic) - 1
+			ReleaseHeaderField(hpack.dynamic[n])
+			hpack.dynamic = hpack.dynamic[:n]
+			hpack.calcSize()
+		}
+
 		hf2 := AcquireHeaderField()
 		hf.CopyTo(hf2)
 		if len(hpack.dynamic) == 0 {
@@ -416,7 +457,10 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 		// Changes the size of the dynamic table.
 		// https://tools.ietf.org/html/rfc7541#section-6.3
 		case c&32 == 32:
-			// TODO: xd
+			b, n, err = readInt(5, b)
+			if err == nil {
+				hpack.maxTableSize = int(n)
+			}
 		}
 
 		if err != nil {
