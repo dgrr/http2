@@ -143,8 +143,47 @@ func check(t *testing.T, slice []*HeaderField, i int, k, v string) {
 	}
 }
 
+func readHPackAndCheck(t *testing.T, hpack *HPack, b []byte, fields, table []string, tableSize int) {
+	var err error
+	b, err = hpack.Read(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for i := 0; i < len(fields); i += 2 {
+		check(t, hpack.fields, n, fields[i], fields[i+1])
+		n++
+	}
+	n = 0
+	for i := 0; i < len(table); i += 2 {
+		check(t, hpack.dynamic, n, table[i], table[i+1])
+		n++
+	}
+
+	if hpack.tableSize != tableSize {
+		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, tableSize)
+	}
+	hpack.releaseFields()
+}
+
 func TestReadRequestWithoutHuffman(t *testing.T) {
-	// TODO:
+	b := []byte{
+		0x82, 0x86, 0x84, 0x41, 0x0f, 0x77,
+		0x77, 0x77, 0x2e, 0x65, 0x78, 0x61,
+		0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63,
+		0x6f, 0x6d,
+	}
+	hpack := AcquireHPack()
+
+	readHPackAndCheck(t, hpack, b, []string{
+		":method", "GET",
+		":scheme", "http",
+		":path", "/",
+		":authority", "www.example.com",
+	}, []string{
+		":authority", "www.example.com",
+	}, 57)
+
 }
 
 func TestReadRequestWithHuffman(t *testing.T) {
@@ -160,7 +199,6 @@ func TestWriteRequestWithHuffman(t *testing.T) {
 }
 
 func TestReadResponseWithoutHuffman(t *testing.T) {
-	var err error
 	b := []byte{
 		0x48, 0x03, 0x33, 0x30, 0x32, 0x58,
 		0x07, 0x70, 0x72, 0x69, 0x76, 0x61,
@@ -178,46 +216,31 @@ func TestReadResponseWithoutHuffman(t *testing.T) {
 	hpack := AcquireHPack()
 	hpack.SetMaxTableSize(256)
 
-	b, err = hpack.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	check(t, hpack.fields, 0, ":status", "302")
-	check(t, hpack.fields, 1, "cache-control", "private")
-	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.fields, 3, "location", "https://www.example.com")
-
-	check(t, hpack.dynamic, 0, "location", "https://www.example.com")
-	check(t, hpack.dynamic, 1, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.dynamic, 2, "cache-control", "private")
-	check(t, hpack.dynamic, 3, ":status", "302")
-	if hpack.tableSize != 222 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 222)
-	}
-
-	hpack.releaseFields()
+	readHPackAndCheck(t, hpack, b, []string{
+		":status", "302",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"location", "https://www.example.com",
+	}, []string{
+		"location", "https://www.example.com",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"cache-control", "private",
+		":status", "302",
+	}, 222)
 
 	b = []byte{0x48, 0x03, 0x33, 0x30, 0x37, 0xc1, 0xc0, 0xbf}
-	b, err = hpack.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	check(t, hpack.fields, 0, ":status", "307")
-	check(t, hpack.fields, 1, "cache-control", "private")
-	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.fields, 3, "location", "https://www.example.com")
-
-	check(t, hpack.dynamic, 0, ":status", "307")
-	check(t, hpack.dynamic, 1, "location", "https://www.example.com")
-	check(t, hpack.dynamic, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.dynamic, 3, "cache-control", "private")
-	if hpack.tableSize != 222 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 222)
-	}
-
-	hpack.releaseFields()
+	readHPackAndCheck(t, hpack, b, []string{
+		":status", "307",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"location", "https://www.example.com",
+	}, []string{
+		":status", "307",
+		"location", "https://www.example.com",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"cache-control", "private",
+	}, 222)
 
 	b = []byte{
 		0x88, 0xc1, 0x61, 0x1d, 0x4d, 0x6f,
@@ -239,30 +262,23 @@ func TestReadResponseWithoutHuffman(t *testing.T) {
 		0x3d, 0x31,
 	}
 
-	b, err = hpack.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	check(t, hpack.fields, 0, ":status", "200")
-	check(t, hpack.fields, 1, "cache-control", "private")
-	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:22 GMT")
-	check(t, hpack.fields, 3, "location", "https://www.example.com")
-	check(t, hpack.fields, 4, "content-encoding", "gzip")
-	check(t, hpack.fields, 5, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
-
-	check(t, hpack.dynamic, 0, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
-	check(t, hpack.dynamic, 1, "content-encoding", "gzip")
-	check(t, hpack.dynamic, 2, "date", "Mon, 21 Oct 2013 20:13:22 GMT")
-	if hpack.tableSize != 215 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 215)
-	}
+	readHPackAndCheck(t, hpack, b, []string{
+		":status", "200",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
+		"location", "https://www.example.com",
+		"content-encoding", "gzip",
+		"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+	}, []string{
+		"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+		"content-encoding", "gzip",
+		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
+	}, 215)
 
 	ReleaseHPack(hpack)
 }
 
 func TestReadResponseWithHuffman(t *testing.T) {
-	var err error
 	b := []byte{
 		0x48, 0x82, 0x64, 0x02, 0x58, 0x85,
 		0xae, 0xc3, 0x77, 0x1a, 0x4b, 0x61,
@@ -277,46 +293,33 @@ func TestReadResponseWithHuffman(t *testing.T) {
 	hpack := AcquireHPack()
 	hpack.SetMaxTableSize(256)
 
-	b, err = hpack.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	check(t, hpack.fields, 0, ":status", "302")
-	check(t, hpack.fields, 1, "cache-control", "private")
-	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.fields, 3, "location", "https://www.example.com")
-
-	check(t, hpack.dynamic, 0, "location", "https://www.example.com")
-	check(t, hpack.dynamic, 1, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.dynamic, 2, "cache-control", "private")
-	check(t, hpack.dynamic, 3, ":status", "302")
-	if hpack.tableSize != 222 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 222)
-	}
+	readHPackAndCheck(t, hpack, b, []string{
+		":status", "302",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"location", "https://www.example.com",
+	}, []string{
+		"location", "https://www.example.com",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"cache-control", "private",
+		":status", "302",
+	}, 222)
 
 	hpack.releaseFields()
 
 	b = []byte{0x48, 0x83, 0x64, 0x0e, 0xff, 0xc1, 0xc0, 0xbf}
-	b, err = hpack.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	check(t, hpack.fields, 0, ":status", "307")
-	check(t, hpack.fields, 1, "cache-control", "private")
-	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.fields, 3, "location", "https://www.example.com")
-
-	check(t, hpack.dynamic, 0, ":status", "307")
-	check(t, hpack.dynamic, 1, "location", "https://www.example.com")
-	check(t, hpack.dynamic, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.dynamic, 3, "cache-control", "private")
-	if hpack.tableSize != 222 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 222)
-	}
-
-	hpack.releaseFields()
+	readHPackAndCheck(t, hpack, b, []string{
+		":status", "307",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"location", "https://www.example.com",
+	}, []string{
+		":status", "307",
+		"location", "https://www.example.com",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"cache-control", "private",
+	}, 222)
 
 	b = []byte{
 		0x88, 0xc1, 0x61, 0x96, 0xd0, 0x7a,
@@ -334,24 +337,18 @@ func TestReadResponseWithHuffman(t *testing.T) {
 		0x4e, 0xe5, 0xb1, 0x06, 0x3d, 0x50, 0x07,
 	}
 
-	b, err = hpack.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	check(t, hpack.fields, 0, ":status", "200")
-	check(t, hpack.fields, 1, "cache-control", "private")
-	check(t, hpack.fields, 2, "date", "Mon, 21 Oct 2013 20:13:22 GMT")
-	check(t, hpack.fields, 3, "location", "https://www.example.com")
-	check(t, hpack.fields, 4, "content-encoding", "gzip")
-	check(t, hpack.fields, 5, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
-
-	check(t, hpack.dynamic, 0, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
-	check(t, hpack.dynamic, 1, "content-encoding", "gzip")
-	check(t, hpack.dynamic, 2, "date", "Mon, 21 Oct 2013 20:13:22 GMT")
-	if hpack.tableSize != 215 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 215)
-	}
+	readHPackAndCheck(t, hpack, b, []string{
+		":status", "200",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
+		"location", "https://www.example.com",
+		"content-encoding", "gzip",
+		"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+	}, []string{
+		"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+		"content-encoding", "gzip",
+		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
+	}, 215)
 
 	ReleaseHPack(hpack)
 }
@@ -365,8 +362,35 @@ func compare(b, r []byte) int {
 	return -1
 }
 
+func writeHPackAndCheck(t *testing.T, hpack *HPack, r []byte, fields, table []string, tableSize int) {
+	n := 0
+	for i := 0; i < len(fields); i += 2 {
+		hpack.Add(fields[i], fields[i+1])
+		n++
+	}
+
+	b, err := hpack.Write(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := compare(b, r); i != -1 {
+		t.Fatalf("failed in %d: %s", i, hexComparision(b[i:], r[i:]))
+	}
+
+	n = 0
+	for i := 0; i < len(table); i += 2 {
+		check(t, hpack.dynamic, n, table[i], table[i+1])
+		n++
+	}
+
+	if hpack.tableSize != tableSize {
+		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, tableSize)
+	}
+	hpack.releaseFields()
+}
+
 func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
-	result := []byte{
+	r := []byte{
 		0x48, 0x03, 0x33, 0x30, 0x32, 0x58,
 		0x07, 0x70, 0x72, 0x69, 0x76, 0x61,
 		0x74, 0x65, 0x61, 0x1d, 0x4d, 0x6f,
@@ -384,52 +408,32 @@ func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 	hpack.DisableCompression = true
 	hpack.SetMaxTableSize(256)
 
-	hpack.Add(":status", "302")
-	hpack.Add("cache-control", "private")
-	hpack.Add("date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	hpack.Add("location", "https://www.example.com")
+	writeHPackAndCheck(t, hpack, r, []string{
+		":status", "302",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"location", "https://www.example.com",
+	}, []string{
+		"location", "https://www.example.com",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"cache-control", "private",
+		":status", "302",
+	}, 222)
 
-	b, err := hpack.Write(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := compare(b, result); i != -1 {
-		t.Fatalf("failed in %d: %s", i, hexComparision(b[i:], result[i:]))
-	}
-	check(t, hpack.dynamic, 0, "location", "https://www.example.com")
-	check(t, hpack.dynamic, 1, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.dynamic, 2, "cache-control", "private")
-	check(t, hpack.dynamic, 3, ":status", "302")
-	if hpack.tableSize != 222 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 222)
-	}
+	r = []byte{0x48, 0x03, 0x33, 0x30, 0x37, 0xc1, 0xc0, 0xbf}
+	writeHPackAndCheck(t, hpack, r, []string{
+		":status", "307",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"location", "https://www.example.com",
+	}, []string{
+		":status", "307",
+		"location", "https://www.example.com",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"cache-control", "private",
+	}, 222)
 
-	hpack.releaseFields()
-
-	result = []byte{0x48, 0x03, 0x33, 0x30, 0x37, 0xc1, 0xc0, 0xbf}
-	hpack.Add(":status", "307")
-	hpack.Add("cache-control", "private")
-	hpack.Add("date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	hpack.Add("location", "https://www.example.com")
-
-	b, err = hpack.Write(b[:0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := compare(b, result); i != -1 {
-		t.Fatalf("failed in %d: %s", i, hexComparision(b[i:], result[i:]))
-	}
-	check(t, hpack.dynamic, 0, ":status", "307")
-	check(t, hpack.dynamic, 1, "location", "https://www.example.com")
-	check(t, hpack.dynamic, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.dynamic, 3, "cache-control", "private")
-	if hpack.tableSize != 222 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 222)
-	}
-
-	hpack.releaseFields()
-
-	result = []byte{
+	r = []byte{
 		0x88, 0xc1, 0x61, 0x1d, 0x4d, 0x6f,
 		0x6e, 0x2c, 0x20, 0x32, 0x31, 0x20,
 		0x4f, 0x63, 0x74, 0x20, 0x32, 0x30,
@@ -449,33 +453,24 @@ func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 		0x3d, 0x31,
 	}
 
-	hpack.Add(":status", "200")
-	hpack.Add("cache-control", "private")
-	hpack.Add("date", "Mon, 21 Oct 2013 20:13:22 GMT")
-	hpack.Add("location", "https://www.example.com")
-	hpack.Add("content-encoding", "gzip")
-	hpack.Add("set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
-
-	b, err = hpack.Write(b[:0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := compare(b, result); i != -1 {
-		t.Fatalf("failed in %d: %s", i, hexComparision(b[i:], result[i:]))
-	}
-
-	check(t, hpack.dynamic, 0, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
-	check(t, hpack.dynamic, 1, "content-encoding", "gzip")
-	check(t, hpack.dynamic, 2, "date", "Mon, 21 Oct 2013 20:13:22 GMT")
-	if hpack.tableSize != 215 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 215)
-	}
+	writeHPackAndCheck(t, hpack, r, []string{
+		":status", "200",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
+		"location", "https://www.example.com",
+		"content-encoding", "gzip",
+		"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+	}, []string{
+		"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+		"content-encoding", "gzip",
+		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
+	}, 215)
 
 	ReleaseHPack(hpack)
 }
 
 func TestWriteResponseWithHuffman(t *testing.T) { // WithHuffman
-	result := []byte{
+	r := []byte{
 		0x48, 0x82, 0x64, 0x02, 0x58, 0x85,
 		0xae, 0xc3, 0x77, 0x1a, 0x4b, 0x61,
 		0x96, 0xd0, 0x7a, 0xbe, 0x94, 0x10,
@@ -489,53 +484,32 @@ func TestWriteResponseWithHuffman(t *testing.T) { // WithHuffman
 
 	hpack := AcquireHPack()
 	hpack.SetMaxTableSize(256)
-	hpack.Add(":status", "302")
-	hpack.Add("cache-control", "private")
-	hpack.Add("date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	hpack.Add("location", "https://www.example.com")
+	writeHPackAndCheck(t, hpack, r, []string{
+		":status", "302",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"location", "https://www.example.com",
+	}, []string{
+		"location", "https://www.example.com",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"cache-control", "private",
+		":status", "302",
+	}, 222)
 
-	b, err := hpack.Write(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := compare(b, result); i != -1 {
-		t.Fatalf("failed in %d: %s", i, hexComparision(b[i:], result[i:]))
-	}
-	check(t, hpack.dynamic, 0, "location", "https://www.example.com")
-	check(t, hpack.dynamic, 1, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.dynamic, 2, "cache-control", "private")
-	check(t, hpack.dynamic, 3, ":status", "302")
-	if hpack.tableSize != 222 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 222)
-	}
+	r = []byte{0x48, 0x83, 0x64, 0x0e, 0xff, 0xc1, 0xc0, 0xbf}
+	writeHPackAndCheck(t, hpack, r, []string{
+		":status", "307",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"location", "https://www.example.com",
+	}, []string{
+		":status", "307",
+		"location", "https://www.example.com",
+		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
+		"cache-control", "private",
+	}, 222)
 
-	hpack.releaseFields()
-
-	result = []byte{0x48, 0x83, 0x64, 0x0e, 0xff, 0xc1, 0xc0, 0xbf}
-	hpack.Add(":status", "307")
-	hpack.Add("cache-control", "private")
-	hpack.Add("date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	hpack.Add("location", "https://www.example.com")
-
-	b, err = hpack.Write(b[:0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := compare(b, result); i != -1 {
-		t.Fatalf("failed in %d: %s", i, hexComparision(b[i:], result[i:]))
-	}
-
-	check(t, hpack.dynamic, 0, ":status", "307")
-	check(t, hpack.dynamic, 1, "location", "https://www.example.com")
-	check(t, hpack.dynamic, 2, "date", "Mon, 21 Oct 2013 20:13:21 GMT")
-	check(t, hpack.dynamic, 3, "cache-control", "private")
-	if hpack.tableSize != 222 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 222)
-	}
-
-	hpack.releaseFields()
-
-	result = []byte{
+	r = []byte{
 		0x88, 0xc1, 0x61, 0x96, 0xd0, 0x7a,
 		0xbe, 0x94, 0x10, 0x54, 0xd4, 0x44,
 		0xa8, 0x20, 0x05, 0x95, 0x04, 0x0b,
@@ -550,27 +524,18 @@ func TestWriteResponseWithHuffman(t *testing.T) { // WithHuffman
 		0x31, 0x60, 0x65, 0xc0, 0x03, 0xed,
 		0x4e, 0xe5, 0xb1, 0x06, 0x3d, 0x50, 0x07,
 	}
-	hpack.Add(":status", "200")
-	hpack.Add("cache-control", "private")
-	hpack.Add("date", "Mon, 21 Oct 2013 20:13:22 GMT")
-	hpack.Add("location", "https://www.example.com")
-	hpack.Add("content-encoding", "gzip")
-	hpack.Add("set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
-
-	b, err = hpack.Write(b[:0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := compare(b, result); i != -1 {
-		t.Fatalf("failed in %d: %s", i, hexComparision(b[i:], result[i:]))
-	}
-
-	check(t, hpack.dynamic, 0, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
-	check(t, hpack.dynamic, 1, "content-encoding", "gzip")
-	check(t, hpack.dynamic, 2, "date", "Mon, 21 Oct 2013 20:13:22 GMT")
-	if hpack.tableSize != 215 {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, 215)
-	}
+	writeHPackAndCheck(t, hpack, r, []string{
+		":status", "200",
+		"cache-control", "private",
+		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
+		"location", "https://www.example.com",
+		"content-encoding", "gzip",
+		"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+	}, []string{
+		"set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+		"content-encoding", "gzip",
+		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
+	}, 215)
 
 	ReleaseHPack(hpack)
 }
