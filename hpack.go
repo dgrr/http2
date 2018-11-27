@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -365,11 +366,10 @@ const (
 func (hpack *HPack) Read(b []byte) ([]byte, error) {
 	// TODO: Change Read to Write?
 	var (
-		n          uint64
-		c          byte
-		err        error
-		mustDecode bool
-		hf         *HeaderField
+		n   uint64
+		c   byte
+		err error
+		hf  *HeaderField
 	)
 	for len(b) > 0 {
 		c = b[0]
@@ -408,39 +408,30 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 				}
 			} else { // Read name literal string
 				// Huffman encoded or not
-				mustDecode = (b[0]&128 == 128)
-				b, n, err = readInt(7, b)
+				b = b[1:]
+				dst := bytePool.Get().([]byte)
+				b, dst, err = readString(dst[:0], b)
 				if err == nil {
 					hf = AcquireHeaderField()
-					if !mustDecode {
-						// TODO: Bound checking
-						hf.SetNameBytes(b[:n])
-					} else {
-						bb := bytePool.Get().([]byte)
-						bb = HuffmanDecode(bb[:0], b[:n])
-						hf.SetNameBytes(bb)
-						bytePool.Put(bb)
-					}
-					b = b[n:]
+					hf.SetNameBytes(dst)
 				}
+				bytePool.Put(dst)
 			}
 			// Reading value
 			if err == nil {
-				mustDecode = (b[0]&128 == 128)
-				b, n, err = readInt(7, b)
+				if b[0] == c {
+					b = b[1:]
+				}
+				dst := bytePool.Get().([]byte)
 				if err == nil {
-					if !mustDecode {
-						hf.SetValueBytes(b[:n])
-					} else {
-						bb := bytePool.Get().([]byte)
-						bb = HuffmanDecode(bb[:0], b[:n])
-						hf.SetValueBytes(bb)
-						bytePool.Put(bb)
+					b, dst, err = readString(dst[:0], b)
+					if err == nil {
+						hf.SetValueBytes(dst)
 					}
-					b = b[n:]
 					// add to the table as RFC specifies.
 					hpack.add(hf)
 				}
+				bytePool.Put(dst)
 			}
 
 		// Literal Header Field Never Indexed.
@@ -468,35 +459,25 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 					}
 				}
 			} else { // Reading name as string literal
-				mustDecode = (b[0]&128 == 128)
-				b, n, err = readInt(7, b)
+				b = b[1:]
+				dst := bytePool.Get().([]byte)
+				b, dst, err = readString(dst[:0], b)
 				if err == nil {
-					if !mustDecode {
-						hf.SetNameBytes(b[:n])
-					} else {
-						bb := bytePool.Get().([]byte)
-						bb = HuffmanDecode(bb[:0], b[:n])
-						hf.SetNameBytes(bb)
-						bytePool.Put(bb)
-					}
-					b = b[n:]
+					hf.SetNameBytes(dst)
 				}
+				bytePool.Put(dst)
 			}
 			// Reading value
 			if err == nil {
-				mustDecode = (b[0]&128 == 128)
-				b, n, err = readInt(7, b)
-				if err == nil {
-					if !mustDecode {
-						hf.SetValueBytes(b[:n])
-					} else {
-						bb := bytePool.Get().([]byte)
-						bb = HuffmanDecode(bb[:0], b[:n])
-						hf.SetNameBytes(bb)
-						bytePool.Put(bb)
-					}
-					b = b[n:]
+				if b[0] == c {
+					b = b[1:]
 				}
+				dst := bytePool.Get().([]byte)
+				b, dst, err = readString(dst[:0], b)
+				if err == nil {
+					hf.SetNameBytes(dst)
+				}
+				bytePool.Put(dst)
 			}
 
 		// Dynamic Table Size Update
@@ -655,26 +636,28 @@ func appendInt(dst []byte, n uint8, nn uint64) []byte {
 }
 
 // readString reads string from a header field.
+// returns the b pointing to the next address, dst and/or error
+//
+// if error is returned b won't change the pointer address
+//
 // https://tools.ietf.org/html/rfc7541#section-5.2
 func readString(dst, b []byte) ([]byte, []byte, error) {
-	if b[0] > 126 {
-		return dst, b, errors.New("error") // TODO: Define error
-	}
-
 	var n uint64
 	var err error
 	mustDecode := (b[0]&128 == 128) // huffman encoded
 	b, n, err = readInt(7, b)
-	if err != nil {
-		return dst, b, err
+	if err == nil && uint64(len(b)) < n {
+		err = fmt.Errorf("unexpected size: %d < %d", len(b), n)
 	}
-	if mustDecode {
-		dst = HuffmanDecode(dst, b[:n])
-	} else {
-		dst = append(dst, b[:n]...)
+	if err == nil {
+		if mustDecode {
+			dst = HuffmanDecode(dst, b[:n])
+		} else {
+			dst = append(dst, b[:n]...)
+		}
+		b = b[n:]
 	}
-	b = b[n:]
-	return dst, b, err
+	return b, dst, err
 }
 
 // writeString writes bytes slice to dst and returns it.
