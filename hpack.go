@@ -301,13 +301,13 @@ func (hpack *HPack) PeekFieldBytes(name []byte) (hf *HeaderField) {
 // n must be the index in the table.
 func (hpack *HPack) peek(n uint64) (hf *HeaderField) {
 	// TODO: Change peek function name
-	if n > maxIndex { // search in dynamic table
+	if n < maxIndex {
+		hf = staticTable[n-1]
+	} else { // search in dynamic table
 		nn := int(n - maxIndex)
 		if nn < len(hpack.dynamic) {
 			hf = hpack.dynamic[nn]
 		}
-	} else {
-		hf = staticTable[n-1] // must sub 1 because of indexing
 	}
 	return
 }
@@ -686,20 +686,21 @@ var errHeaderFieldNotFound = errors.New("Indexed field not found")
 
 // Write writes hpack to dst returning the result byte slice.
 func (hpack *HPack) Write(dst []byte) ([]byte, error) {
+	var c bool
+	var n uint8
+	var idx uint64
 	for _, hf := range hpack.fields {
-		idx := hpack.search(hf)
-		if hf.sensible {
-			writeNeverIndexed(dst, idx, hf)
+		n, c = 4, !hf.sensible
+		idx = hpack.search(hf)
+		if !c {
+			dst = append(dst, 16)
 		} else {
 			if idx > 0 { // name and/or value can be used as index
 				hf2 := hpack.peek(idx)
-				if bytes.Equal(hf.value, hf2.value) {
-					dst = append(dst, indexByte) // could be indexed
-					dst = appendInt(dst, 7, idx)
+				if idx > maxIndex || bytes.Equal(hf.value, hf2.value) {
+					n, dst = 7, append(dst, indexByte) // could be indexed
 				} else { // must be used as literal index
-					dst = append(dst, literalByte)
-					dst = appendInt(dst, 6, idx)
-					dst = writeString(dst, hf.value, true)
+					n, dst = 6, append(dst, literalByte)
 					// append this field to the dynamic table.
 					hpack.add(hf)
 				}
@@ -707,9 +708,20 @@ func (hpack *HPack) Write(dst []byte) ([]byte, error) {
 				dst = append(dst, 0, 0) // without indexing
 				// dst[0] &= literalByte // with indexing
 				// TODO: if indexing is used add the field to the dynamic table
-				dst = writeString(dst, hf.name, true)
-				dst = writeString(dst, hf.value, true)
 			}
+		}
+
+		// the only requirement to write the index is that the idx must be
+		// granther than zero. Any Header Field Representation can use indexes.
+		if idx > 0 {
+			dst = appendInt(dst, n, idx)
+		} else {
+			dst = writeString(dst, hf.name, c)
+		}
+		// Only writes the value if the prefix is lower than 7. So if the
+		// Header Field Representation is not indexed.
+		if n != 7 {
+			dst = writeString(dst, hf.value, c)
 		}
 	}
 	return dst, nil
