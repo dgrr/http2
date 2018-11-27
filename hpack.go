@@ -113,6 +113,9 @@ func (hf *HeaderField) IsSensible() bool {
 type HPack struct {
 	noCopy noCopy
 
+	// DisableCompression disables compression for literal header fields.
+	DisableCompression bool
+
 	// fields are the header fields
 	fields []*HeaderField
 
@@ -572,6 +575,7 @@ func readIntFrom(n int, br *bufio.Reader) (nn uint64, err error) {
 //
 // https://tools.ietf.org/html/rfc7541#section-5.1
 func writeInt(dst []byte, n uint8, nn uint64) []byte {
+	// TODO: probably this function could be deleted.
 	nu := uint64(1<<n - 1)
 	if len(dst) == 0 {
 		dst = append(dst, 0)
@@ -690,9 +694,12 @@ func (hpack *HPack) Write(dst []byte) ([]byte, error) {
 	var n uint8
 	var idx uint64
 	for _, hf := range hpack.fields {
-		n, c = 4, !hf.sensible
+		c = !hpack.DisableCompression
+		n = 4
+
 		idx = hpack.search(hf)
-		if !c {
+		if hf.sensible {
+			c = false
 			dst = append(dst, 16)
 		} else {
 			if idx > 0 { // name and/or value can be used as index
@@ -725,18 +732,6 @@ func (hpack *HPack) Write(dst []byte) ([]byte, error) {
 		}
 	}
 	return dst, nil
-}
-
-// Never indexed fields must not be encoded.
-func writeNeverIndexed(dst []byte, idx uint64, hf *HeaderField) []byte {
-	dst = append(dst, 16) // setting 0001 bits
-	if idx != 0 {
-		dst = appendInt(dst, 4, idx)
-	} else {
-		// TODO: name could be compressed?
-		dst = writeString(dst, hf.name, false)
-	}
-	return writeString(dst, hf.value, false)
 }
 
 // TODO: Change to non-pointer?
