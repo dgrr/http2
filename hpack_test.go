@@ -449,17 +449,20 @@ func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 		0x3d, 0x31,
 	}
 
-	b, err = hpack.Write(b[:0])
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	hpack.Add(":status", "200")
 	hpack.Add("cache-control", "private")
 	hpack.Add("date", "Mon, 21 Oct 2013 20:13:22 GMT")
 	hpack.Add("location", "https://www.example.com")
 	hpack.Add("content-encoding", "gzip")
 	hpack.Add("set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
+
+	b, err = hpack.Write(b[:0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := compare(b, result); i != -1 {
+		t.Fatalf("failed in %d: %s", i, hexComparision(b[i:], result[i:]))
+	}
 
 	check(t, hpack.dynamic, 0, "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1")
 	check(t, hpack.dynamic, 1, "content-encoding", "gzip")
