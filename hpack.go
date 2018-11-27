@@ -128,7 +128,9 @@ type HPack struct {
 
 var hpackPool = sync.Pool{
 	New: func() interface{} {
-		return &HPack{}
+		return &HPack{
+			maxTableSize: int(defaultHeaderTableSize),
+		}
 	},
 }
 
@@ -162,9 +164,11 @@ func (hpack *HPack) Reset() {
 	hpack.releaseTable()
 	hpack.releaseFields()
 	hpack.tableSize = 0
-	hpack.maxTableSize = 0
+	hpack.maxTableSize = int(defaultHeaderTableSize)
+	hpack.DisableCompression = false
 }
 
+// Add adds the name and the value to the Header.
 func (hpack *HPack) Add(name, value string) {
 	hf := AcquireHeaderField()
 	hf.SetName(name)
@@ -189,23 +193,28 @@ func (hpack *HPack) SetMaxTableSize(size int) {
 	hpack.maxTableSize = size
 }
 
-func (hpack *HPack) calcSize() {
-	hpack.tableSize = 0
+// Dynamic size returns the size of the dynamic table.
+// https://tools.ietf.org/html/rfc7541#section-4.1
+func (hpack *HPack) DynamicSize() (n int) {
 	for _, hf := range hpack.dynamic {
-		hpack.tableSize += hf.Size()
+		n += hf.Size()
 	}
+	return
 }
 
 // add adds header field to the dynamic table.
 func (hpack *HPack) add(hf *HeaderField) {
 	// TODO: https://tools.ietf.org/html/rfc7541#section-2.3.2
 	// apply duplicate entries
+	// TODO: Optimize using reverse indexes.
 	mustAdd := true
 
 	i := 0
 	for i = range hpack.dynamic {
+		// searching if the HeaderField already exist.
 		hf2 := hpack.dynamic[i]
 		if bytes.Equal(hf.name, hf2.name) {
+			// if exist update the value.
 			mustAdd = false
 			hf2.SetValueBytes(hf.value)
 			break
@@ -214,25 +223,16 @@ func (hpack *HPack) add(hf *HeaderField) {
 
 	if !mustAdd {
 		hf = hpack.dynamic[i]
+		// moving the HeaderField to the first element.
 		for i > 0 {
 			hpack.dynamic[i] = hpack.dynamic[i-1]
 			i--
 		}
 		hpack.dynamic[0] = hf
-		hpack.calcSize()
+		hpack.shrink(0)
 	} else {
 		// checking table size
-		for {
-			n := hpack.tableSize + hf.Size()
-			if hpack.maxTableSize == 0 || n <= hpack.maxTableSize {
-				hpack.tableSize = n
-				break
-			}
-			n = len(hpack.dynamic) - 1
-			ReleaseHeaderField(hpack.dynamic[n])
-			hpack.dynamic = hpack.dynamic[:n]
-			hpack.calcSize()
-		}
+		hpack.shrink(hf.Size())
 
 		hf2 := AcquireHeaderField()
 		hf.CopyTo(hf2)
@@ -242,6 +242,24 @@ func (hpack *HPack) add(hf *HeaderField) {
 			hpack.dynamic = append(hpack.dynamic[:1], hpack.dynamic...)
 			hpack.dynamic[0] = hf2
 		}
+	}
+}
+
+// shrink shrinks the dynamic table if needed.
+func (hpack *HPack) shrink(add int) {
+	for {
+		hpack.tableSize = hpack.DynamicSize() + add
+		if hpack.tableSize <= hpack.maxTableSize {
+			break
+		}
+		n := len(hpack.dynamic) - 1
+		if n == -1 {
+			break // TODO: panic()?
+		}
+		// release the header field
+		ReleaseHeaderField(hpack.dynamic[n])
+		// shrinking slice
+		hpack.dynamic = hpack.dynamic[:n]
 	}
 }
 
