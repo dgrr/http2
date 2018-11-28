@@ -177,14 +177,17 @@ func (hpack *HPack) Add(name, value string) {
 	hpack.fields = append(hpack.fields, hf)
 }
 
+// ....
 func (hpack *HPack) AddBytes(name, value []byte) {
 	hpack.Add(b2s(name), b2s(value))
 }
 
+// ...
 func (hpack *HPack) AddBytesK(name []byte, value string) {
 	hpack.Add(b2s(name), value)
 }
 
+// ...
 func (hpack *HPack) AddBytesV(name string, value []byte) {
 	hpack.Add(name, b2s(value))
 }
@@ -346,8 +349,15 @@ func (hpack *HPack) search(hf *HeaderField) (n uint64) {
 	if n == 0 {
 		for i, hf2 := range staticTable {
 			if bytes.Equal(hf.name, hf2.name) {
-				n = uint64(i + 1) // must add 1 because of indexing
-				break
+				if n != 0 {
+					if bytes.Equal(hf.value, hf2.value) {
+						// must add 1 because of indexing
+						n = uint64(i + 1)
+						break
+					}
+				} else {
+					n = uint64(i + 1)
+				}
 			}
 		}
 	}
@@ -713,9 +723,12 @@ func (hpack *HPack) Write(dst []byte) ([]byte, error) {
 					hpack.add(hf)
 				}
 			} else { // with or without indexing
-				dst = append(dst, 0, 0) // without indexing
-				// dst[0] &= literalByte // with indexing
-				// TODO: if indexing is used add the field to the dynamic table
+				// if is client run this code
+				n, dst = 6, append(dst, literalByte)
+				hpack.add(hf)
+				// if not run this
+				//dst = append(dst, 0, 0) // without indexing
+				// TODO: use the dynamic table only in the client part.
 			}
 		}
 
