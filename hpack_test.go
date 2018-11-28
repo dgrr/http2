@@ -1,37 +1,10 @@
 package http2
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"testing"
 )
-
-func TestWriteInt(t *testing.T) {
-	n := uint64(15)
-	nn := uint64(1337)
-	nnn := uint64(122)
-	b15 := []byte{15}
-	b1337 := []byte{31, 154, 10}
-	b122 := []byte{122}
-	dst := make([]byte, 3)
-
-	dst = writeInt(dst, 5, n)
-	if !bytes.Equal(dst[:1], b15) {
-		t.Fatalf("got %v. Expects %v", dst[:1], b15)
-	}
-
-	dst = writeInt(dst, 5, nn)
-	if !bytes.Equal(dst, b1337) {
-		t.Fatalf("got %v. Expects %v", dst, b1337)
-	}
-
-	dst[0] = 0
-	dst = writeInt(dst, 7, nnn)
-	if !bytes.Equal(dst[:1], b122) {
-		t.Fatalf("got %v. Expects %v", dst[:1], b122)
-	}
-}
 
 func TestAppendInt(t *testing.T) {
 	n := uint64(15)
@@ -86,23 +59,6 @@ func TestReadInt(t *testing.T) {
 	checkInt(t, err, n, 122, 0, b)
 }
 
-func TestReadIntFrom(t *testing.T) {
-	var n uint64
-	var err error
-	br := bufio.NewReader(
-		bytes.NewBuffer([]byte{15, 31, 154, 10, 122}),
-	)
-
-	n, err = readIntFrom(7, br)
-	checkInt(t, err, n, 15, 0, nil)
-
-	n, err = readIntFrom(5, br)
-	checkInt(t, err, n, 1337, 0, nil)
-
-	n, err = readIntFrom(7, br)
-	checkInt(t, err, n, 122, 0, nil)
-}
-
 func TestWriteTwoStrings(t *testing.T) {
 	var dstA []byte
 	var dstB []byte
@@ -110,8 +66,8 @@ func TestWriteTwoStrings(t *testing.T) {
 	strA := []byte(":status")
 	strB := []byte("200")
 
-	dst := writeString(nil, strA, false)
-	dst = writeString(dst, strB, false)
+	dst := appendString(nil, strA, false)
+	dst = appendString(dst, strB, false)
 
 	dst, dstA, err = readString(nil, dst)
 	if err != nil {

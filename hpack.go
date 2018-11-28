@@ -1,7 +1,6 @@
 package http2
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -370,7 +369,9 @@ const (
 	noIndexByte = 240 // 11110000
 )
 
-// Read reads header fields from br and stores in hpack.
+// Read reads header fields from b and stores in hpack.
+//
+// The returned values are the new b pointing to the next data to be read and/or error.
 //
 // This function must receive the payload of Header frame.
 func (hpack *HPack) Read(b []byte) ([]byte, error) {
@@ -544,74 +545,6 @@ func readInt(n int, b []byte) ([]byte, uint64, error) {
 	return b[i:], nn + nu, nil
 }
 
-// TODO: Probably this function could be deleted.
-func readIntFrom(n int, br *bufio.Reader) (nn uint64, err error) {
-	var b byte
-	b, err = br.ReadByte()
-	if err == nil {
-		nu := uint64(1<<uint64(n) - 1)
-		nn = uint64(b)
-		nn &= nu
-		if nn < nu {
-			return
-		}
-		nn = 0
-		i := 1
-		m := uint64(0)
-		for {
-			b, err = br.ReadByte()
-			if err != nil {
-				break
-			}
-			nn |= (uint64(b&127) << m)
-			m += 7
-			if m > 63 {
-				err = ErrBitOverflow
-				break
-			}
-			i++
-			if b&128 != 128 {
-				break
-			}
-		}
-		nn += nu
-	}
-	return
-}
-
-// writeInt writes int type to header field.
-// This functions appends if needed.
-//
-// https://tools.ietf.org/html/rfc7541#section-5.1
-func writeInt(dst []byte, n uint8, nn uint64) []byte {
-	// TODO: probably this function could be deleted.
-	nu := uint64(1<<n - 1)
-	if len(dst) == 0 {
-		dst = append(dst, 0)
-	}
-
-	if nn < nu {
-		dst[0] |= byte(nn)
-	} else {
-		nn -= nu
-		dst[0] |= byte(nu)
-		m := len(dst)
-		nu = 1 << (n + 1)
-		i := 0
-		for nn > 0 {
-			i++
-			if i == m {
-				dst = append(dst, 0)
-				m++
-			}
-			dst[i] = byte(nn | 128)
-			nn >>= 7
-		}
-		dst[i] &= 127
-	}
-	return dst
-}
-
 // appendInt appends int type to header field excluding the last byte
 // which will be OR'ed.
 // https://tools.ietf.org/html/rfc7541#section-5.1
@@ -670,9 +603,9 @@ func readString(dst, b []byte) ([]byte, []byte, error) {
 	return b, dst, err
 }
 
-// writeString writes bytes slice to dst and returns it.
+// appendString writes bytes slice to dst and returns it.
 // https://tools.ietf.org/html/rfc7541#section-5.2
-func writeString(dst, src []byte, encode bool) []byte {
+func appendString(dst, src []byte, encode bool) []byte {
 	var b []byte
 	if !encode {
 		b = src
@@ -728,7 +661,7 @@ func (hpack *HPack) Write(dst []byte) ([]byte, error) {
 				hpack.add(hf)
 				// if not run this
 				//dst = append(dst, 0, 0) // without indexing
-				// TODO: use the dynamic table only in the client part.
+				// TODO: use the dynamic table only in the client side.
 			}
 		}
 
@@ -737,12 +670,12 @@ func (hpack *HPack) Write(dst []byte) ([]byte, error) {
 		if idx > 0 {
 			dst = appendInt(dst, n, idx)
 		} else {
-			dst = writeString(dst, hf.name, c)
+			dst = appendString(dst, hf.name, c)
 		}
 		// Only writes the value if the prefix is lower than 7. So if the
 		// Header Field Representation is not indexed.
 		if n != 7 {
-			dst = writeString(dst, hf.value, c)
+			dst = appendString(dst, hf.value, c)
 		}
 	}
 	return dst, nil
