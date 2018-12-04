@@ -13,7 +13,7 @@ const (
 	defaultMaxLen = 1 << 14
 	maxPayloadLen = 1<<24 - 1 // this value cannot be exceeded because of the length frame field.
 
-	// FrameType (http://httpwg.org/specs/rfc7540.html#FrameTypes)
+	// FrameType (http://httpwg.org/specs/rfc7540.html#Frame_types)
 	// TODO: Define new type? type Frame uint8. There are any disadvantage?
 	FrameData         uint8 = 0x0
 	FrameHeader       uint8 = 0x1
@@ -60,17 +60,16 @@ type Frame struct {
 	// readed unless settings specify it
 
 	// Len is the payload length
-	Len    uint32 // 24 bits
+	length uint32 // 24 bits
 	maxLen uint32
 
-	// Type is the frame type (https://httpwg.org/specs/rfc7540.html#FrameTypes)
-	Type uint8 // 8 bits
+	_type uint8 // 8 bits
 
-	// Flags is the flags the frame contains
-	Flags uint8 // 8 bits
+	// flags is the flags the frame contains
+	flags uint8 // 8 bits
 
 	// Stream is the id of the stream
-	Stream uint32 // 31 bits
+	stream uint32 // 31 bits
 
 	rawHeader [defaultFrameSize]byte
 	payload   []byte
@@ -89,10 +88,10 @@ func ReleaseFrame(fr *Frame) {
 
 // Reset resets header values.
 func (fr *Frame) Reset() {
-	fr.Type = 0
-	fr.Flags = 0
-	fr.Stream = 0
-	fr.Len = 0
+	fr._type = 0
+	fr.flags = 0
+	fr.stream = 0
+	fr.length = 0
 	fr.maxLen = defaultMaxLen
 	resetBytes(fr.rawHeader[:])
 	fr.payload = fr.payload[:0]
@@ -105,7 +104,34 @@ func resetBytes(b []byte) { // TODO: to asm using SSE if possible (github.com/tm
 	}
 }
 
-// MaxLen returns maximum negotiated payload length.
+// Type returns the frame type (https://httpwg.org/specs/rfc7540.html#Frame_types)
+func (fr *Frame) Type() uint8 {
+	return fr._type
+}
+
+// Set_type sets the frame type for the current frame.
+func (fr *Frame) SetType(_type uint8) {
+	fr._type = _type
+}
+
+// Stream returns the stream id of the current frame.
+func (fr *Frame) Stream() uint32 {
+	return fr.stream
+}
+
+// SetStreams sets the stream id on the current frame.
+//
+// This function deletes the reserved bit (first bit).
+func (fr *Frame) SetStream(stream uint32) {
+	fr.stream = stream & (1<<31 - 1) // TODO: Delete the first bit?
+}
+
+// Len returns the payload length
+func (fr *Frame) Len() uint32 {
+	return fr.length
+}
+
+// MaxLen returns max negotiated payload length.
 func (fr *Frame) MaxLen() uint32 {
 	return fr.maxLen
 }
@@ -115,17 +141,37 @@ func (fr *Frame) SetMaxLen(maxLen uint32) {
 	fr.maxLen = maxLen
 }
 
+// Has returns boolean value indicating if frame flags has f
+func (fr *Frame) Has(f uint8) bool {
+	return (fr.flags & f) == f
+}
+
+// Add adds a flag to frame flags.
+func (fr *Frame) Add(f uint8) {
+	fr.flags |= f
+}
+
+// Delete deletes f from frame flags
+func (fr *Frame) Delete(f uint8) {
+	fr.flags ^= f
+}
+
+// Header returns frame header bytes.
+func (fr *Frame) Header() []byte {
+	return fr.rawHeader[:]
+}
+
 func (fr *Frame) parseValues() {
 	fr.rawToLen()                     // 3
-	fr.Type = uint8(fr.rawHeader[3])  // 1
-	fr.Flags = uint8(fr.rawHeader[4]) // 1
+	fr._type = uint8(fr.rawHeader[3]) // 1
+	fr.flags = uint8(fr.rawHeader[4]) // 1
 	fr.rawToStream()                  // 4
 }
 
 func (fr *Frame) parseHeader() {
 	fr.lenToRaw()                    // 2
-	fr.rawHeader[3] = byte(fr.Type)  // 1
-	fr.rawHeader[4] = byte(fr.Flags) // 1
+	fr.rawHeader[3] = byte(fr._type) // 1
+	fr.rawHeader[4] = byte(fr.flags) // 1
 	fr.streamToRaw()                 // 4
 }
 
@@ -144,17 +190,17 @@ func (fr *Frame) ReadFrom(br io.Reader) (rdb int64, err error) {
 			rdb += int64(n)
 			// parsing length and other fields.
 			fr.parseValues()
-			if fr.Len > fr.maxLen {
+			if fr.length > fr.maxLen {
 				// TODO: error oversize
-			} else if fr.Len > 0 {
+			} else if fr.length > 0 {
 				// uint32 must be extended to int64.
 				fr.payload = fr.payload[:cap(fr.payload)]
-				nn := int64(fr.Len) - int64(cap(fr.payload))
+				nn := int64(fr.length) - int64(cap(fr.payload))
 				if nn > 0 {
 					// TODO: ...
 					fr.payload = append(fr.payload, make([]byte, nn)...)
 				}
-				nn = int64(fr.Len) // TODO: Change nn by fr.Len?
+				nn = int64(fr.length) // TODO: Change nn by fr.Len?
 				n, err = br.Read(fr.payload[:nn])
 				if err == nil {
 					rdb += int64(n)
@@ -176,32 +222,12 @@ func (fr *Frame) WriteTo(bw io.Writer) (wrb int64, err error) {
 	n, err = bw.Write(fr.rawHeader[:])
 	if err == nil {
 		wrb += int64(n)
-		n, err = bw.Write(fr.payload[:fr.Len]) // TODO: Must payload be limited here?
+		n, err = bw.Write(fr.payload[:fr.length]) // TODO: Must payload be limited here?
 		if err == nil {
 			wrb += int64(n)
 		}
 	}
 	return
-}
-
-// Has returns boolean value indicating if frame Flags has f
-func (fr *Frame) Has(f uint8) bool {
-	return (fr.Flags & f) == f
-}
-
-// Add adds a flag to frame flags.
-func (fr *Frame) Add(f uint8) {
-	fr.Flags |= f
-}
-
-// Delete deletes f from frame flags
-func (fr *Frame) Delete(f uint8) {
-	fr.Flags ^= f
-}
-
-// Header returns frame header bytes.
-func (fr *Frame) Header() []byte {
-	return fr.rawHeader[:]
 }
 
 func uint24ToBytes(b []byte, n uint32) {
@@ -232,23 +258,23 @@ func bytesToUint32(b []byte) uint32 {
 		uint32(b[1])<<16 |
 		uint32(b[2])<<8 |
 		uint32(b[3])
-	return n & (1<<31 - 1)
+	return n
 }
 
 func (fr *Frame) rawToStream() {
-	fr.Stream = bytesToUint32(fr.rawHeader[5:])
+	fr.stream = bytesToUint32(fr.rawHeader[5:]) & (1<<31 - 1)
 }
 
 func (fr *Frame) streamToRaw() {
-	uint32ToBytes(fr.rawHeader[5:], fr.Stream)
+	uint32ToBytes(fr.rawHeader[5:], fr.stream)
 }
 
 func (fr *Frame) rawToLen() {
-	fr.Len = bytesToUint24(fr.rawHeader[:3])
+	fr.length = bytesToUint24(fr.rawHeader[:3]) // & (1<<24 - 1)
 }
 
 func (fr *Frame) lenToRaw() {
-	uint24ToBytes(fr.rawHeader[:3], fr.Len)
+	uint24ToBytes(fr.rawHeader[:3], fr.length)
 }
 
 // Payload returns processed payload deleting padding and additional headers.
@@ -287,7 +313,7 @@ func (fr *Frame) appendCheckingLen(b, bb []byte) (n int, err error) {
 		err = ErrPayloadExceeds
 	} else {
 		fr.payload = append(b, bb...)
-		fr.Len = uint32(len(fr.payload))
+		fr.length = uint32(len(fr.payload))
 	}
 	return
 }
