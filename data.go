@@ -9,6 +9,7 @@ import (
 type Data struct {
 	noCopy noCopy
 	ended  bool
+	pad    bool
 	b      []byte // data bytes
 }
 
@@ -38,7 +39,9 @@ func (data *Data) Reset() {
 
 // CopyTo copies data to d.
 func (data *Data) CopyTo(d *Data) {
-
+	d.pad = data.pad
+	d.ended = data.ended
+	d.b = append(d.b[:0], data.b...)
 }
 
 // SetEndStream ...
@@ -54,6 +57,16 @@ func (data *Data) Data() []byte {
 // SetData resets data byte slice and sets b.
 func (data *Data) SetData(b []byte) {
 	data.b = append(data.b[:0], b...)
+}
+
+// Padding returns true if the data will be/was padded.
+func (data *Data) Padding() bool {
+	return data.pad
+}
+
+// SetPadding sets padding to the data if true. In false the data won't be padded.
+func (data *Data) SetPadding(value bool) {
+	data.pad = value
 }
 
 // Append appends b to data
@@ -86,10 +99,19 @@ func (data *Data) ReadFrame(fr *Frame) error {
 // WriteTo writes data to the wr.
 //
 // wr can be Frame. Cause frame is compatible with io.Writer.
+//
+// This function does not set the FlagPadded in case wr is Frame.
 func (data *Data) WriteTo(wr io.Writer) (nn int64, err error) {
 	var n int
 	// TODO: Generate padding ...
 	n, err = wr.Write(data.b)
 	nn += int64(n)
 	return
+}
+
+// WriteToFrame writes the data to the frame payload setting FlagPadded.
+func (data *Data) WriteToFrame(fr *Frame) {
+	// TODO: generate padding and set to the frame payload
+	// fr.SetPayload(padding)
+	fr.Write(data.b)
 }
