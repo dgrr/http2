@@ -39,8 +39,8 @@ type connTLSer interface {
 	ConnectionState() tls.ConnectionState
 }
 
-func readPreface(br io.Reader) bool {
-	// TODO: make a preface pool?
+// ReadPreface reads the connection initialisation preface.
+func ReadPreface(br io.Reader) bool {
 	b := make([]byte, prefaceLen)
 	n, err := br.Read(b[:prefaceLen])
 	if err == nil && n == prefaceLen {
@@ -53,8 +53,8 @@ func readPreface(br io.Reader) bool {
 	return false
 }
 
-// writePreface writes HTTP/2 preface to the writer
-func writePreface(wr io.Writer) error {
+// WritePreface writes HTTP/2 preface to the wr.
+func WritePreface(wr io.Writer) error {
 	_, err := wr.Write(http2Preface)
 	return err
 }
@@ -73,7 +73,6 @@ func Upgrade(c net.Conn) (ok bool) {
 }
 
 // upgradeTLS returns true if TLS upgrading have been successful
-// TODO: Public?
 func upgradeTLS(c connTLSer) (ok bool) {
 	// TODO: return error or false
 	if err := c.Handshake(); err == nil {
@@ -88,7 +87,6 @@ func upgradeTLS(c connTLSer) (ok bool) {
 	return
 }
 
-// TODO: public?
 func upgradeHTTP(c net.Conn) bool {
 	// TODO:
 	return false
