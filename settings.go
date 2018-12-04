@@ -8,10 +8,10 @@ import (
 var settingsPool = sync.Pool{
 	New: func() interface{} {
 		return &Settings{
-			HeaderTableSize:      defaultHeaderTableSize,
-			MaxConcurrentStreams: defaultConcurrentStreams,
-			InitialWindowSize:    defaultWindowSize,
-			MaxFrameSize:         defaultMaxFrameSize,
+			tableSize:  defaultHeaderTableSize,
+			maxStreams: defaultConcurrentStreams,
+			windowSize: defaultWindowSize,
+			frameSize:  defaultframeSize,
 		}
 	},
 }
@@ -21,16 +21,16 @@ const (
 	defaultHeaderTableSize   uint32 = 4096
 	defaultConcurrentStreams uint32 = 100
 	defaultWindowSize        uint32 = 1<<15 - 1
-	defaultMaxFrameSize      uint32 = 1 << 14
+	defaultframeSize         uint32 = 1 << 14
 
-	maxWindowSize = 1<<31 - 1
-	maxFrameSize  = 1<<24 - 1
+	windowSizeSize = 1<<31 - 1
+	maxFrameSize   = 1<<24 - 1
 
 	// FrameSettings string values (https://httpwg.org/specs/rfc7540.html#SettingValues)
 	HeaderTableSize      uint16 = 0x1
 	EnablePush           uint16 = 0x2
 	MaxConcurrentStreams uint16 = 0x3
-	InitialWindowSize    uint16 = 0x4
+	MaxWindowSize        uint16 = 0x4
 	MaxFrameSize         uint16 = 0x5
 	MaxHeaderListSize    uint16 = 0x6
 )
@@ -40,50 +40,15 @@ const (
 //
 // This options have been humanize.
 type Settings struct {
-	noCopy noCopy
-
+	noCopy      noCopy
 	ack         bool
 	rawSettings []byte
-
-	// Allows the sender to inform the remote endpoint
-	// of the maximum size of the header compression table
-	// used to decode header blocks.
-	//
-	// Default value is 4096
-	HeaderTableSize uint32
-
-	// DisablePush allows client to not send push request.
-	//
-	// (http://httpwg.org/specs/rfc7540.html#PushResources)
-	//
-	// Default value is false
-	DisablePush bool
-
-	// MaxConcurrentStreams indicates the maximum number of
-	// concurrent Streams that the sender will allow.
-	//
-	// Default value is 100. This value does not have max limit.
-	MaxConcurrentStreams uint32
-
-	// InitialWindowSize indicates the sender's initial window size
-	// for Stream-level flow control.
-	//
-	// Default value is 1 << 16 - 1
-	// Maximum value is 1 << 31 - 1
-	InitialWindowSize uint32
-
-	// MaxFrameSize indicates the size of the largest frame
-	// Payload that the sender is willing to receive.
-	//
-	// Default value is 1 << 14
-	// Maximum value is 1 << 24 - 1
-	MaxFrameSize uint32
-
-	// This advisory setting informs a peer of the maximum size of
-	// header list that the sender is prepared to accept.
-	//
-	// If this value is 0 indicates that there are no limit.
-	MaxHeaderListSize uint32
+	tableSize   uint32
+	enablePush  bool
+	maxStreams  uint32
+	windowSize  uint32
+	frameSize   uint32
+	headerSize  uint32
 }
 
 // AcquireSettings gets a Settings object from the pool with default values.
@@ -100,18 +65,108 @@ func ReleaseSettings(st *Settings) {
 // Reset resets settings to default values
 func (st *Settings) Reset() {
 	// default settings
-	st.HeaderTableSize = defaultHeaderTableSize
-	st.MaxConcurrentStreams = defaultConcurrentStreams
-	st.InitialWindowSize = defaultWindowSize
-	st.MaxFrameSize = defaultMaxFrameSize
-	st.DisablePush = false
-	st.MaxHeaderListSize = 0
+	st.tableSize = defaultHeaderTableSize
+	st.maxStreams = defaultConcurrentStreams
+	st.windowSize = defaultWindowSize
+	st.frameSize = defaultframeSize
+	st.enablePush = false
+	st.headerSize = 0
 	st.rawSettings = st.rawSettings[:0]
 	st.ack = false
 }
 
-// Decode decodes frame payload into st
-func (st *Settings) Decode(d []byte) {
+// SetHeaderTableSize sets the maximum size of the header
+// compression table used to decode header blocks.
+//
+// Default value is 4096
+func (st *Settings) SetHeaderTableSize(size uint32) {
+	st.tableSize = size
+}
+
+// HeaderTableSize returns the maximum size of the header
+// compression table used to decode header blocks.
+//
+// Default value is 4096
+func (st *Settings) HeaderTableSize() uint32 {
+	return st.tableSize
+}
+
+// Push allows to set the PushPromise settings.
+//
+// If value is true the Push Promise will be enable.
+// if not the Push Promise will be disabled.
+func (st *Settings) Push(value bool) {
+	st.enablePush = value
+}
+
+// SetMaxConcurrentStreams sets the maximum number of
+// concurrent Streams that the sender will allow.
+//
+// Default value is 100. This value does not have max limit.
+func (st *Settings) SetMaxConcurrentStreams(streams uint32) {
+	st.maxStreams = streams
+}
+
+// MaxConcurrentStreams returns the maximum number of
+// concurrent Streams that the sender will allow.
+//
+// Default value is 100. This value does not have max limit.
+func (st *Settings) MaxConcurrentStreams() uint32 {
+	return st.maxStreams
+}
+
+// SetMaxWindowSize sets the sender's initial window size
+// for Stream-level flow control.
+//
+// Default value is 1 << 16 - 1
+// Maximum value is 1 << 31 - 1
+func (st *Settings) SetMaxWindowSize(size uint32) {
+	st.windowSize = size
+}
+
+// MaxWindowSize returns the sender's initial window size
+// for Stream-level flow control.
+//
+// Default value is 1 << 16 - 1
+// Maximum value is 1 << 31 - 1
+func (st *Settings) MaxWindowSize() uint32 {
+	return st.windowSize
+}
+
+// SetMaxFrameSize sets the size of the largest frame
+// Payload that the sender is willing to receive.
+//
+// Default value is 1 << 14
+// Maximum value is 1 << 24 - 1
+func (st *Settings) SetMaxFrameSize(size uint32) {
+	st.frameSize = size
+}
+
+// MaxFrameSize returns the size of the largest frame
+// Payload that the sender is willing to receive.
+//
+// Default value is 1 << 14
+// Maximum value is 1 << 24 - 1
+func (st *Settings) MaxFrameSize() uint32 {
+	return st.frameSize
+}
+
+// SetMaxFrameSize sets maximum size of header list.
+//
+// If this value is 0 indicates that there are no limit.
+func (st *Settings) SetMaxHeaderListSize(size uint32) {
+	st.headerSize = size
+}
+
+// MaxFrameSize returns maximum size of header list.
+//
+// If this value is 0 indicates that there are no limit.
+func (st *Settings) MaxHeaderListSize() uint32 {
+	return st.headerSize
+}
+
+// Read reads from d and decodes the readed values into st.
+func (st *Settings) Read(d []byte) { // TODO: return error?
 	var b []byte
 	var key uint16
 	var value uint32
@@ -123,17 +178,17 @@ func (st *Settings) Decode(d []byte) {
 
 		switch key {
 		case HeaderTableSize:
-			st.HeaderTableSize = value
+			st.tableSize = value
 		case EnablePush:
-			st.DisablePush = (value == 0)
+			st.enablePush = (value != 0)
 		case MaxConcurrentStreams:
-			st.MaxConcurrentStreams = value
-		case InitialWindowSize:
-			st.InitialWindowSize = value
+			st.maxStreams = value
+		case MaxWindowSize:
+			st.windowSize = value
 		case MaxFrameSize:
-			st.MaxFrameSize = value
+			st.frameSize = value
 		case MaxHeaderListSize:
-			st.MaxHeaderListSize = value
+			st.headerSize = value
 		}
 		last = i
 		i += 6
@@ -143,60 +198,60 @@ func (st *Settings) Decode(d []byte) {
 // Encode encodes settings to be sended through the wire
 func (st *Settings) Encode() {
 	st.rawSettings = st.rawSettings[:0]
-	if st.HeaderTableSize != 0 {
+	if st.tableSize != 0 {
 		st.rawSettings = append(st.rawSettings,
 			byte(HeaderTableSize>>8), byte(HeaderTableSize),
-			byte(st.HeaderTableSize>>24), byte(st.HeaderTableSize>>16),
-			byte(st.HeaderTableSize>>8), byte(st.HeaderTableSize),
+			byte(st.tableSize>>24), byte(st.tableSize>>16),
+			byte(st.tableSize>>8), byte(st.tableSize),
 		)
 	}
-	if !st.DisablePush {
+	if st.enablePush {
 		st.rawSettings = append(st.rawSettings,
 			byte(EnablePush>>8), byte(EnablePush),
 			0, 0, 0, 1,
 		)
 	}
-	if st.MaxConcurrentStreams != 0 {
+	if st.maxStreams != 0 {
 		st.rawSettings = append(st.rawSettings,
 			byte(MaxConcurrentStreams>>8), byte(MaxConcurrentStreams),
-			byte(st.MaxConcurrentStreams>>24), byte(st.MaxConcurrentStreams>>16),
-			byte(st.MaxConcurrentStreams>>8), byte(st.MaxConcurrentStreams),
+			byte(st.maxStreams>>24), byte(st.maxStreams>>16),
+			byte(st.maxStreams>>8), byte(st.maxStreams),
 		)
 	}
-	if st.InitialWindowSize != 0 {
+	if st.windowSize != 0 {
 		st.rawSettings = append(st.rawSettings,
-			byte(InitialWindowSize>>8), byte(InitialWindowSize),
-			byte(st.InitialWindowSize>>24), byte(st.InitialWindowSize>>16),
-			byte(st.InitialWindowSize>>8), byte(st.InitialWindowSize),
+			byte(MaxWindowSize>>8), byte(MaxWindowSize),
+			byte(st.windowSize>>24), byte(st.windowSize>>16),
+			byte(st.windowSize>>8), byte(st.windowSize),
 		)
 	}
-	if st.MaxFrameSize != 0 {
+	if st.frameSize != 0 {
 		st.rawSettings = append(st.rawSettings,
 			byte(MaxFrameSize>>8), byte(MaxFrameSize),
-			byte(st.MaxFrameSize>>24), byte(st.MaxFrameSize>>16),
-			byte(st.MaxFrameSize>>8), byte(st.MaxFrameSize),
+			byte(st.frameSize>>24), byte(st.frameSize>>16),
+			byte(st.frameSize>>8), byte(st.frameSize),
 		)
 	}
-	if st.MaxHeaderListSize != 0 {
+	if st.headerSize != 0 {
 		st.rawSettings = append(st.rawSettings,
 			byte(MaxHeaderListSize>>8), byte(MaxHeaderListSize),
-			byte(st.MaxHeaderListSize>>24), byte(st.MaxHeaderListSize>>16),
-			byte(st.MaxHeaderListSize>>8), byte(st.MaxHeaderListSize),
+			byte(st.headerSize>>24), byte(st.headerSize>>16),
+			byte(st.headerSize>>8), byte(st.headerSize),
 		)
 	}
 }
 
-// DecodeFrame decodes frame payload into st
-func (st *Settings) DecodeFrame(fr *Frame) error {
+// ReadFrame reads and decodes frame payload into st values
+func (st *Settings) ReadFrame(fr *Frame) error {
 	if fr._type != FrameSettings { // TODO: Probably repeated checking
 		return ErrFrameMismatch
 	}
 	st.ack = fr.Has(FlagAck)
-	st.Decode(fr.Payload())
+	st.Read(fr.Payload())
 	return nil
 }
 
-// IsAck returns true if settings has been set FlagAck.
+// IsAck returns true if settings has FlagAck set.
 func (st *Settings) IsAck() bool {
 	return st.ack
 }
@@ -207,9 +262,6 @@ func (st *Settings) SetAck(ack bool) {
 }
 
 // WriteTo writes settings frame to bw
-//
-// If this function is called as response of Settings Frame
-// SetAck(true) must be called.
 func (st *Settings) WriteTo(bw io.Writer) (int64, error) {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
