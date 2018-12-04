@@ -75,6 +75,18 @@ func (st *Settings) Reset() {
 	st.ack = false
 }
 
+// CopyTo copies st fields to st2
+func (st *Settings) CopyTo(st2 *Settings) {
+	st2.ack = st.ack
+	st2.rawSettings = append(st2.rawSettings[:0], st.rawSettings...)
+	st2.tableSize = st.tableSize
+	st2.enablePush = st.enablePush
+	st2.maxStreams = st.maxStreams
+	st2.windowSize = st.windowSize
+	st2.frameSize = st.frameSize
+	st2.headerSize = st.headerSize
+}
+
 // SetHeaderTableSize sets the maximum size of the header
 // compression table used to decode header blocks.
 //
