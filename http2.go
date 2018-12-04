@@ -53,6 +53,12 @@ func readPreface(br io.Reader) bool {
 	return false
 }
 
+// writePreface writes HTTP/2 preface to the writer
+func writePreface(wr io.Writer) error {
+	_, err := wr.Write(http2Preface)
+	return err
+}
+
 // Upgrade upgrades the HTTP(S) connection.
 //
 // returns a boolean value indicating if the upgrade was successfully
@@ -74,7 +80,7 @@ func upgradeTLS(c connTLSer) (ok bool) {
 		state := c.ConnectionState()
 		// HTTP2 using TLS must be used with TLS1.2 or higher
 		// (https://httpwg.org/specs/rfc7540.html#TLSUsage)
-		if state.Version < tls.VersionTLS12 {
+		if state.Version >= tls.VersionTLS12 {
 			ok = state.NegotiatedProtocol == H2TLSProto &&
 				state.NegotiatedProtocolIsMutual
 		}
