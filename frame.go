@@ -148,6 +148,7 @@ func (fr *Frame) ReadFrom(br io.Reader) (rdb int64, err error) {
 				// TODO: error oversize
 			} else if fr.Len > 0 {
 				// uint32 must be extended to int64.
+				fr.payload = fr.payload[:cap(fr.payload)]
 				nn := int64(fr.Len) - int64(cap(fr.payload))
 				if nn > 0 {
 					// TODO: ...
