@@ -486,7 +486,7 @@ func (hpack *HPack) Read(b []byte) ([]byte, error) {
 				dst := bytePool.Get().([]byte)
 				b, dst, err = readString(dst[:0], b)
 				if err == nil {
-					hf.SetNameBytes(dst)
+					hf.SetValueBytes(dst)
 				}
 				bytePool.Put(dst)
 			}
