@@ -16,7 +16,7 @@ const (
 	// FrameType (http://httpwg.org/specs/rfc7540.html#Frame_types)
 	// TODO: Define new type? type Frame uint8. There are any disadvantage?
 	FrameData         uint8 = 0x0
-	FrameHeader       uint8 = 0x1
+	FrameHeaders      uint8 = 0x1
 	FramePriority     uint8 = 0x2
 	FrameResetStream  uint8 = 0x3
 	FrameSettings     uint8 = 0x4
