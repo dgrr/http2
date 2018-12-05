@@ -1,7 +1,6 @@
 package http2
 
 import (
-	"io"
 	"sync"
 )
 
@@ -268,19 +267,6 @@ func (st *Settings) ReadFrame(fr *Frame) error {
 	st.ack = fr.Has(FlagAck)
 	st.Read(fr.Payload()) // TODO: return error?
 	return nil
-}
-
-// TODO: Make WriteRaw function? Which writes raw settings frame into a io.Writer
-
-// WriteTo sets Settings fields and payload to a Frame and writes the Frame into wr.
-func (st *Settings) WriteTo(bw io.Writer) (nn int64, err error) {
-	fr := AcquireFrame()
-	err = st.WriteFrame(st)
-	if err == nil {
-		nn, err = fr.WriteTo(bw)
-	}
-	ReleaseFrame(fr)
-	return
 }
 
 // WriteFrame sets Settings fields and payload to the Frame.

@@ -149,18 +149,6 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 	return
 }
 
-// WriteTo sets Headers fields and HPACK payload to a Frame and writes
-// the Frame into wr.
-func (h *Headers) WriteTo(wr io.Writer) (nn int64, err error) {
-	fr := AcquireFrame()
-	err = h.WriteFrame(fr)
-	if err == nil {
-		nn, err = fr.WriteTo(wr)
-	}
-	ReleaseFrame(fr)
-	return
-}
-
 // WriteFrame writes h into fr,
 //
 // This function only resets the payload
