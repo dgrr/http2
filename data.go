@@ -85,6 +85,8 @@ func (data *Data) Write(b []byte) (int, error) {
 }
 
 // ReadFrame reads data from fr.
+//
+// This function does not reset the Frame.
 func (data *Data) ReadFrame(fr *Frame) error {
 	payload := cutPadding(fr)
 	data.ended = fr.Has(FlagEndStream)
