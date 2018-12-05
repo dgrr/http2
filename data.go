@@ -92,10 +92,10 @@ func (data *Data) ReadFrame(fr *Frame) error {
 	return nil
 }
 
-// WriteToFrame writes the data to the frame payload setting FlagPadded.
+// WriteFrame writes the data to the frame payload setting FlagPadded.
 //
 // This function only resets the frame payload.
-func (data *Data) WriteToFrame(fr *Frame) error {
+func (data *Data) WriteFrame(fr *Frame) error {
 	// TODO: generate padding and set to the frame payload
 	// fr.SetPayload(padding)
 	if data.pad {

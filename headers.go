@@ -149,8 +149,10 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 	return
 }
 
-// WriteToFrame ...
-func (h *Headers) WriteToFrame(fr *Frame) (err error) {
+// WriteFrame writes h into fr,
+//
+// This function only resets the payload
+func (h *Headers) WriteFrame(fr *Frame) (err error) {
 	if h.endStream {
 		fr.Add(FlagEndStream)
 	}
