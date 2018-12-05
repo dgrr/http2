@@ -39,6 +39,14 @@ func (hf *HeaderField) Reset() {
 	hf.sensible = false
 }
 
+// AppendBytes appends header representation of hf to dst and returns the new dst.
+func (hf *HeaderField) AppendBytes(dst []byte) []byte {
+	dst = append(dst, hf.name...)
+	dst = append(dst, ':', ' ')
+	dst = append(dst, hf.value...)
+	return dst
+}
+
 // Size returns the header field size as RFC specifies.
 //
 // https://tools.ietf.org/html/rfc7541#section-4.1
@@ -166,6 +174,15 @@ func (hpack *HPACK) Reset() {
 	hpack.tableSize = 0
 	hpack.maxTableSize = int(defaultHeaderTableSize)
 	hpack.DisableCompression = false
+}
+
+// AppendBytes appends hpack headers to dst and returns the new dst.
+func (hpack *HPACK) AppendBytes(dst []byte) []byte {
+	for _, hf := range hpack.fields {
+		dst = hf.AppendBytes(dst)
+		dst = append(dst, '\n')
+	}
+	return dst
 }
 
 // Add adds the name and the value to the Header.
