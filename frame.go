@@ -244,9 +244,17 @@ func bytesToUint24(b []byte) uint32 {
 		uint32(b[2])
 }
 
+func appendUint32Bytes(dst []byte, n uint32) []byte {
+	dst = append(dst, byte(n>>24))
+	dst = append(dst, byte(n>>16))
+	dst = append(dst, byte(n>>8))
+	dst = append(dst, byte(n))
+	return dst
+}
+
 func uint32ToBytes(b []byte, n uint32) {
 	_ = b[3] // bound checking
-	b[0] = byte(n>>24) & (1<<8 - 1)
+	b[0] = byte(n >> 24)
 	b[1] = byte(n >> 16)
 	b[2] = byte(n >> 8)
 	b[3] = byte(n)
