@@ -124,6 +124,14 @@ type HPACK struct {
 	// DisableCompression disables compression for literal header fields.
 	DisableCompression bool
 
+	// DisableDynamicTable disables the usage of the dynamic table for
+	// the HPACK structure. If this option is true the HPACK won't add any
+	// field to the dynamic table unless it was sended by the peer.
+	//
+	// This field was implemented because in many ways the server could modify
+	// the fields stablished by the client losing performance calculated by client.
+	DisableDynamicTable bool
+
 	// fields are the header fields
 	fields []*HeaderField
 
@@ -567,17 +575,17 @@ func readInt(n int, b []byte) ([]byte, uint64, error) {
 // https://tools.ietf.org/html/rfc7541#section-5.1
 func appendInt(dst []byte, n uint8, nn uint64) []byte {
 	nu := uint64(1<<n - 1)
-	m := len(dst)
-	if m == 0 {
+	m := len(dst) - 1
+	if m == -1 {
 		dst = append(dst, 0)
 		m++
 	}
 
 	if nn < nu {
-		dst[m-1] |= byte(nn)
+		dst[m] |= byte(nn)
 	} else {
 		nn -= nu
-		dst[m-1] |= byte(nu)
+		dst[m] |= byte(nu)
 		m = len(dst)
 		nu = 1 << (n + 1)
 		i := 0
@@ -633,9 +641,10 @@ func appendString(dst, src []byte, encode bool) []byte {
 	// TODO: Encode only if length is lower with the string encoded
 
 	n := uint64(len(b))
-	nn := len(dst) // peek first byte
-	if nn > 0 && dst[nn-1] != 0 {
+	nn := len(dst) - 1 // peek last byte
+	if nn >= 0 && dst[nn] != 0 {
 		dst = append(dst, 0)
+		nn++
 	}
 	dst = appendInt(dst, 7, n)
 	dst = append(dst, b...)
@@ -656,7 +665,7 @@ func (hpack *HPACK) Write(dst []byte) ([]byte, error) {
 	var idx uint64
 	for _, hf := range hpack.fields {
 		c = !hpack.DisableCompression
-		n = 4
+		n = 6
 
 		idx = hpack.search(hf)
 		if hf.sensible {
@@ -665,20 +674,20 @@ func (hpack *HPACK) Write(dst []byte) ([]byte, error) {
 		} else {
 			if idx > 0 { // name and/or value can be used as index
 				hf2 := hpack.peek(idx)
-				if idx > maxIndex || bytes.Equal(hf.value, hf2.value) {
+				if bytes.Equal(hf.value, hf2.value) {
 					n, dst = 7, append(dst, indexByte) // could be indexed
-				} else { // must be used as literal index
-					n, dst = 6, append(dst, literalByte)
+				} else if hpack.DisableDynamicTable { // must be used as literal index
+					n, dst = 4, append(dst, 0)
+				} else {
+					dst = append(dst, literalByte)
 					// append this field to the dynamic table.
 					hpack.add(hf)
 				}
-			} else { // with or without indexing
-				// if is client run this code
-				n, dst = 6, append(dst, literalByte)
+			} else if hpack.DisableDynamicTable { // with or without indexing
+				dst = append(dst, 0, 0)
+			} else {
+				dst = append(dst, literalByte)
 				hpack.add(hf)
-				// if not run this
-				//dst = append(dst, 0, 0) // without indexing
-				// TODO: use the dynamic table only in the client side.
 			}
 		}
 
