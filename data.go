@@ -92,12 +92,23 @@ func (data *Data) ReadFrame(fr *Frame) error {
 	return nil
 }
 
+// WriteTo sets Data fields and data into a Frame and writes the Frame into wr.
+func (data *Data) WriteTo(wr io.Writer) (nn int64, err error) {
+	fr := AcquireFrame()
+	err = data.WriteFrame(fr)
+	if err == nil {
+		nn, err = fr.WriteTo(wr)
+	}
+	ReleaseFrame(fr)
+	return
+}
+
 // WriteFrame writes the data to the frame payload setting FlagPadded.
 //
 // This function only resets the frame payload.
 func (data *Data) WriteFrame(fr *Frame) error {
 	// TODO: generate padding and set to the frame payload
-	// fr.SetPayload(padding)
+	fr.payload = fr.payload[:0]
 	if data.pad {
 		fr.Add(FlagPadded)
 		// TODO: Write padding flag

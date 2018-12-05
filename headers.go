@@ -149,6 +149,18 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 	return
 }
 
+// WriteTo sets Headers fields and HPACK payload to a Frame and writes
+// the Frame into wr.
+func (h *Headers) WriteTo(wr io.Writer) (nn int64, err error) {
+	fr := AcquireFrame()
+	err = h.WriteFrame(fr)
+	if err == nil {
+		nn, err = fr.WriteTo(wr)
+	}
+	ReleaseFrame(fr)
+	return
+}
+
 // WriteFrame writes h into fr,
 //
 // This function only resets the payload
@@ -159,6 +171,8 @@ func (h *Headers) WriteFrame(fr *Frame) (err error) {
 	if h.endHeaders {
 		fr.Add(FlagEndHeaders)
 	}
+
+	fr.payload = fr.payload[:0]
 	if h.pad {
 		// TODO: Write padding len
 		fr.Add(FlagPadded)
@@ -167,7 +181,7 @@ func (h *Headers) WriteFrame(fr *Frame) (err error) {
 		fr.Add(FlagPriority)
 		// TODO: Write stream and weight
 	}
-	fr.payload, err = h.hpack.Write(fr.payload[:0])
+	fr.payload, err = h.hpack.Write(fr.payload)
 	// TODO: Write padding
 	return err
 }

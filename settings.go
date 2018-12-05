@@ -253,16 +253,6 @@ func (st *Settings) Encode() {
 	}
 }
 
-// ReadFrame reads and decodes frame payload into st values
-func (st *Settings) ReadFrame(fr *Frame) error {
-	if fr._type != FrameSettings { // TODO: Probably repeated checking
-		return ErrFrameMismatch
-	}
-	st.ack = fr.Has(FlagAck)
-	st.Read(fr.Payload())
-	return nil
-}
-
 // IsAck returns true if settings has FlagAck set.
 func (st *Settings) IsAck() bool {
 	return st.ack
@@ -273,17 +263,33 @@ func (st *Settings) SetAck(ack bool) {
 	st.ack = ack
 }
 
-// WriteTo writes settings frame to bw
-func (st *Settings) WriteTo(bw io.Writer) (int64, error) {
-	fr := AcquireFrame()
-	defer ReleaseFrame(fr)
+// ReadFrame reads and decodes frame payload into st values
+func (st *Settings) ReadFrame(fr *Frame) error {
+	st.ack = fr.Has(FlagAck)
+	st.Read(fr.Payload()) // TODO: return error?
+	return nil
+}
 
+// TODO: Make WriteRaw function? Which writes raw settings frame into a io.Writer
+
+// WriteTo sets Settings fields and payload to a Frame and writes the Frame into wr.
+func (st *Settings) WriteTo(bw io.Writer) (nn int64, err error) {
+	fr := AcquireFrame()
+	err = st.WriteFrame(st)
+	if err == nil {
+		nn, err = fr.WriteTo(bw)
+	}
+	ReleaseFrame(fr)
+	return
+}
+
+// WriteFrame sets Settings fields and payload to the Frame.
+func (st *Settings) WriteFrame(fr *Frame) error {
 	st.Encode()
 
 	fr._type = FrameSettings
 	if st.ack {
 		fr.Add(FlagAck)
 	}
-	fr.SetPayload(st.rawSettings)
-	return fr.WriteTo(bw)
+	return fr.SetPayload(st.rawSettings)
 }
