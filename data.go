@@ -1,7 +1,6 @@
 package http2
 
 import (
-	"io"
 	"sync"
 )
 
@@ -87,31 +86,22 @@ func (data *Data) Write(b []byte) (int, error) {
 
 // ReadFrame reads data from fr.
 func (data *Data) ReadFrame(fr *Frame) error {
-	payload := fr.payload
-	if fr.Has(FlagPadded) {
-		padding := uint32(payload[0])
-		payload = payload[1 : fr.length-padding]
-	}
+	payload := cutPadding(fr)
+	data.ended = fr.Has(FlagEndStream)
 	data.b = append(data.b[:0], payload...)
 	return nil
 }
 
-// WriteTo writes data to the wr.
-//
-// wr can be Frame. Cause frame is compatible with io.Writer.
-//
-// This function does not set the FlagPadded in case wr is Frame.
-func (data *Data) WriteTo(wr io.Writer) (nn int64, err error) {
-	var n int
-	// TODO: Generate padding ...
-	n, err = wr.Write(data.b)
-	nn += int64(n)
-	return
-}
-
 // WriteToFrame writes the data to the frame payload setting FlagPadded.
-func (data *Data) WriteToFrame(fr *Frame) {
+//
+// This function only resets the frame payload.
+func (data *Data) WriteToFrame(fr *Frame) error {
 	// TODO: generate padding and set to the frame payload
 	// fr.SetPayload(padding)
-	fr.Write(data.b)
+	if data.pad {
+		fr.Add(FlagPadded)
+		// TODO: Write padding flag
+	}
+	_, err := fr.Write(data.b)
+	return err
 }

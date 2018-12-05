@@ -1,15 +1,31 @@
 package http2
 
 import (
+	"fmt"
 	"reflect"
 	"sync"
 	"unsafe"
 )
 
+// TODO: Needed?
 var bytePool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, 128)
 	},
+}
+
+// cutPadding cuts the padding if the frame has FlagPadded
+// from the payload and returns the new payload as byte slice.
+func cutPadding(fr *Frame) []byte {
+	payload := fr.payload
+	if fr.Has(FlagPadded) {
+		pad := uint32(payload[0])
+		if uint32(len(payload)) < fr.length-pad-1 {
+			panic(fmt.Sprintf("out of range: %s < %s", uint32(len(payload)), fr.length-pad-1)) // TODO: Change this panic...
+		}
+		payload = payload[1 : fr.length-pad]
+	}
+	return payload
 }
 
 // copied from https://github.com/valyala/fasthttp
