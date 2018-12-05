@@ -100,7 +100,7 @@ func check(t *testing.T, slice []*HeaderField, i int, k, v string) {
 	}
 }
 
-func readHPackAndCheck(t *testing.T, hpack *HPack, b []byte, fields, table []string, tableSize int) {
+func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []string, tableSize int) {
 	var err error
 	b, err = hpack.Read(b)
 	if err != nil {
@@ -130,9 +130,9 @@ func TestReadRequestWithoutHuffman(t *testing.T) {
 		0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63,
 		0x6f, 0x6d,
 	}
-	hpack := AcquireHPack()
+	hpack := AcquireHPACK()
 
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":method", "GET",
 		":scheme", "http",
 		":path", "/",
@@ -146,7 +146,7 @@ func TestReadRequestWithoutHuffman(t *testing.T) {
 		0x6e, 0x6f, 0x2d, 0x63, 0x61, 0x63,
 		0x68, 0x65,
 	}
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":method", "GET",
 		":scheme", "http",
 		":path", "/",
@@ -164,7 +164,7 @@ func TestReadRequestWithoutHuffman(t *testing.T) {
 		0x75, 0x73, 0x74, 0x6f, 0x6d, 0x2d,
 		0x76, 0x61, 0x6c, 0x75, 0x65,
 	}
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":method", "GET",
 		":scheme", "https",
 		":path", "/index.html",
@@ -175,7 +175,7 @@ func TestReadRequestWithoutHuffman(t *testing.T) {
 		"cache-control", "no-cache",
 		":authority", "www.example.com",
 	}, 164)
-	ReleaseHPack(hpack)
+	ReleaseHPACK(hpack)
 }
 
 func TestReadRequestWithHuffman(t *testing.T) {
@@ -184,9 +184,9 @@ func TestReadRequestWithHuffman(t *testing.T) {
 		0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b,
 		0xa0, 0xab, 0x90, 0xf4, 0xff,
 	}
-	hpack := AcquireHPack()
+	hpack := AcquireHPACK()
 
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":method", "GET",
 		":scheme", "http",
 		":path", "/",
@@ -199,7 +199,7 @@ func TestReadRequestWithHuffman(t *testing.T) {
 		0x82, 0x86, 0x84, 0xbe, 0x58, 0x86,
 		0xa8, 0xeb, 0x10, 0x64, 0x9c, 0xbf,
 	}
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":method", "GET",
 		":scheme", "http",
 		":path", "/",
@@ -216,7 +216,7 @@ func TestReadRequestWithHuffman(t *testing.T) {
 		0x7d, 0x7f, 0x89, 0x25, 0xa8, 0x49,
 		0xe9, 0x5b, 0xb8, 0xe8, 0xb4, 0xbf,
 	}
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":method", "GET",
 		":scheme", "https",
 		":path", "/index.html",
@@ -227,7 +227,7 @@ func TestReadRequestWithHuffman(t *testing.T) {
 		"cache-control", "no-cache",
 		":authority", "www.example.com",
 	}, 164)
-	ReleaseHPack(hpack)
+	ReleaseHPACK(hpack)
 }
 
 func TestReadResponseWithoutHuffman(t *testing.T) {
@@ -245,10 +245,10 @@ func TestReadResponseWithoutHuffman(t *testing.T) {
 		0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65,
 		0x2e, 0x63, 0x6f, 0x6d,
 	}
-	hpack := AcquireHPack()
+	hpack := AcquireHPACK()
 	hpack.SetMaxTableSize(256)
 
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":status", "302",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
@@ -262,7 +262,7 @@ func TestReadResponseWithoutHuffman(t *testing.T) {
 
 	b = []byte{0x48, 0x03, 0x33, 0x30, 0x37, 0xc1, 0xc0, 0xbf}
 
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":status", "307",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
@@ -294,7 +294,7 @@ func TestReadResponseWithoutHuffman(t *testing.T) {
 		0x3d, 0x31,
 	}
 
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":status", "200",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
@@ -307,7 +307,7 @@ func TestReadResponseWithoutHuffman(t *testing.T) {
 		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
 	}, 215)
 
-	ReleaseHPack(hpack)
+	ReleaseHPACK(hpack)
 }
 
 func TestReadResponseWithHuffman(t *testing.T) {
@@ -322,10 +322,10 @@ func TestReadResponseWithHuffman(t *testing.T) {
 		0x63, 0xc7, 0x8f, 0x0b, 0x97, 0xc8,
 		0xe9, 0xae, 0x82, 0xae, 0x43, 0xd3,
 	}
-	hpack := AcquireHPack()
+	hpack := AcquireHPACK()
 	hpack.SetMaxTableSize(256)
 
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":status", "302",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
@@ -341,7 +341,7 @@ func TestReadResponseWithHuffman(t *testing.T) {
 
 	b = []byte{0x48, 0x83, 0x64, 0x0e, 0xff, 0xc1, 0xc0, 0xbf}
 
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":status", "307",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
@@ -369,7 +369,7 @@ func TestReadResponseWithHuffman(t *testing.T) {
 		0x4e, 0xe5, 0xb1, 0x06, 0x3d, 0x50, 0x07,
 	}
 
-	readHPackAndCheck(t, hpack, b, []string{
+	readHPACKAndCheck(t, hpack, b, []string{
 		":status", "200",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
@@ -382,7 +382,7 @@ func TestReadResponseWithHuffman(t *testing.T) {
 		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
 	}, 215)
 
-	ReleaseHPack(hpack)
+	ReleaseHPACK(hpack)
 }
 
 func compare(b, r []byte) int {
@@ -394,7 +394,7 @@ func compare(b, r []byte) int {
 	return -1
 }
 
-func writeHPackAndCheck(t *testing.T, hpack *HPack, r []byte, fields, table []string, tableSize int) {
+func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []string, tableSize int) {
 	n := 0
 	for i := 0; i < len(fields); i += 2 {
 		hpack.Add(fields[i], fields[i+1])
@@ -428,10 +428,10 @@ func TestWriteRequestWithoutHuffman(t *testing.T) {
 		0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63,
 		0x6f, 0x6d,
 	}
-	hpack := AcquireHPack()
+	hpack := AcquireHPACK()
 	hpack.DisableCompression = true
 
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":method", "GET",
 		":scheme", "http",
 		":path", "/",
@@ -445,7 +445,7 @@ func TestWriteRequestWithoutHuffman(t *testing.T) {
 		0x6e, 0x6f, 0x2d, 0x63, 0x61, 0x63,
 		0x68, 0x65,
 	}
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":method", "GET",
 		":scheme", "http",
 		":path", "/",
@@ -463,7 +463,7 @@ func TestWriteRequestWithoutHuffman(t *testing.T) {
 		0x75, 0x73, 0x74, 0x6f, 0x6d, 0x2d,
 		0x76, 0x61, 0x6c, 0x75, 0x65,
 	}
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":method", "GET",
 		":scheme", "https",
 		":path", "/index.html",
@@ -474,7 +474,7 @@ func TestWriteRequestWithoutHuffman(t *testing.T) {
 		"cache-control", "no-cache",
 		":authority", "www.example.com",
 	}, 164)
-	ReleaseHPack(hpack)
+	ReleaseHPACK(hpack)
 }
 
 func TestWriteRequestWithHuffman(t *testing.T) {
@@ -483,9 +483,9 @@ func TestWriteRequestWithHuffman(t *testing.T) {
 		0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b,
 		0xa0, 0xab, 0x90, 0xf4, 0xff,
 	}
-	hpack := AcquireHPack()
+	hpack := AcquireHPACK()
 
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":method", "GET",
 		":scheme", "http",
 		":path", "/",
@@ -498,7 +498,7 @@ func TestWriteRequestWithHuffman(t *testing.T) {
 		0x82, 0x86, 0x84, 0xbe, 0x58, 0x86,
 		0xa8, 0xeb, 0x10, 0x64, 0x9c, 0xbf,
 	}
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":method", "GET",
 		":scheme", "http",
 		":path", "/",
@@ -515,7 +515,7 @@ func TestWriteRequestWithHuffman(t *testing.T) {
 		0x7d, 0x7f, 0x89, 0x25, 0xa8, 0x49,
 		0xe9, 0x5b, 0xb8, 0xe8, 0xb4, 0xbf,
 	}
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":method", "GET",
 		":scheme", "https",
 		":path", "/index.html",
@@ -526,7 +526,7 @@ func TestWriteRequestWithHuffman(t *testing.T) {
 		"cache-control", "no-cache",
 		":authority", "www.example.com",
 	}, 164)
-	ReleaseHPack(hpack)
+	ReleaseHPACK(hpack)
 }
 
 func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
@@ -544,11 +544,11 @@ func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 		0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65,
 		0x2e, 0x63, 0x6f, 0x6d,
 	}
-	hpack := AcquireHPack()
+	hpack := AcquireHPACK()
 	hpack.DisableCompression = true
 	hpack.SetMaxTableSize(256)
 
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":status", "302",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
@@ -561,7 +561,7 @@ func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 	}, 222)
 
 	r = []byte{0x48, 0x03, 0x33, 0x30, 0x37, 0xc1, 0xc0, 0xbf}
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":status", "307",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
@@ -593,7 +593,7 @@ func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 		0x3d, 0x31,
 	}
 
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":status", "200",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
@@ -606,7 +606,7 @@ func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
 	}, 215)
 
-	ReleaseHPack(hpack)
+	ReleaseHPACK(hpack)
 }
 
 func TestWriteResponseWithHuffman(t *testing.T) { // WithHuffman
@@ -622,9 +622,9 @@ func TestWriteResponseWithHuffman(t *testing.T) { // WithHuffman
 		0xe9, 0xae, 0x82, 0xae, 0x43, 0xd3,
 	}
 
-	hpack := AcquireHPack()
+	hpack := AcquireHPACK()
 	hpack.SetMaxTableSize(256)
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":status", "302",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
@@ -637,7 +637,7 @@ func TestWriteResponseWithHuffman(t *testing.T) { // WithHuffman
 	}, 222)
 
 	r = []byte{0x48, 0x83, 0x64, 0x0e, 0xff, 0xc1, 0xc0, 0xbf}
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":status", "307",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:21 GMT",
@@ -664,7 +664,7 @@ func TestWriteResponseWithHuffman(t *testing.T) { // WithHuffman
 		0x31, 0x60, 0x65, 0xc0, 0x03, 0xed,
 		0x4e, 0xe5, 0xb1, 0x06, 0x3d, 0x50, 0x07,
 	}
-	writeHPackAndCheck(t, hpack, r, []string{
+	writeHPACKAndCheck(t, hpack, r, []string{
 		":status", "200",
 		"cache-control", "private",
 		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
@@ -677,7 +677,7 @@ func TestWriteResponseWithHuffman(t *testing.T) { // WithHuffman
 		"date", "Mon, 21 Oct 2013 20:13:22 GMT",
 	}, 215)
 
-	ReleaseHPack(hpack)
+	ReleaseHPACK(hpack)
 }
 
 func hexComparision(b, r []byte) (s string) {

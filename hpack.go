@@ -103,14 +103,14 @@ func (hf *HeaderField) IsSensible() bool {
 	return hf.sensible
 }
 
-// HPack represents header compression methods to
+// HPACK represents header compression methods to
 // encode and decode header fields in HTTP/2.
 //
-// HPack is the same as HTTP/1.1 header.
+// HPACK is the same as HTTP/1.1 header.
 //
-// Use AcquireHPack to acquire new HPack structure
-// TODO: HPack to Headers?
-type HPack struct {
+// Use AcquireHPACK to acquire new HPACK structure
+// TODO: HPACK to Headers?
+type HPACK struct {
 	noCopy noCopy
 
 	// DisableCompression disables compression for literal header fields.
@@ -128,31 +128,31 @@ type HPack struct {
 
 var hpackPool = sync.Pool{
 	New: func() interface{} {
-		return &HPack{
+		return &HPACK{
 			maxTableSize: int(defaultHeaderTableSize),
 		}
 	},
 }
 
-// AcquireHPack gets HPack from pool
-func AcquireHPack() *HPack {
-	return hpackPool.Get().(*HPack)
+// AcquireHPACK gets HPACK from pool
+func AcquireHPACK() *HPACK {
+	return hpackPool.Get().(*HPACK)
 }
 
-// ReleaseHPack puts HPack to the pool
-func ReleaseHPack(hpack *HPack) {
+// ReleaseHPACK puts HPACK to the pool
+func ReleaseHPACK(hpack *HPACK) {
 	hpack.Reset()
 	hpackPool.Put(hpack)
 }
 
-func (hpack *HPack) releaseTable() {
+func (hpack *HPACK) releaseTable() {
 	for _, hf := range hpack.dynamic {
 		ReleaseHeaderField(hf)
 	}
 	hpack.dynamic = hpack.dynamic[:0]
 }
 
-func (hpack *HPack) releaseFields() {
+func (hpack *HPACK) releaseFields() {
 	for _, hf := range hpack.fields {
 		ReleaseHeaderField(hf)
 	}
@@ -160,7 +160,7 @@ func (hpack *HPack) releaseFields() {
 }
 
 // Reset deletes and realeases all dynamic header fields
-func (hpack *HPack) Reset() {
+func (hpack *HPACK) Reset() {
 	hpack.releaseTable()
 	hpack.releaseFields()
 	hpack.tableSize = 0
@@ -169,7 +169,7 @@ func (hpack *HPack) Reset() {
 }
 
 // Add adds the name and the value to the Header.
-func (hpack *HPack) Add(name, value string) {
+func (hpack *HPACK) Add(name, value string) {
 	hf := AcquireHeaderField()
 	hf.SetName(name)
 	hf.SetValue(value)
@@ -177,28 +177,28 @@ func (hpack *HPack) Add(name, value string) {
 }
 
 // ....
-func (hpack *HPack) AddBytes(name, value []byte) {
+func (hpack *HPACK) AddBytes(name, value []byte) {
 	hpack.Add(b2s(name), b2s(value))
 }
 
 // ...
-func (hpack *HPack) AddBytesK(name []byte, value string) {
+func (hpack *HPACK) AddBytesK(name []byte, value string) {
 	hpack.Add(b2s(name), value)
 }
 
 // ...
-func (hpack *HPack) AddBytesV(name string, value []byte) {
+func (hpack *HPACK) AddBytesV(name string, value []byte) {
 	hpack.Add(name, b2s(value))
 }
 
 // SetMaxTableSize sets the maximum dynamic table size.
-func (hpack *HPack) SetMaxTableSize(size int) {
+func (hpack *HPACK) SetMaxTableSize(size int) {
 	hpack.maxTableSize = size
 }
 
 // Dynamic size returns the size of the dynamic table.
 // https://tools.ietf.org/html/rfc7541#section-4.1
-func (hpack *HPack) DynamicSize() (n int) {
+func (hpack *HPACK) DynamicSize() (n int) {
 	for _, hf := range hpack.dynamic {
 		n += hf.Size()
 	}
@@ -206,7 +206,7 @@ func (hpack *HPack) DynamicSize() (n int) {
 }
 
 // add adds header field to the dynamic table.
-func (hpack *HPack) add(hf *HeaderField) {
+func (hpack *HPACK) add(hf *HeaderField) {
 	// TODO: https://tools.ietf.org/html/rfc7541#section-2.3.2
 	// apply duplicate entries
 	// TODO: Optimize using reverse indexes.
@@ -249,7 +249,7 @@ func (hpack *HPack) add(hf *HeaderField) {
 }
 
 // shrink shrinks the dynamic table if needed.
-func (hpack *HPack) shrink(add int) {
+func (hpack *HPACK) shrink(add int) {
 	for {
 		hpack.tableSize = hpack.DynamicSize() + add
 		if hpack.tableSize <= hpack.maxTableSize {
@@ -269,7 +269,7 @@ func (hpack *HPack) shrink(add int) {
 // Peek returns HeaderField value of the given name.
 //
 // value will be nil if name is not found.
-func (hpack *HPack) Peek(name string) (value []byte) {
+func (hpack *HPACK) Peek(name string) (value []byte) {
 	for _, hf := range hpack.fields {
 		if b2s(hf.name) == name {
 			value = hf.value
@@ -282,7 +282,7 @@ func (hpack *HPack) Peek(name string) (value []byte) {
 // PeekBytes returns HeaderField value of the given name in bytes.
 //
 // value will be nil if name is not found.
-func (hpack *HPack) PeekBytes(name []byte) (value []byte) {
+func (hpack *HPACK) PeekBytes(name []byte) (value []byte) {
 	for _, hf := range hpack.fields {
 		if bytes.Equal(hf.name, name) {
 			value = hf.value
@@ -295,7 +295,7 @@ func (hpack *HPack) PeekBytes(name []byte) (value []byte) {
 // PeekField returns HeaderField structure of the given name.
 //
 // hf will be nil in case name is not found.
-func (hpack *HPack) PeekField(name string) (hf *HeaderField) {
+func (hpack *HPACK) PeekField(name string) (hf *HeaderField) {
 	// TODO: hf must be a copy or pointer?
 	for _, hf2 := range hpack.fields {
 		if b2s(hf2.name) == name {
@@ -309,7 +309,7 @@ func (hpack *HPack) PeekField(name string) (hf *HeaderField) {
 // PeekFieldBytes returns HeaderField structure of the given name in bytes.
 //
 // hf will be nil in case name is not found.
-func (hpack *HPack) PeekFieldBytes(name []byte) (hf *HeaderField) {
+func (hpack *HPACK) PeekFieldBytes(name []byte) (hf *HeaderField) {
 	// TODO: hf must be a copy or pointer?
 	for _, hf2 := range hpack.fields {
 		if bytes.Equal(hf2.name, name) {
@@ -323,7 +323,7 @@ func (hpack *HPack) PeekFieldBytes(name []byte) (hf *HeaderField) {
 // peek returns HeaderField from static or dynamic table.
 //
 // n must be the index in the table.
-func (hpack *HPack) peek(n uint64) (hf *HeaderField) {
+func (hpack *HPACK) peek(n uint64) (hf *HeaderField) {
 	// TODO: Change peek function name
 	if n < maxIndex {
 		hf = staticTable[n-1]
@@ -337,7 +337,7 @@ func (hpack *HPack) peek(n uint64) (hf *HeaderField) {
 }
 
 // find gets the index of existent name in static or dynamic tables.
-func (hpack *HPack) search(hf *HeaderField) (n uint64) {
+func (hpack *HPACK) search(hf *HeaderField) (n uint64) {
 	// start searching in the dynamic table (probably it contains less fields than the static.
 	for i, hf2 := range hpack.dynamic {
 		if bytes.Equal(hf.name, hf2.name) && bytes.Equal(hf.value, hf2.value) {
@@ -374,7 +374,7 @@ const (
 // The returned values are the new b pointing to the next data to be read and/or error.
 //
 // This function must receive the payload of Header frame.
-func (hpack *HPack) Read(b []byte) ([]byte, error) {
+func (hpack *HPACK) Read(b []byte) ([]byte, error) {
 	// TODO: Change Read to Write?
 	var (
 		n   uint64
@@ -633,7 +633,7 @@ func appendString(dst, src []byte, encode bool) []byte {
 var errHeaderFieldNotFound = errors.New("Indexed field not found")
 
 // Write writes hpack to dst returning the result byte slice.
-func (hpack *HPack) Write(dst []byte) ([]byte, error) {
+func (hpack *HPACK) Write(dst []byte) ([]byte, error) {
 	var c bool
 	var n uint8
 	var idx uint64

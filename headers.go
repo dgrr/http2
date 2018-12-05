@@ -10,7 +10,7 @@ type Headers struct {
 	pad        bool
 	stream     uint32
 	weight     byte // TODO: byte or uint8?
-	hpack      *HPack
+	hpack      *HPACK
 	endStream  bool
 	endHeaders bool
 }
@@ -24,7 +24,7 @@ var headersPool = sync.Pool{
 // AcquireHeaders ...
 func AcquireHeaders() *Headers {
 	h := headersPool.Get().(*Headers)
-	h.hpack = AcquireHPack()
+	h.hpack = AcquireHPACK()
 	return h
 }
 
@@ -39,7 +39,7 @@ func (h *Headers) Reset() {
 	h.pad = false
 	h.stream = 0
 	h.weight = 0
-	ReleaseHPack(h.hpack)
+	ReleaseHPACK(h.hpack)
 	h.hpack = nil
 	h.endStream = false
 	h.endHeaders = false
@@ -51,19 +51,19 @@ func (h *Headers) CopyTo(h2 *Headers) {
 	h2.stream = h.stream
 	h2.weight = h.weight
 	if h2.hpack != nil {
-		ReleaseHPack(h2.hpack)
+		ReleaseHPACK(h2.hpack)
 	}
 	h2.hpack = h.hpack
 	h2.endStream = h.endStream
 	h2.endHeaders = h.endHeaders
 }
 
-// Add adds a name and value to the HPack header.
+// Add adds a name and value to the HPACK header.
 func (h *Headers) Add(name, value string) {
 	h.hpack.Add(name, value)
 }
 
-// AddBytes adds a name and value to the HPack header.
+// AddBytes adds a name and value to the HPACK header.
 func (h *Headers) AddBytes(name, value []byte) {
 	h.hpack.AddBytes(name, value)
 }
@@ -128,10 +128,10 @@ func (h *Headers) SetPadding(value bool) {
 	h.pad = value
 }
 
-// HPack returns the HPack of Headers.
+// HPACK returns the HPACK of Headers.
 //
 // Do not release this field by your own.
-func (h *Headers) HPack() *HPack {
+func (h *Headers) HPACK() *HPACK {
 	return h.hpack
 }
 
