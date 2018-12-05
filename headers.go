@@ -31,6 +31,8 @@ func AcquireHeaders() *Headers {
 // ReleaaseHeaders ...
 func ReleaseHeaders(h *Headers) {
 	h.Reset()
+	ReleaseHPACK(h.hpack)
+	h.hpack = nil
 	headersPool.Put(h)
 }
 
@@ -39,8 +41,7 @@ func (h *Headers) Reset() {
 	h.pad = false
 	h.stream = 0
 	h.weight = 0
-	ReleaseHPACK(h.hpack)
-	h.hpack = nil
+	h.hpack.Reset()
 	h.endStream = false
 	h.endHeaders = false
 }
