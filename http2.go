@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"crypto/tls"
 	"io"
-	"net"
+
+	"github.com/valyala/fasthttp"
 )
 
 // Byteorder must be big endian
@@ -59,21 +60,10 @@ func WritePreface(wr io.Writer) error {
 	return err
 }
 
-// Upgrade upgrades the HTTP(S) connection.
+// UpgradeTLS checks if connection can be upgraded via TLS.
 //
-// returns a boolean value indicating if the upgrade was successfully
-func Upgrade(c net.Conn) (ok bool) {
-	var tlsConn connTLSer
-	if tlsConn, ok = c.(connTLSer); ok {
-		ok = upgradeTLS(tlsConn)
-	} else {
-		ok = upgradeHTTP(c)
-	}
-	return
-}
-
-// upgradeTLS returns true if TLS upgrading have been successful
-func upgradeTLS(c connTLSer) (ok bool) {
+// returns true if the HTTP/2 using TLS-ALPN have been stablished.
+func UpgradeTLS(c connTLSer) (ok bool) {
 	// TODO: return error or false
 	if err := c.Handshake(); err == nil {
 		state := c.ConnectionState()
@@ -87,7 +77,10 @@ func upgradeTLS(c connTLSer) (ok bool) {
 	return
 }
 
-func upgradeHTTP(c net.Conn) bool {
+// UpgradeHTTP checks if connection can be upgraded via HTTP.
+//
+// returns true if the HTTP/2 using Upgrade header field have been stablished.
+func UpgradeHTTP(ctx *fasthttp.RequestCtx) bool {
 	// TODO:
 	return false
 }
