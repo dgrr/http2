@@ -51,8 +51,10 @@ var (
 	}
 
 	// This error codes must be used with FrameGoAway
-	ErrUnknowFrameType = errors.New("error unknown frame type")
+	ErrUnknowFrameType = errors.New("unknown frame type")
 	ErrZeroPayload     = errors.New("frame Payload len = 0")
+	ErrMissingBytes    = errors.New("missing payload bytes. Need more")
+	ErrTooManyBytes    = errors.New("too many bytes")
 	ErrBadPreface      = errors.New("bad preface size")
 	ErrFrameMismatch   = errors.New("frame type mismatch from called function")
 	ErrNilWriter       = errors.New("Writer cannot be nil")
