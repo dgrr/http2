@@ -230,45 +230,6 @@ func (fr *Frame) WriteTo(bw io.Writer) (wrb int64, err error) {
 	return
 }
 
-func uint24ToBytes(b []byte, n uint32) {
-	_ = b[2] // bound cfrecking
-	b[0] = byte(n >> 16)
-	b[1] = byte(n >> 8)
-	b[2] = byte(n)
-}
-
-func bytesToUint24(b []byte) uint32 {
-	_ = b[2] // bound checking
-	return uint32(b[0])<<16 |
-		uint32(b[1])<<8 |
-		uint32(b[2])
-}
-
-func appendUint32Bytes(dst []byte, n uint32) []byte {
-	dst = append(dst, byte(n>>24))
-	dst = append(dst, byte(n>>16))
-	dst = append(dst, byte(n>>8))
-	dst = append(dst, byte(n))
-	return dst
-}
-
-func uint32ToBytes(b []byte, n uint32) {
-	_ = b[3] // bound checking
-	b[0] = byte(n >> 24)
-	b[1] = byte(n >> 16)
-	b[2] = byte(n >> 8)
-	b[3] = byte(n)
-}
-
-func bytesToUint32(b []byte) uint32 {
-	_ = b[3] // bound checking
-	n := uint32(b[0])<<24 |
-		uint32(b[1])<<16 |
-		uint32(b[2])<<8 |
-		uint32(b[3])
-	return n
-}
-
 func (fr *Frame) rawToStream() {
 	fr.stream = bytesToUint32(fr.rawHeader[5:]) & (1<<31 - 1)
 }
