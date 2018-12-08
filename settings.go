@@ -4,17 +4,6 @@ import (
 	"sync"
 )
 
-var settingsPool = sync.Pool{
-	New: func() interface{} {
-		return &Settings{
-			tableSize:  defaultHeaderTableSize,
-			maxStreams: defaultConcurrentStreams,
-			windowSize: defaultWindowSize,
-			frameSize:  defaultframeSize,
-		}
-	},
-}
-
 const (
 	// default Settings parameters
 	defaultHeaderTableSize   uint32 = 4096
@@ -48,6 +37,17 @@ type Settings struct {
 	windowSize  uint32
 	frameSize   uint32
 	headerSize  uint32
+}
+
+var settingsPool = sync.Pool{
+	New: func() interface{} {
+		return &Settings{
+			tableSize:  defaultHeaderTableSize,
+			maxStreams: defaultConcurrentStreams,
+			windowSize: defaultWindowSize,
+			frameSize:  defaultframeSize,
+		}
+	},
 }
 
 // AcquireSettings gets a Settings object from the pool with default values.

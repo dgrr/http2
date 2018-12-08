@@ -4,6 +4,9 @@ import (
 	"sync"
 )
 
+// Ping ...
+//
+// https://tools.ietf.org/html/rfc7540#section-6.7
 type Ping struct {
 	ack bool
 	b   []byte // data
@@ -11,7 +14,9 @@ type Ping struct {
 
 var pingPool = sync.Pool{
 	New: func() interface{} {
-		return &Ping{}
+		return &Ping{
+			b: make([]byte, 8),
+		}
 	},
 }
 
@@ -26,14 +31,36 @@ func ReleasePing(pp *Ping) {
 	pingPool.Put(pp)
 }
 
+// Reset ...
+func (ping *Ping) Reset() {
+	ping.ack = false
+	ping.b = ping.b[:0]
+}
+
+// CopyTo ...
+func (ping *Ping) CopyTo(p *Ping) {
+	p.ack = ping.ack
+	p.b = append(p.b[:0], ping.b...)
+}
+
 // Write ...
-func (ping *Ping) Write(b []byte) error {
-	ping.b = append(ping.b, b...)
+func (ping *Ping) Write(b []byte) (n int, err error) {
+	n = len(b)
+	if n+len(ping.b) > 8 {
+		err = ErrTooManyBytes
+	} else {
+		ping.b = append(ping.b, b...)
+	}
+	return
 }
 
 // SetData ...
-func (ping *Ping) SetData(b []byte) error {
-	ping.b = append(ping.b[:0], b...)
+func (ping *Ping) SetData(b []byte) {
+	n := len(b)
+	if n > 8 {
+		n = 8
+	}
+	ping.b = append(ping.b[:0], b[:n]...)
 }
 
 // ReadFrame ...
@@ -45,5 +72,8 @@ func (ping *Ping) ReadFrame(fr *Frame) error {
 
 // WriteFrame ...
 func (ping *Ping) WriteFrame(fr *Frame) error {
+	if ping.ack {
+		fr.Add(FlagAck)
+	}
 	return nil
 }

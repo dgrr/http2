@@ -87,11 +87,15 @@ func (data *Data) Write(b []byte) (int, error) {
 // ReadFrame reads data from fr.
 //
 // This function does not reset the Frame.
-func (data *Data) ReadFrame(fr *Frame) error {
+func (data *Data) ReadFrame(fr *Frame) (err error) {
 	payload := cutPadding(fr)
 	data.ended = fr.Has(FlagEndStream)
-	data.b = append(data.b[:0], payload...)
-	return nil
+	if len(payload) == 0 {
+		err = ErrZeroPayload
+	} else {
+		data.b = append(data.b[:0], payload...)
+	}
+	return
 }
 
 // WriteFrame writes the data to the frame payload setting FlagPadded.

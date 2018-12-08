@@ -5,6 +5,8 @@ import (
 )
 
 // PushPromise ...
+//
+// https://tools.ietf.org/html/rfc7540#section-6.6
 type PushPromise struct {
 	noCopy noCopy
 	pad    bool
@@ -46,22 +48,27 @@ func (pp *PushPromise) Write(b []byte) (int, error) {
 }
 
 // ReadFrame ...
-func (pp *PushPromise) ReadFrame(fr *Frame) error {
+func (pp *PushPromise) ReadFrame(fr *Frame) (err error) {
 	payload := cutPadding(fr)
-	// TODO: Check len
-	pp.code = bytesToUint32(payload) & (1<<31 - 1)
-	pp.header = append(pp.header, payload[4:]...)
-	pp.ended = fr.Has(FlagEndHeaders)
+	if len(fr.payload) < 4 {
+		err = ErrMissingBytes
+	} else {
+		pp.stream = bytesToUint32(payload) & (1<<31 - 1)
+		pp.header = append(pp.header, payload[4:]...)
+		pp.ended = fr.Has(FlagEndHeaders)
+	}
+	return
 }
 
 // WriteFrame ...
-func (pp *PushPromise) WriteFrame(fr *Frame) error {
+func (pp *PushPromise) WriteFrame(fr *Frame) (err error) {
 	fr._type = FramePushPromise
 	fr.payload = fr.payload[:0]
-	if data.pad {
+	if pp.pad {
 		fr.Add(FlagPadded)
 		// TODO: Write padding flag
 	}
-	fr.Write(pp.header)
+	_, err = fr.Write(pp.header)
 	// TODO: write padding
+	return
 }

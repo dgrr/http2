@@ -8,6 +8,7 @@ import (
 //
 // https://tools.ietf.org/html/rfc7540#section-6.3
 type Priority struct {
+	noCopy noCopy
 	stream uint32
 	weight byte
 }
@@ -36,6 +37,12 @@ func (pry *Priority) Reset() {
 	pry.weight = 0
 }
 
+// CopyTo ...
+func (pry *Priority) CopyTo(p *Priority) {
+	p.stream = pry.stream
+	p.weight = pry.weight
+}
+
 // Stream returns the Priority frame stream.
 func (pry *Priority) Stream() uint32 {
 	return pry.stream
@@ -57,10 +64,14 @@ func (pry *Priority) SetWeight(w byte) {
 }
 
 // ReadFrame reads frame payload and decodes the values into pry.
-func (pry *Priority) ReadFrame(fr *Frame) {
-	// TODO: Check len ...
-	pry.stream = bytesToUint32(fr.payload) & (1<<31 - 1)
-	pry.weight = fr.payload[4]
+func (pry *Priority) ReadFrame(fr *Frame) (err error) {
+	if len(fr.payload) < 5 {
+		err = ErrMissingBytes
+	} else {
+		pry.stream = bytesToUint32(fr.payload) & (1<<31 - 1)
+		pry.weight = fr.payload[4]
+	}
+	return
 }
 
 // WriteFrame writes pry to the Freame. The Frame payload is resetted.
