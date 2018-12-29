@@ -14,6 +14,7 @@ type Headers struct {
 	weight     byte // TODO: byte or uint8?
 	endStream  bool
 	endHeaders bool
+	parsed     bool
 	hpack      *HPACK
 	rawHeaders []byte // this field is used to store uncompleted headers.
 }
@@ -48,12 +49,14 @@ func (h *Headers) Reset() {
 	h.hpack.Reset()
 	h.endStream = false
 	h.endHeaders = false
+	h.parsed = false
 	h.rawHeaders = h.rawHeaders[:0]
 }
 
 // CopyTo copies h fields to h2.
 func (h *Headers) CopyTo(h2 *Headers) {
 	h2.pad = h.pad
+	h2.parsed = h.parsed
 	h2.stream = h.stream
 	h2.weight = h.weight
 	if h2.hpack != nil {
@@ -63,6 +66,15 @@ func (h *Headers) CopyTo(h2 *Headers) {
 	h2.endStream = h.endStream
 	h2.endHeaders = h.endHeaders
 	h2.rawHeaders = append(h2.rawHeaders[:0], h.rawHeaders...)
+}
+
+// Parse parses raw headers to the HPACK structure.
+func (h *Headers) Parse() (err error) {
+	if !h.parsed {
+		h.parsed = true
+		_, err = h.hpack.Read(h.rawHeaders)
+	}
+	return
 }
 
 // Add adds a name and value to the HPACK header.
@@ -93,6 +105,11 @@ func (h *Headers) RawHeaders() []byte {
 // SetHeaders ...
 func (h *Headers) SetRawHeaders(b []byte) {
 	h.rawHeaders = append(h.rawHeaders[:0], b...)
+}
+
+// AppendRawHeaders appends b to the raw headers.
+func (h *Headers) AppendRawHeaders(b []byte) {
+	h.rawHeaders = append(h.rawHeaders, b...)
 }
 
 // EndStream ...
