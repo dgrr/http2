@@ -4,6 +4,8 @@ import (
 	"sync"
 )
 
+const FramePushPromise uint8 = 0x5
+
 // PushPromise ...
 //
 // https://tools.ietf.org/html/rfc7540#section-6.6

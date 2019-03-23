@@ -1,5 +1,9 @@
 package http2
 
+import (
+	"net"
+)
+
 // Server ...
 type Server struct {
 }

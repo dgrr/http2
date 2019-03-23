@@ -13,22 +13,6 @@ const (
 	defaultMaxLen = 1 << 14
 	maxPayloadLen = 1<<24 - 1 // this value cannot be exceeded because of the length frame field.
 
-	// FrameType (http://httpwg.org/specs/rfc7540.html#Frame_types)
-	// TODO: Define new type? type Frame uint8. There are any disadvantage?
-	FrameData         uint8 = 0x0
-	FrameHeaders      uint8 = 0x1
-	FramePriority     uint8 = 0x2
-	FrameResetStream  uint8 = 0x3
-	FrameSettings     uint8 = 0x4
-	FramePushPromise  uint8 = 0x5
-	FramePing         uint8 = 0x6
-	FrameGoAway       uint8 = 0x7
-	FrameWindowUpdate uint8 = 0x8
-	FrameContinuation uint8 = 0x9
-
-	minFrameType uint8 = 0x0
-	maxFrameType uint8 = 0x9
-
 	// Frame Flag (described along the frame types)
 	// More flags have been ignored due to redundancy
 	FlagAck        uint8 = 0x1

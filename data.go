@@ -4,6 +4,8 @@ import (
 	"sync"
 )
 
+const FrameData = 0x0
+
 // Data defines a FrameData
 type Data struct {
 	noCopy noCopy

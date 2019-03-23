@@ -4,6 +4,8 @@ import (
 	"sync"
 )
 
+const FramePing uint8 = 0x6
+
 // Ping ...
 //
 // https://tools.ietf.org/html/rfc7540#section-6.7

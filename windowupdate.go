@@ -4,6 +4,8 @@ import (
 	"sync"
 )
 
+const FrameWindowUpdate uint8 = 0x8
+
 // WindowUpdate ...
 //
 // https://tools.ietf.org/html/rfc7540#section-6.9

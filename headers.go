@@ -4,6 +4,8 @@ import (
 	"sync"
 )
 
+const FrameHeaders = 0x1
+
 // Headers defines a FrameHeaders
 //
 // https://tools.ietf.org/html/rfc7540#section-6.2

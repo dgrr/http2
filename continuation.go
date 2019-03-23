@@ -4,6 +4,8 @@ import (
 	"sync"
 )
 
+const FrameContinuation uint8 = 0x9
+
 // Continuation ...
 //
 // https://tools.ietf.org/html/rfc7540#section-6.10

@@ -4,6 +4,8 @@ import (
 	"sync"
 )
 
+const FrameResetStream uint8 = 0x3
+
 // RstStream ...
 //
 // https://tools.ietf.org/html/rfc7540#section-6.4

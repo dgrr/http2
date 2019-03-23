@@ -4,6 +4,8 @@ import (
 	"sync"
 )
 
+const FrameGoAway uint8 = 0x7
+
 // GoAway ...
 //
 // https://tools.ietf.org/html/rfc7540#section-6.8

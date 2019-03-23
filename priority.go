@@ -4,6 +4,8 @@ import (
 	"sync"
 )
 
+const FramePriority = 0x2
+
 // Priority represents the Priority frame.
 //
 // https://tools.ietf.org/html/rfc7540#section-6.3
