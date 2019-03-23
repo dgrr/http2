@@ -84,3 +84,12 @@ func UpgradeHTTP(ctx *fasthttp.RequestCtx) bool {
 	// TODO:
 	return false
 }
+
+// PrepareServer enables HTTP/2 support in fasthttp.Server using s2.
+func PrepareServer(s *fasthttp.Server, s2 *Server) *fasthttp.Server {
+	if s2 == nil {
+		s2 = makeDefaultServer()
+	}
+	s.NextProto(H2TLSProto, s2.serveConn)
+	return s
+}
