@@ -164,7 +164,17 @@ func (fr *Frame) parseHeader() {
 // This function returns readed bytes and/or error.
 //
 // Unlike io.ReaderFrom this method does not read until io.EOF
-func (fr *Frame) ReadFrom(br io.Reader) (rdb int64, err error) {
+func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
+	return fr.readFrom(br, -1)
+}
+
+// ReadFromLimitPayload reads frame from reader limiting the payload.
+func (fr *Frame) ReadFromLimitPayload(br io.Reader, max int) {
+	return fr.readFrom(br, max)
+}
+
+func (fr *Frame) readFrom(br io.Reader, max int) (rdb int64, err error) {
+	// TODO: Use limit
 	var n int
 	n, err = br.Read(fr.rawHeader[:])
 	if err == nil {
