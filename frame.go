@@ -169,7 +169,7 @@ func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
 }
 
 // ReadFromLimitPayload reads frame from reader limiting the payload.
-func (fr *Frame) ReadFromLimitPayload(br io.Reader, max int) {
+func (fr *Frame) ReadFromLimitPayload(br io.Reader, max int) (int64, error) {
 	return fr.readFrom(br, max)
 }
 

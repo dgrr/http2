@@ -2,10 +2,13 @@ package http2
 
 import (
 	"net"
+
+	"github.com/valyala/fasthttp"
 )
 
 // Server ...
 type Server struct {
+	Handler fasthttp.RequestHandler
 }
 
 func makeDefaultServer() *Server {
