@@ -176,10 +176,14 @@ func (s *Server) serveConn(c net.Conn) (err error) {
 		}
 
 		switch fr.Type() {
-		case FrameHeaders, FrameData:
-			println("headers or data")
-			err = ctx.Request.ReadFrom(fr)
+		case FrameHeaders:
+			println("headers")
+			ctx.Request.Header.Read(fr)
 			shouldHandle = err == nil && (ctx.Request.Header.IsGet() || ctx.Request.Header.IsHead())
+		case FrameData:
+			println("data")
+			err = ctx.Request.Read(fr)
+			shouldHandle = err == nil && ctx.Request.Header.parsed
 		case FramePriority:
 			println("priority")
 			p := AcquirePriority()

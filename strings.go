@@ -6,4 +6,5 @@ var (
 	strMethod    = []byte("method")
 	strGET       = []byte("GET")
 	strHEAD      = []byte("HEAD")
+	strPOST      = []byte("POST")
 )

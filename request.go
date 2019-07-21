@@ -17,7 +17,7 @@ var reqPool = sync.Pool{
 type Request struct {
 	Header RequestHeader
 
-	b        *bytebufferpool.ByteBuffer
+	b        bytebufferpool.ByteBuffer
 	lastType uint8 // last type of frame
 }
 
@@ -31,50 +31,24 @@ func (req *Request) Reset() {
 	req.b.Reset()
 }
 
+func (req *Request) Body() []byte {
+	return req.b.Bytes()
+}
+
 var (
 	errCannotHandle      = errors.New("cannot handle this frame type")
 	errLastTypeDontMatch = errors.New("last type doesn't match any")
 )
 
-func (req *Request) ReadFrom(fr *Frame) error {
-	var err error
+func (req *Request) Read(fr *Frame) error {
+	data := AcquireData()
 
-	switch fr.Type() {
-	case FrameContinuation:
-		switch req.lastType {
-		case FrameData:
-			fr.SetType(FrameData)
-			err = req.ReadFrom(fr)
-		case FrameHeaders:
-			fr.SetType(FrameHeaders)
-			err = req.ReadFrom(fr)
-		default:
-			err = errLastTypeDontMatch
-		}
-	case FrameData:
-		data := AcquireData()
-		err = data.ReadFrame(fr)
-		if err == nil {
-			req.b.Write(data.b)
-		}
-		ReleaseData(data)
-	case FrameHeaders:
-		h := AcquireHeaders()
-		err = h.ReadFrame(fr)
-		if err == nil {
-			req.Header.Write(h.rawHeaders)
-			if fr.Has(FlagEndHeaders) {
-				req.Header.parse()
-			}
-		}
-		ReleaseHeaders(h)
-	default:
-		err = errCannotHandle
-	}
-
+	err := data.ReadFrame(fr)
 	if err == nil {
-		req.lastType = fr.Type()
+		req.b.Write(data.b)
 	}
+
+	ReleaseData(data)
 
 	return err
 }
@@ -85,7 +59,9 @@ type RequestHeader struct {
 	method    []byte
 	userAgent []byte
 
-	h   []*HeaderField
+	h      []*HeaderField
+	parsed bool
+
 	hp  *HPACK
 	raw []byte
 }
@@ -96,6 +72,10 @@ func (h *RequestHeader) IsGet() bool {
 
 func (h *RequestHeader) IsHead() bool {
 	return bytes.Equal(h.method, strHEAD)
+}
+
+func (h *RequestHeader) IsPost() bool {
+	return bytes.Equal(h.method, strPOST)
 }
 
 func (h *RequestHeader) Path() []byte {
@@ -116,12 +96,24 @@ func (h *RequestHeader) Reset() {
 	h.raw = h.raw[:0]
 }
 
-func (h *RequestHeader) parse() (err error) {
+func (h *RequestHeader) Read(fr *Frame) {
+	hfr := AcquireHeaders()
+	err := hfr.ReadFrame(fr)
+	if err == nil {
+		//if fr.Has(FlagEndHeaders) {
+		h.parsed = fr.Has(FlagEndHeaders)
+		h.parse(hfr.rawHeaders)
+		//}
+	}
+	ReleaseHeaders(hfr)
+}
+
+func (h *RequestHeader) parse(b []byte) (err error) {
 	hp := h.hp
 	hf := AcquireHeaderField()
 
-	for len(h.raw) > 0 {
-		h.raw, err = hp.Next(hf, h.raw)
+	for len(b) > 0 {
+		b, err = hp.Next(hf, b)
 		if err != nil {
 			break
 		}
