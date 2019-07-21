@@ -36,30 +36,21 @@ func (ctx *Ctx) writeResponse() error {
 func (ctx *Ctx) writeHeader(endStream bool) error {
 	ctx.Response.Header.parse()
 
+	h := AcquireHeaders()
 	fr := AcquireFrame()
+	defer ReleaseHeaders(h)
 	defer ReleaseFrame(fr)
 
-	// TODO: Check user settings ...
 	fr.SetStream(ctx.sid)
-	fr.SetType(FrameHeaders)
-	if endStream {
-		fr.Add(FlagEndStream)
-	}
-	fr.Add(FlagEndHeaders)
 
-	/*
-		fr.Add(FlagPadded)
-		n := fastrand.Uint32n(256)
-		nn := len(h.rawHeaders)
-		h.rawHeaders = resize(h.rawHeaders, nn+n)
-		h.rawHeaders = append(h.rawHeaders[:0], h.rawHeaders[1:]...)
-		h.rawHeaders[0] = uint8(n)
-		rand.Read(h.rawHeaders[nn+1 : nn+n])
-	*/
-
-	fr.SetPayload(
-		ctx.Response.Header.raw,
+	h.SetEndStream(endStream)
+	h.SetEndHeaders(true) // TODO: Check user settings ...
+	h.SetPadding(true)
+	h.SetHeaders(
+		ctx.Response.Header.raw, // TODO: change response.header ...
 	)
+	h.WriteFrame(fr)
+
 	_, err := fr.WriteTo(ctx.c)
 	return err
 }

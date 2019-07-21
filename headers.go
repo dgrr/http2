@@ -1,7 +1,10 @@
 package http2
 
 import (
+	"crypto/rand"
 	"sync"
+
+	"github.com/valyala/fastrand"
 )
 
 const FrameHeaders uint8 = 0x1
@@ -11,7 +14,7 @@ const FrameHeaders uint8 = 0x1
 // https://tools.ietf.org/html/rfc7540#section-6.2
 type Headers struct {
 	noCopy     noCopy
-	pad        bool
+	hasPadding bool
 	stream     uint32
 	weight     byte // TODO: byte or uint8?
 	endStream  bool
@@ -40,7 +43,7 @@ func ReleaseHeaders(h *Headers) {
 
 // Reset ...
 func (h *Headers) Reset() {
-	h.pad = false
+	h.hasPadding = false
 	h.stream = 0
 	h.weight = 0
 	h.endStream = false
@@ -51,7 +54,7 @@ func (h *Headers) Reset() {
 
 // CopyTo copies h fields to h2.
 func (h *Headers) CopyTo(h2 *Headers) {
-	h2.pad = h.pad
+	h2.hasPadding = h.hasPadding
 	h2.parsed = h.parsed
 	h2.stream = h.stream
 	h2.weight = h.weight
@@ -117,12 +120,12 @@ func (h *Headers) SetWeight(w byte) {
 
 // Padding ...
 func (h *Headers) Padding() bool {
-	return h.pad
+	return h.hasPadding
 }
 
-// SetPadding sets padding value ...
+// SetPadding sets hasPaddingding value ...
 func (h *Headers) SetPadding(value bool) {
-	h.pad = value
+	h.hasPadding = value
 }
 
 // ReadFrame reads header data from fr.
@@ -146,4 +149,37 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 	}
 
 	return
+}
+
+func (h *Headers) WriteFrame(fr *Frame) error {
+	fr.SetType(FrameHeaders)
+	if h.endStream {
+		fr.Add(FlagEndStream)
+	}
+	if h.endHeaders {
+		fr.Add(FlagEndHeaders)
+	}
+
+	if h.stream > 0 && h.weight > 0 {
+		fr.Add(FlagPriority)
+
+		uint32ToBytes(h.rawHeaders[1:5], fr.stream)
+		h.rawHeaders[5] = h.weight
+	}
+
+	if h.hasPadding {
+		fr.Add(FlagPadded)
+
+		n := int(fastrand.Uint32n(256-9)) + 9
+		nn := len(h.rawHeaders)
+		h.rawHeaders = resize(h.rawHeaders, int64(nn+n+1))
+		h.rawHeaders = append(h.rawHeaders[:1], h.rawHeaders...)
+		h.rawHeaders[0] = uint8(n)
+
+		rand.Read(h.rawHeaders[nn+1 : nn+n])
+	}
+
+	fr.SetPayload(h.rawHeaders)
+
+	return nil
 }
