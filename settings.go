@@ -271,7 +271,7 @@ func (st *Settings) ReadFrame(fr *Frame) error {
 	return nil
 }
 
-// WriteFrame sets Settings fields and payload to the Frame.
+// WriteFrame writes the settings frame into the frame payload
 func (st *Settings) WriteFrame(fr *Frame) error {
 	st.Encode()
 

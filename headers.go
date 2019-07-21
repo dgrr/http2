@@ -30,16 +30,16 @@ var headersPool = sync.Pool{
 }
 
 // AcquireHeaders ...
-func AcquireHeaders() *Headers {
+func AcquireHeaders(hp *HPACK) *Headers {
 	h := headersPool.Get().(*Headers)
+	h.hpack = hp
 	return h
 }
 
 // ReleaaseHeaders ...
 func ReleaseHeaders(h *Headers) {
 	h.Reset()
-	ReleaseHPACK(h.hpack)
-	h.hpack = nil
+	// Do not release! ReleaseHPACK(h.hpack)
 	headersPool.Put(h)
 }
 
@@ -48,7 +48,7 @@ func (h *Headers) Reset() {
 	h.pad = false
 	h.stream = 0
 	h.weight = 0
-	h.hpack.Reset()
+	h.hpack = nil
 	h.endStream = false
 	h.endHeaders = false
 	h.parsed = false
@@ -61,10 +61,7 @@ func (h *Headers) CopyTo(h2 *Headers) {
 	h2.parsed = h.parsed
 	h2.stream = h.stream
 	h2.weight = h.weight
-	if h2.hpack != nil {
-		ReleaseHPACK(h2.hpack)
-	}
-	h2.hpack = h.hpack
+	h2.hpack = h.hpack // TODO: Copy hpack?
 	h2.endStream = h.endStream
 	h2.endHeaders = h.endHeaders
 	h2.rawHeaders = append(h2.rawHeaders[:0], h.rawHeaders...)
@@ -190,6 +187,7 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 		h.endHeaders = fr.Has(FlagEndHeaders)
 		h.rawHeaders = append(h.rawHeaders, fr.payload...)
 	}
+
 	return
 }
 
@@ -205,7 +203,6 @@ func (h *Headers) WriteFrame(fr *Frame) (err error) {
 	}
 	fr.kind = FrameHeaders
 
-	fr.payload = fr.payload[:0]
 	if h.pad {
 		// TODO: Write padding len
 		fr.Add(FlagPadded)
