@@ -81,6 +81,10 @@ func (h *ResponseHeader) Add(k, v string) {
 	h.hs = append(h.hs, hf)
 }
 
+func (h *ResponseHeader) AddBytes(k, v []byte) {
+	h.Add(b2s(k), b2s(v))
+}
+
 func (h *ResponseHeader) parse() {
 	hf := AcquireHeaderField()
 	defer ReleaseHeaderField(hf)
