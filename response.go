@@ -13,7 +13,8 @@ var resPool = sync.Pool{
 }
 
 type Response struct {
-	h ResponseHeaders
+	Header ResponseHeader
+
 	b *bytebufferpool.ByteBuffer
 }
 
@@ -22,21 +23,31 @@ func AcquireResponse() *Response {
 	return resPool.Get().(*Response)
 }
 
-// ResponseHeaders ...
-type ResponseHeaders struct {
-	h []*HeaderField
+func (res *Response) Reset() {
+	res.Header.Reset()
+	res.b.Reset()
+}
+
+// ResponseHeader ...
+type ResponseHeader struct {
+	hs []*HeaderField
+	hp *HPACK
+}
+
+func (h *ResponseHeader) Reset() {
+	h.hs = h.hs[:0]
 }
 
 // Get ...
-func (h *ResponseHeaders) Get(key []byte) *HeaderField {
+func (h *ResponseHeader) Get(key []byte) *HeaderField {
 	return h.GetString(b2s(key))
 }
 
 // GetString ...
-func (h *ResponseHeaders) GetString(key string) (hf *HeaderField) {
-	for i := range h.h {
-		if b2s(h.h[i].key) == key {
-			hf = h.h[i]
+func (h *ResponseHeader) GetString(key string) (hf *HeaderField) {
+	for i := range h.hs {
+		if b2s(h.hs[i].key) == key {
+			hf = h.hs[i]
 			break
 		}
 	}
