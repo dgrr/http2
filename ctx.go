@@ -56,17 +56,19 @@ func (ctx *Ctx) writeHeader(endStream bool) error {
 }
 
 func (ctx *Ctx) writeBody(endStream bool) error {
+	data := AcquireData()
 	fr := AcquireFrame()
+	defer ReleaseData(data)
 	defer ReleaseFrame(fr)
 
 	fr.SetStream(ctx.sid)
-	fr.SetType(FrameData)
-	if endStream {
-		fr.Add(FlagEndStream)
-	}
-	fr.SetPayload(
+	data.SetPadding(true)
+	data.SetEndStream(endStream)
+	data.SetData(
 		ctx.Response.Body(),
 	)
+	data.WriteFrame(fr)
+
 	_, err := fr.WriteTo(ctx.c)
 	return err
 }

@@ -1,10 +1,13 @@
 package http2
 
 import (
+	"crypto/rand"
 	"fmt"
 	"reflect"
 	"sync"
 	"unsafe"
+
+	"github.com/valyala/fastrand"
 )
 
 // TODO: Needed?
@@ -72,7 +75,7 @@ func resize(b []byte, neededLen int64) []byte {
 	if n := neededLen - int64(len(b)); n > 0 {
 		b = append(b, make([]byte, n)...)
 	}
-	return b
+	return b[:neededLen]
 }
 
 // cutPadding cuts the padding if the frame has FlagPadded
@@ -87,6 +90,17 @@ func cutPadding(fr *Frame) []byte {
 		payload = payload[1 : fr.length-pad]
 	}
 	return payload
+}
+
+func addPadding(b []byte) []byte {
+	n := int(fastrand.Uint32n(256-9)) + 9
+	nn := len(b)
+	b = resize(b, int64(nn+n))
+	b = append(b[:1], b...)
+	b[0] = uint8(n)
+	rand.Read(b[nn+1 : nn+n])
+
+	return b
 }
 
 // copied from https://github.com/valyala/fasthttp

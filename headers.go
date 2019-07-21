@@ -1,10 +1,7 @@
 package http2
 
 import (
-	"crypto/rand"
 	"sync"
-
-	"github.com/valyala/fastrand"
 )
 
 const FrameHeaders uint8 = 0x1
@@ -169,14 +166,7 @@ func (h *Headers) WriteFrame(fr *Frame) error {
 
 	if h.hasPadding {
 		fr.Add(FlagPadded)
-
-		n := int(fastrand.Uint32n(256-9)) + 9
-		nn := len(h.rawHeaders)
-		h.rawHeaders = resize(h.rawHeaders, int64(nn+n+1))
-		h.rawHeaders = append(h.rawHeaders[:1], h.rawHeaders...)
-		h.rawHeaders[0] = uint8(n)
-
-		rand.Read(h.rawHeaders[nn+1 : nn+n])
+		h.rawHeaders = addPadding(h.rawHeaders)
 	}
 
 	fr.SetPayload(h.rawHeaders)
