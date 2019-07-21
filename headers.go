@@ -142,7 +142,7 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 	if err == nil {
 		h.endStream = fr.Has(FlagEndStream)
 		h.endHeaders = fr.Has(FlagEndHeaders)
-		h.rawHeaders = append(h.rawHeaders, fr.payload...)
+		h.rawHeaders = append(h.rawHeaders, payload...)
 	}
 
 	return
