@@ -166,18 +166,27 @@ func (h *RequestHeader) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// Get ...
-func (h *RequestHeader) Get(key []byte) *HeaderField {
-	return h.GetString(b2s(key))
+func (h *RequestHeader) Peek(key string) []byte {
+	hf := h.Get(key)
+	if hf != nil {
+		return hf.value
+	}
+	return nil
 }
 
-// GetString ...
-func (h *RequestHeader) GetString(key string) (hf *HeaderField) {
+// Get ...
+func (h *RequestHeader) Get(key string) (hf *HeaderField) {
 	for i := range h.h {
 		if b2s(h.h[i].key) == key {
 			hf = h.h[i]
 			break
 		}
 	}
+
 	return
+}
+
+// GetBytes ...
+func (h *RequestHeader) GetBytes(key []byte) *HeaderField {
+	return h.Get(b2s(key))
 }
