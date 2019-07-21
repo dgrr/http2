@@ -61,12 +61,12 @@ func (h *Headers) CopyTo(h2 *Headers) {
 }
 
 // RawHeaders ...
-func (h *Headers) RawHeaders() []byte {
+func (h *Headers) Headers() []byte {
 	return h.rawHeaders
 }
 
 // SetHeaders ...
-func (h *Headers) SetRawHeaders(b []byte) {
+func (h *Headers) SetHeaders(b []byte) {
 	h.rawHeaders = append(h.rawHeaders[:0], b...)
 }
 
@@ -147,5 +147,3 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 
 	return
 }
-
-// WriteFrame ...

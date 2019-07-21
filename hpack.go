@@ -298,7 +298,6 @@ const (
 //
 // This function must receive the payload of Header frame.
 func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
-	// TODO: Change Read to Write?
 	var (
 		n   uint64
 		c   byte
