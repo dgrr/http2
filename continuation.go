@@ -82,7 +82,7 @@ func (c *Continuation) WriteFrame(fr *Frame) error {
 	if c.ended {
 		fr.Add(FlagEndHeaders)
 	}
-	fr._type = FrameContinuation
+	fr.kind = FrameContinuation
 	return fr.SetPayload(c.header)
 }
 

@@ -105,7 +105,7 @@ func (data *Data) ReadFrame(fr *Frame) (err error) {
 // This function only resets the frame payload.
 func (data *Data) WriteFrame(fr *Frame) error {
 	// TODO: generate padding and set to the frame payload
-	fr._type = FrameData
+	fr.kind = FrameData
 	fr.payload = fr.payload[:0]
 	if data.pad {
 		fr.Add(FlagPadded)

@@ -203,7 +203,7 @@ func (h *Headers) WriteFrame(fr *Frame) (err error) {
 	if h.endHeaders {
 		fr.Add(FlagEndHeaders)
 	}
-	fr._type = FrameHeaders
+	fr.kind = FrameHeaders
 
 	fr.payload = fr.payload[:0]
 	if h.pad {

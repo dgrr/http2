@@ -275,7 +275,7 @@ func (st *Settings) ReadFrame(fr *Frame) error {
 func (st *Settings) WriteFrame(fr *Frame) error {
 	st.Encode()
 
-	fr._type = FrameSettings
+	fr.kind = FrameSettings
 	if st.ack {
 		fr.Add(FlagAck)
 	}

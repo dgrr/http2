@@ -63,6 +63,6 @@ func (wu *WindowUpdate) ReadFrame(fr *Frame) (err error) {
 
 // WriteFrame ...
 func (wu *WindowUpdate) WriteFrame(fr *Frame) {
-	fr._type = FrameWindowUpdate
+	fr.kind = FrameWindowUpdate
 	fr.payload = appendUint32Bytes(fr.payload[:0], wu.increment)
 }

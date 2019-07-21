@@ -64,7 +64,7 @@ func (pp *PushPromise) ReadFrame(fr *Frame) (err error) {
 
 // WriteFrame ...
 func (pp *PushPromise) WriteFrame(fr *Frame) (err error) {
-	fr._type = FramePushPromise
+	fr.kind = FramePushPromise
 	fr.payload = fr.payload[:0]
 	if pp.pad {
 		fr.Add(FlagPadded)

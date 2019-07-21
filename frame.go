@@ -46,7 +46,7 @@ type Frame struct {
 	length uint32 // 24 bits
 	maxLen uint32
 
-	_type uint8 // 8 bits
+	kind uint8 // 8 bits
 
 	// flags is the flags the frame contains
 	flags uint8 // 8 bits
@@ -71,7 +71,7 @@ func ReleaseFrame(fr *Frame) {
 
 // Reset resets header values.
 func (fr *Frame) Reset() {
-	fr._type = 0
+	fr.kind = 0
 	fr.flags = 0
 	fr.stream = 0
 	fr.length = 0
@@ -89,12 +89,12 @@ func resetBytes(b []byte) { // TODO: to asm using SSE if possible (github.com/tm
 
 // Type returns the frame type (https://httpwg.org/specs/rfc7540.html#Frame_types)
 func (fr *Frame) Type() uint8 {
-	return fr._type
+	return fr.kind
 }
 
-// Set_type sets the frame type for the current frame.
-func (fr *Frame) SetType(_type uint8) {
-	fr._type = _type
+// Setkind sets the frame type for the current frame.
+func (fr *Frame) SetType(kind uint8) {
+	fr.kind = kind
 }
 
 // Stream returns the stream id of the current frame.
@@ -146,14 +146,14 @@ func (fr *Frame) Header() []byte {
 
 func (fr *Frame) parseValues() {
 	fr.rawToLen()                     // 3
-	fr._type = uint8(fr.rawHeader[3]) // 1
+	fr.kind = uint8(fr.rawHeader[3])  // 1
 	fr.flags = uint8(fr.rawHeader[4]) // 1
 	fr.rawToStream()                  // 4
 }
 
 func (fr *Frame) parseHeader() {
 	fr.lenToRaw()                    // 2
-	fr.rawHeader[3] = byte(fr._type) // 1
+	fr.rawHeader[3] = byte(fr.kind)  // 1
 	fr.rawHeader[4] = byte(fr.flags) // 1
 	fr.streamToRaw()                 // 4
 }
@@ -259,7 +259,7 @@ func (fr *Frame) Write(b []byte) (int, error) {
 // AppendPayload appends bytes to frame payload
 //
 // If the result payload exceeds the max length ErrPayloadExceeds is returned.
-// TODO: Add example of continuation frame
+// TODO: Split a frame if the length is exceeded
 func (fr *Frame) AppendPayload(b []byte) (int, error) {
 	return fr.appendCheckingLen(fr.payload, b)
 }

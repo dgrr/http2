@@ -78,7 +78,7 @@ func (pry *Priority) ReadFrame(fr *Frame) (err error) {
 
 // WriteFrame writes pry to the Freame. The Frame payload is resetted.
 func (pry *Priority) WriteFrame(fr *Frame) {
-	fr._type = FramePriority
+	fr.kind = FramePriority
 	fr.payload = appendUint32Bytes(fr.payload[:0], pry.stream)
 	fr.payload = append(fr.payload, pry.weight)
 }
