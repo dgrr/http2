@@ -17,29 +17,24 @@ type Headers struct {
 	endStream  bool
 	endHeaders bool
 	parsed     bool
-	hpack      *HPACK
 	rawHeaders []byte // this field is used to store uncompleted headers.
 }
 
 var headersPool = sync.Pool{
 	New: func() interface{} {
-		return &Headers{
-			hpack: AcquireHPACK(),
-		}
+		return &Headers{}
 	},
 }
 
 // AcquireHeaders ...
-func AcquireHeaders(hp *HPACK) *Headers {
+func AcquireHeaders() *Headers {
 	h := headersPool.Get().(*Headers)
-	h.hpack = hp
 	return h
 }
 
 // ReleaaseHeaders ...
 func ReleaseHeaders(h *Headers) {
 	h.Reset()
-	// Do not release! ReleaseHPACK(h.hpack)
 	headersPool.Put(h)
 }
 
@@ -48,7 +43,6 @@ func (h *Headers) Reset() {
 	h.pad = false
 	h.stream = 0
 	h.weight = 0
-	h.hpack = nil
 	h.endStream = false
 	h.endHeaders = false
 	h.parsed = false
@@ -61,39 +55,9 @@ func (h *Headers) CopyTo(h2 *Headers) {
 	h2.parsed = h.parsed
 	h2.stream = h.stream
 	h2.weight = h.weight
-	h2.hpack = h.hpack // TODO: Copy hpack?
 	h2.endStream = h.endStream
 	h2.endHeaders = h.endHeaders
 	h2.rawHeaders = append(h2.rawHeaders[:0], h.rawHeaders...)
-}
-
-// Parse parses raw headers to the HPACK structure.
-func (h *Headers) Parse() (err error) {
-	if !h.parsed {
-		h.parsed = true
-		_, err = h.hpack.Read(h.rawHeaders)
-	}
-	return
-}
-
-// Add adds a name and value to the HPACK header.
-func (h *Headers) Add(name, value string) {
-	h.hpack.Add(name, value)
-}
-
-// AddBytes adds a name and value to the HPACK header.
-func (h *Headers) AddBytes(name, value []byte) {
-	h.hpack.AddBytes(name, value)
-}
-
-// AddBytesK ...
-func (h *Headers) AddBytesK(name []byte, value string) {
-	h.hpack.AddBytesK(name, value)
-}
-
-// AddBytesV ...
-func (h *Headers) AddBytesV(name string, value []byte) {
-	h.hpack.AddBytesV(name, value)
 }
 
 // RawHeaders ...
@@ -161,13 +125,6 @@ func (h *Headers) SetPadding(value bool) {
 	h.pad = value
 }
 
-// HPACK returns the HPACK of Headers.
-//
-// Do not release this field by your own.
-func (h *Headers) HPACK() *HPACK {
-	return h.hpack
-}
-
 // ReadFrame reads header data from fr.
 //
 // This function appends over rawHeaders .....
@@ -191,28 +148,4 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 	return
 }
 
-// WriteFrame writes h into fr,
-//
-// This function only resets the payload
-func (h *Headers) WriteFrame(fr *Frame) (err error) {
-	if h.endStream {
-		fr.Add(FlagEndStream)
-	}
-	if h.endHeaders {
-		fr.Add(FlagEndHeaders)
-	}
-	fr.kind = FrameHeaders
-
-	if h.pad {
-		// TODO: Write padding len
-		fr.Add(FlagPadded)
-	}
-	if h.stream > 0 && h.weight > 0 {
-		fr.Add(FlagPriority)
-		// TODO: Write stream and weight
-	}
-	// TODO: Writing header directly is an error?
-	fr.payload, err = h.hpack.Write(fr.payload)
-	// TODO: Write padding
-	return err
-}
+// WriteFrame ...
