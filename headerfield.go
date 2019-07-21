@@ -58,6 +58,16 @@ func (hf *HeaderField) CopyTo(hf2 *HeaderField) {
 	hf2.sensible = hf.sensible
 }
 
+func (hf *HeaderField) Set(k, v string) {
+	hf.SetKey(k)
+	hf.SetValue(v)
+}
+
+func (hf *HeaderField) SetBytes(k, v []byte) {
+	hf.SetKeyBytes(k)
+	hf.SetValueBytes(v)
+}
+
 // Key returns the key of the field
 func (hf *HeaderField) Key() string {
 	return string(hf.key)
