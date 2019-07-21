@@ -7,13 +7,7 @@ import (
 )
 
 func translateFromCtx(ctx *Ctx) *fasthttp.RequestCtx {
-	req := fasthttp.AcquireRequest()
-	res := fasthttp.AcquireResponse()
 	rctx := &fasthttp.RequestCtx{}
-	req.CopyTo(&rctx.Request)
-	res.CopyTo(&rctx.Response)
-	fasthttp.ReleaseRequest(req)
-	fasthttp.ReleaseResponse(res)
 
 	for _, hf := range ctx.Request.Header.h {
 		rctx.Request.Header.AddBytesKV(hf.key, hf.value)
@@ -27,6 +21,12 @@ func translateFromCtx(ctx *Ctx) *fasthttp.RequestCtx {
 	rctx.Request.Header.SetUserAgentBytes(
 		ctx.Request.Header.userAgent,
 	)
+
+	if ctx.Request.b.Len() > 0 {
+		rctx.Request.SetBody(
+			ctx.Request.b.Bytes(),
+		)
+	}
 
 	return rctx
 }
