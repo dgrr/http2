@@ -1,6 +1,7 @@
 package http2
 
 import (
+	"fmt"
 	"io"
 	"sync"
 )
@@ -172,6 +173,7 @@ func (fr *Frame) ReadFromLimitPayload(br io.Reader, max uint32) (int64, error) {
 	return fr.readFrom(br, max)
 }
 
+// TODO: Delete rb?
 func (fr *Frame) readFrom(br io.Reader, max uint32) (rb int64, err error) {
 	var n int
 	n, err = br.Read(fr.rawHeader[:])
@@ -183,10 +185,13 @@ func (fr *Frame) readFrom(br io.Reader, max uint32) (rb int64, err error) {
 			// Parsing Frame's Header field.
 			fr.parseValues()
 			if max > 0 && fr.length > max {
-				// TODO: error oversize or continue reading only max?
+				// TODO: Discard bytes and return an error
 			} else if fr.length > 0 {
 				// uint32 should be extended to int64.
 				nn := int64(fr.length)
+				if nn < 0 {
+					panic(fmt.Sprintf("length is lower than 0 (%d). Overflow? (%d)", nn, fr.length))
+				}
 				fr.payload = resize(fr.payload, nn)
 
 				n, err = br.Read(fr.payload[:nn])
@@ -203,14 +208,14 @@ func (fr *Frame) readFrom(br io.Reader, max uint32) (rb int64, err error) {
 // WriteTo writes frame to the Writer.
 //
 // This function returns Frame bytes written and/or error.
-func (fr *Frame) WriteTo(bw io.Writer) (wb int64, err error) {
+func (fr *Frame) WriteTo(w io.Writer) (wb int64, err error) {
 	var n int
 	fr.parseHeader()
 
-	n, err = bw.Write(fr.rawHeader[:])
+	n, err = w.Write(fr.rawHeader[:])
 	if err == nil {
 		wb += int64(n)
-		n, err = bw.Write(fr.payload[:fr.length]) // TODO: Must payload be limited here?
+		n, err = w.Write(fr.payload[:fr.length]) // TODO: Must payload be limited here?
 		if err == nil {
 			wb += int64(n)
 		}
