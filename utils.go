@@ -53,6 +53,19 @@ func bytesToUint32(b []byte) uint32 {
 	return n
 }
 
+func equalsFold(a, b []byte) bool {
+	n := len(a)
+	if n != len(b) {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		if a[i]|0x20 != b[i]|0x20 {
+			return false
+		}
+	}
+	return true
+}
+
 // resize resizes b if neededLen is granther than cap(b)
 func resize(b []byte, neededLen int64) []byte {
 	b = b[:cap(b)]
