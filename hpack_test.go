@@ -3,10 +3,12 @@ package http2
 import (
 	"bytes"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 )
 
-func TestAppendInt(t *testing.T) {
+func TestHPACKAppendInt(t *testing.T) {
 	n := uint64(15)
 	nn := uint64(1337)
 	nnn := uint64(122)
@@ -44,7 +46,7 @@ func checkInt(t *testing.T, err error, n, e uint64, elen int, b []byte) {
 	}
 }
 
-func TestReadInt(t *testing.T) {
+func TestHPACKReadInt(t *testing.T) {
 	var err error
 	n := uint64(0)
 	b := []byte{15, 31, 154, 10, 122}
@@ -59,7 +61,7 @@ func TestReadInt(t *testing.T) {
 	checkInt(t, err, n, 122, 0, b)
 }
 
-func TestWriteTwoStrings(t *testing.T) {
+func TestHPACKWriteTwoStrings(t *testing.T) {
 	var dstA []byte
 	var dstB []byte
 	var err error
@@ -102,10 +104,33 @@ func check(t *testing.T, slice []*HeaderField, i int, k, v string) {
 
 func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []string, tableSize int) {
 	var err error
-	b, err = hpack.Read(b)
-	if err != nil {
-		t.Fatal(err)
+	var lck sync.Mutex
+	var ok = false
+
+	go func() {
+		// timeout in case a header has any error
+		time.Sleep(time.Second * 2)
+		lck.Lock()
+		ok = true
+		lck.Unlock()
+	}()
+
+	hpack.fields = make([]*HeaderField, len(fields)/2)
+	for i := 0; len(b) > 0 && !ok; i++ {
+		hpack.fields[i] = AcquireHeaderField()
+		b, err = hpack.Next(hpack.fields[i], b)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
+	lck.Lock()
+	ok = true
+	lck.Unlock()
+
+	if len(b) > 0 {
+		t.Fatal("error reading headers: timeout")
+	}
+
 	n := 0
 	for i := 0; i < len(fields); i += 2 {
 		check(t, hpack.fields, n, fields[i], fields[i+1])
@@ -123,7 +148,7 @@ func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []str
 	hpack.releaseFields()
 }
 
-func TestReadRequestWithoutHuffman(t *testing.T) {
+func TestHPACKReadRequestWithoutHuffman(t *testing.T) {
 	b := []byte{
 		0x82, 0x86, 0x84, 0x41, 0x0f, 0x77,
 		0x77, 0x77, 0x2e, 0x65, 0x78, 0x61,
@@ -178,7 +203,7 @@ func TestReadRequestWithoutHuffman(t *testing.T) {
 	ReleaseHPACK(hpack)
 }
 
-func TestReadRequestWithHuffman(t *testing.T) {
+func TestHPACKReadRequestWithHuffman(t *testing.T) {
 	b := []byte{
 		0x82, 0x86, 0x84, 0x41, 0x8c, 0xf1,
 		0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b,
@@ -230,7 +255,7 @@ func TestReadRequestWithHuffman(t *testing.T) {
 	ReleaseHPACK(hpack)
 }
 
-func TestReadResponseWithoutHuffman(t *testing.T) {
+func TestHPACKReadResponseWithoutHuffman(t *testing.T) {
 	b := []byte{
 		0x48, 0x03, 0x33, 0x30, 0x32, 0x58,
 		0x07, 0x70, 0x72, 0x69, 0x76, 0x61,
@@ -310,7 +335,7 @@ func TestReadResponseWithoutHuffman(t *testing.T) {
 	ReleaseHPACK(hpack)
 }
 
-func TestReadResponseWithHuffman(t *testing.T) {
+func TestHPACKReadResponseWithHuffman(t *testing.T) {
 	b := []byte{
 		0x48, 0x82, 0x64, 0x02, 0x58, 0x85,
 		0xae, 0xc3, 0x77, 0x1a, 0x4b, 0x61,
@@ -421,7 +446,7 @@ func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []st
 	hpack.releaseFields()
 }
 
-func TestWriteRequestWithoutHuffman(t *testing.T) {
+func TestHPACKWriteRequestWithoutHuffman(t *testing.T) {
 	r := []byte{
 		0x82, 0x86, 0x84, 0x41, 0x0f, 0x77,
 		0x77, 0x77, 0x2e, 0x65, 0x78, 0x61,
@@ -477,7 +502,7 @@ func TestWriteRequestWithoutHuffman(t *testing.T) {
 	ReleaseHPACK(hpack)
 }
 
-func TestWriteRequestWithHuffman(t *testing.T) {
+func TestHPACKWriteRequestWithHuffman(t *testing.T) {
 	r := []byte{
 		0x82, 0x86, 0x84, 0x41, 0x8c, 0xf1,
 		0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b,
@@ -529,7 +554,7 @@ func TestWriteRequestWithHuffman(t *testing.T) {
 	ReleaseHPACK(hpack)
 }
 
-func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
+func TestHPACKWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 	r := []byte{
 		0x48, 0x03, 0x33, 0x30, 0x32, 0x58,
 		0x07, 0x70, 0x72, 0x69, 0x76, 0x61,
@@ -609,7 +634,7 @@ func TestWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 	ReleaseHPACK(hpack)
 }
 
-func TestWriteResponseWithHuffman(t *testing.T) { // WithHuffman
+func TestHPACKWriteResponseWithHuffman(t *testing.T) { // WithHuffman
 	r := []byte{
 		0x48, 0x82, 0x64, 0x02, 0x58, 0x85,
 		0xae, 0xc3, 0x77, 0x1a, 0x4b, 0x61,
