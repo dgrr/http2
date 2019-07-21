@@ -96,7 +96,7 @@ func (h *RequestHeader) Reset() {
 	h.raw = h.raw[:0]
 }
 
-func (h *RequestHeader) Read(fr *Frame) {
+func (h *RequestHeader) Read(fr *Frame) error {
 	hfr := AcquireHeaders()
 	err := hfr.ReadFrame(fr)
 	if err == nil {
@@ -106,6 +106,7 @@ func (h *RequestHeader) Read(fr *Frame) {
 		//}
 	}
 	ReleaseHeaders(hfr)
+	return err
 }
 
 func (h *RequestHeader) parse(b []byte) (err error) {
