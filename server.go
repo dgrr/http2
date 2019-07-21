@@ -2,20 +2,21 @@ package http2
 
 import (
 	"net"
-
-	"github.com/valyala/fasthttp"
 )
+
+type RequestHandler func(*Ctx)
 
 // Server ...
 type Server struct {
-	Handler fasthttp.RequestHandler
-}
-
-func makeDefaultServer() *Server {
-	return &Server{}
+	Handler RequestHandler
 }
 
 // serveConn ...
 func (s *Server) serveConn(c net.Conn) (err error) {
+	// Read the settings frame.
+	// Ctx-per-stream
+	for {
+
+	}
 	return
 }

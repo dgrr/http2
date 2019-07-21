@@ -54,9 +54,9 @@ func bytesToUint32(b []byte) uint32 {
 }
 
 // resize resizes b if neededLen is granther than cap(b)
-func resize(b []byte, neededLen int) []byte {
+func resize(b []byte, neededLen int64) []byte {
 	b = b[:cap(b)]
-	if n := neededLen - len(b); n > 0 {
+	if n := neededLen - int64(len(b)); n > 0 {
 		b = append(b, make([]byte, n)...)
 	}
 	return b

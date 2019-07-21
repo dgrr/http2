@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-const FrameData = 0x0
+const FrameData uint8 = 0x0
 
 // Data defines a FrameData
 type Data struct {
@@ -65,7 +65,7 @@ func (data *Data) Padding() bool {
 	return data.pad
 }
 
-// SetPadding sets padding to the data if true. In false the data won't be padded.
+// SetPadding sets padding to the data if true. If false the data won't be padded.
 func (data *Data) SetPadding(value bool) {
 	data.pad = value
 }

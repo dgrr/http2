@@ -43,7 +43,6 @@ type Frame struct {
 	// TODO: if length is granther than 16384 the body must not be
 	// readed unless settings specify it
 
-	// Len is the payload length
 	length uint32 // 24 bits
 	maxLen uint32
 
@@ -165,39 +164,34 @@ func (fr *Frame) parseHeader() {
 //
 // Unlike io.ReaderFrom this method does not read until io.EOF
 func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
-	return fr.readFrom(br, -1)
+	return fr.readFrom(br, 0)
 }
 
 // ReadFromLimitPayload reads frame from reader limiting the payload.
-func (fr *Frame) ReadFromLimitPayload(br io.Reader, max int) (int64, error) {
+func (fr *Frame) ReadFromLimitPayload(br io.Reader, max uint32) (int64, error) {
 	return fr.readFrom(br, max)
 }
 
-func (fr *Frame) readFrom(br io.Reader, max int) (rdb int64, err error) {
-	// TODO: Use limit
+func (fr *Frame) readFrom(br io.Reader, max uint32) (rb int64, err error) {
 	var n int
 	n, err = br.Read(fr.rawHeader[:])
 	if err == nil {
 		if n != defaultFrameSize {
 			err = Error(FrameSizeError) // TODO: ?
 		} else {
-			rdb += int64(n)
-			// parsing length and other fields.
+			rb += int64(n)
+			// Parsing Frame's Header field.
 			fr.parseValues()
-			if fr.length > fr.maxLen {
-				// TODO: error oversize
+			if max > 0 && fr.length > max {
+				// TODO: error oversize or continue reading only max?
 			} else if fr.length > 0 {
-				// uint32 must be extended to int64.
-				fr.payload = fr.payload[:cap(fr.payload)]
-				nn := int64(fr.length) - int64(cap(fr.payload))
-				if nn > 0 {
-					// TODO: ...
-					fr.payload = append(fr.payload, make([]byte, nn)...)
-				}
-				nn = int64(fr.length) // TODO: Change nn by fr.Len?
+				// uint32 should be extended to int64.
+				nn := int64(fr.length)
+				fr.payload = resize(fr.payload, nn)
+
 				n, err = br.Read(fr.payload[:nn])
 				if err == nil {
-					rdb += int64(n)
+					rb += int64(n)
 					fr.payload = fr.payload[:n]
 				}
 			}
@@ -209,16 +203,16 @@ func (fr *Frame) readFrom(br io.Reader, max int) (rdb int64, err error) {
 // WriteTo writes frame to the Writer.
 //
 // This function returns Frame bytes written and/or error.
-func (fr *Frame) WriteTo(bw io.Writer) (wrb int64, err error) {
+func (fr *Frame) WriteTo(bw io.Writer) (wb int64, err error) {
 	var n int
 	fr.parseHeader()
 
 	n, err = bw.Write(fr.rawHeader[:])
 	if err == nil {
-		wrb += int64(n)
+		wb += int64(n)
 		n, err = bw.Write(fr.payload[:fr.length]) // TODO: Must payload be limited here?
 		if err == nil {
-			wrb += int64(n)
+			wb += int64(n)
 		}
 	}
 	return

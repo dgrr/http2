@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"io"
-
-	"github.com/valyala/fasthttp"
 )
 
 // Byteorder must be big endian
@@ -75,23 +73,4 @@ func UpgradeTLS(c connTLSer) (ok bool) {
 		}
 	}
 	return
-}
-
-// UpgradeHTTP checks if connection can be upgraded via HTTP.
-//
-// returns true if the HTTP/2 using Upgrade header field have been stablished.
-func UpgradeHTTP(ctx *fasthttp.RequestCtx) bool {
-	// TODO:
-	return false
-}
-
-// PrepareServer enables HTTP/2 support in fasthttp.Server using s2.
-func PrepareServer(s *fasthttp.Server, s2 *Server) {
-	if s2 == nil {
-		s2 = makeDefaultServer()
-	}
-	if s2.Handler == nil {
-		s2.Handler = s.Handler
-	}
-	s.NextProto(H2TLSProto, s2.serveConn)
 }

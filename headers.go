@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-const FrameHeaders = 0x1
+const FrameHeaders uint8 = 0x1
 
 // Headers defines a FrameHeaders
 //
