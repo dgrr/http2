@@ -169,49 +169,47 @@ func (s *Server) serveConn(c net.Conn) (err error) {
 		if !ok {
 			ctx = s.acquireCtx(c)
 			ctx.SetHPACK(hp)
-			ctx.SetStream(sStreamID)
+			ctx.SetStream(cStreamID)
 
 			// Adding the context to the stream list
-			streams[fr.Stream()] = ctx
+			streams[cStreamID] = ctx
 		}
 
-		err = ctx.Request.ReadFrom(fr)
-		switch err {
-		case nil:
-			shouldHandle = ctx.Request.Header.IsGet() || ctx.Request.Header.IsHead()
-		case errCannotHandle:
-			switch fr.Type() {
-			case FramePriority:
-				println("priority")
-			case FrameResetStream:
-				println("reset")
-			case FrameSettings:
-				println("settings")
-				// TODO: Check if the client's settings fit the server ones
-				// reading settings frame
-				err = userSettings.ReadFrame(fr)
-				if err == nil {
-					userSettings.ack = true
-					fr := AcquireFrame()
-					userSettings.WriteFrame(fr)
-					err = ctx.writeFrame(fr)
-					ReleaseFrame(fr)
-				}
-			case FramePushPromise:
-				println("pp")
-			case FramePing:
-				println("ping")
-			case FrameGoAway:
-				println("away")
-			case FrameWindowUpdate:
-				println("update")
-			case FrameContinuation:
-				println("continuation")
+		switch fr.Type() {
+		case FrameHeaders, FrameData:
+			println("headers or data")
+			err = ctx.Request.ReadFrom(fr)
+			shouldHandle = err == nil && (ctx.Request.Header.IsGet() || ctx.Request.Header.IsHead())
+		case FramePriority:
+			println("priority")
+			p := AcquirePriority()
+			p.ReadFrame(fr)
+			ReleasePriority(p)
+			// TODO: If a PRIORITY frame is received with a stream identifier of 0x0, the recipient MUST respond with a connection error
+		case FrameResetStream:
+			println("reset")
+		case FrameSettings:
+			println("settings")
+			// TODO: Check if the client's settings fit the server ones
+			// reading settings frame
+			err = userSettings.ReadFrame(fr)
+			if err == nil {
 			}
+		case FramePushPromise:
+			println("pp")
+		case FramePing:
+			println("ping")
+		case FrameGoAway:
+			println("away")
+		case FrameWindowUpdate:
+			println("update")
+		case FrameContinuation:
+			println("continuation")
 		}
 
 		if shouldHandle {
 			s.Handler(ctx)
+			err = ctx.writeResponse()
 		}
 	}
 
