@@ -55,7 +55,7 @@ var (
 	ErrZeroPayload     = errors.New("frame Payload len = 0")
 	ErrMissingBytes    = errors.New("missing payload bytes. Need more")
 	ErrTooManyBytes    = errors.New("too many bytes")
-	ErrBadPreface      = errors.New("bad preface size")
+	ErrBadPreface      = errors.New("wrong preface")
 	ErrFrameMismatch   = errors.New("frame type mismatch from called function")
 	ErrNilWriter       = errors.New("Writer cannot be nil")
 	ErrNilReader       = errors.New("Reader cannot be nil")
