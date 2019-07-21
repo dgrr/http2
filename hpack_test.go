@@ -94,8 +94,8 @@ func check(t *testing.T, slice []*HeaderField, i int, k, v string) {
 		t.Fatalf("fields len exceeded. %d <> %d", len(slice), i)
 	}
 	hf := slice[i]
-	if b2s(hf.name) != k {
-		t.Fatalf("unexpected key: %s<>%s", hf.name, k)
+	if b2s(hf.key) != k {
+		t.Fatalf("unexpected key: %s<>%s", hf.key, k)
 	}
 	if b2s(hf.value) != v {
 		t.Fatalf("unexpected value: %s<>%s", hf.value, v)
@@ -426,10 +426,14 @@ func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []st
 		n++
 	}
 
-	b, err := hpack.Write(nil)
-	if err != nil {
-		t.Fatal(err)
+	var (
+		b []byte
+	)
+
+	for _, hf := range hpack.fields {
+		b = hpack.AppendHeader(hf, b)
 	}
+
 	if i := compare(b, r); i != -1 {
 		t.Fatalf("failed in %d: %s", i, hexComparision(b[i:], r[i:]))
 	}
