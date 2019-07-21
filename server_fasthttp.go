@@ -1,4 +1,4 @@
-// +build !fasthttp
+// +build fasthttp
 
 package http2
 
@@ -8,15 +8,22 @@ import (
 	"log"
 	"net"
 	"sync"
+
+	"github.com/valyala/fasthttp"
 )
 
 type RequestHandler func(*Ctx)
 
 // Server ...
 type Server struct {
-	Handler RequestHandler
+	s *fasthttp.Server
 
 	ctxPool sync.Pool
+}
+
+func (s *Server) ConfigureServer(ss *fasthttp.Server) {
+	s.s = ss
+	ss.NextProto(H2TLSProto, s.serveConn)
 }
 
 // ListenAndServeTLS ...
@@ -214,7 +221,9 @@ func (s *Server) serveConn(c net.Conn) (err error) {
 		}
 
 		if shouldHandle {
-			s.Handler(ctx)
+			rctx := translateFromCtx(ctx)
+			s.s.Handler(rctx)
+			translateToCtx(ctx, rctx)
 			err = ctx.writeResponse()
 		}
 	}
