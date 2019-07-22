@@ -10,9 +10,9 @@ const FrameContinuation uint8 = 0x9
 //
 // https://tools.ietf.org/html/rfc7540#section-6.10
 type Continuation struct {
-	noCopy noCopy
-	ended  bool
-	header []byte
+	noCopy     noCopy
+	endHeaders bool
+	rawHeaders []byte
 }
 
 var continuationPool = sync.Pool{
@@ -34,33 +34,33 @@ func ReleaseContinuation(c *Continuation) {
 
 // Reset ...
 func (c *Continuation) Reset() {
-	c.ended = false
-	c.header = c.header[:0]
+	c.endHeaders = false
+	c.rawHeaders = c.rawHeaders[:0]
 }
 
 func (c *Continuation) CopyTo(cc *Continuation) {
-	cc.ended = c.ended
-	cc.header = append(cc.header[:0], c.header...)
+	cc.endHeaders = c.endHeaders
+	cc.rawHeaders = append(cc.rawHeaders[:0], c.rawHeaders...)
 }
 
 // Header returns Header bytes.
 func (c *Continuation) Header() []byte {
-	return c.header
+	return c.rawHeaders
 }
 
 // SetEndStream ...
 func (c *Continuation) SetEndStream(value bool) {
-	c.ended = value
+	c.endHeaders = value
 }
 
 // SetHeader ...
 func (c *Continuation) SetHeader(b []byte) {
-	c.header = append(c.header[:0], b...)
+	c.rawHeaders = append(c.rawHeaders[:0], b...)
 }
 
 // AppendHeader ...
 func (c *Continuation) AppendHeader(b []byte) {
-	c.header = append(c.header, b...)
+	c.rawHeaders = append(c.rawHeaders, b...)
 }
 
 // Write ...
@@ -72,18 +72,16 @@ func (c *Continuation) Write(b []byte) (int, error) {
 
 // ReadFrame reads decodes fr payload into c.
 func (c *Continuation) ReadFrame(fr *Frame) (err error) {
-	c.ended = fr.Has(FlagEndHeaders)
+	c.endHeaders = fr.Has(FlagEndHeaders)
 	c.SetHeader(fr.payload)
 	return
 }
 
 // WriteFrame ...
 func (c *Continuation) WriteFrame(fr *Frame) error {
-	if c.ended {
+	if c.endHeaders {
 		fr.Add(FlagEndHeaders)
 	}
 	fr.kind = FrameContinuation
-	return fr.SetPayload(c.header)
+	return fr.SetPayload(c.rawHeaders)
 }
-
-// TODO: WriteTo ?
