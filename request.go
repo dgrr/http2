@@ -96,16 +96,36 @@ func (h *RequestHeader) Reset() {
 	h.raw = h.raw[:0]
 }
 
-func (h *RequestHeader) Read(fr *Frame) error {
-	hfr := AcquireHeaders()
-	err := hfr.ReadFrame(fr)
-	if err == nil {
-		//if fr.Has(FlagEndHeaders) {
-		h.parsed = fr.Has(FlagEndHeaders)
-		h.parse(hfr.rawHeaders)
-		//}
+func (h *RequestHeader) Read(fr *Frame) (err error) {
+	var (
+		end bool
+	)
+
+	switch fr.Type() {
+	case FrameHeaders:
+		println("headers")
+		hfr := AcquireHeaders()
+		defer ReleaseHeaders(hfr)
+
+		err = hfr.ReadFrame(fr)
+
+		h.raw = append(h.raw, hfr.rawHeaders...)
+		end = hfr.endHeaders
+	case FrameContinuation:
+		println("continuation")
+		cfr := AcquireContinuation()
+		defer ReleaseContinuation(cfr)
+
+		err = cfr.ReadFrame(fr)
+
+		h.raw = append(h.raw, cfr.rawHeaders...)
+		end = cfr.endHeaders
 	}
-	ReleaseHeaders(hfr)
+	if err == nil && end {
+		err = h.parse(h.raw)
+		h.parsed = err == nil
+	}
+
 	return err
 }
 
