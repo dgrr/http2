@@ -21,7 +21,7 @@ type Server struct {
 
 // ListenAndServeTLS ...
 func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
-	tlsConfig, err := acquireTLSConfig(certFile, keyFile)
+	tlsConfig, err := newTLSConfig(certFile, keyFile)
 	if err != nil {
 		return err
 	}
@@ -34,7 +34,7 @@ func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
 	return err
 }
 
-func acquireTLSConfig(certFile, keyFile string) (*tls.Config, error) {
+func newTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, err
@@ -149,7 +149,7 @@ func (s *Server) serveConn(c net.Conn) (err error) {
 		}
 
 		cStreamID = fr.Stream()
-		if cStreamID == 0x0 {
+		if cStreamID == 0 {
 			println("control message")
 			// TODO: stuff...
 			continue
@@ -178,10 +178,11 @@ func (s *Server) serveConn(c net.Conn) (err error) {
 		}
 
 		switch fr.Type() {
-		case FrameHeaders:
-			println("headers")
+		case FrameHeaders, FrameContinuation:
+			println("headers or continuation")
 			err = ctx.Request.Header.Read(fr)
-			shouldHandle = err == nil && (ctx.Request.Header.IsGet() || ctx.Request.Header.IsHead())
+			shouldHandle = ctx.Request.Header.parsed &&
+				(ctx.Request.Header.IsGet() || ctx.Request.Header.IsHead())
 		case FrameData:
 			println("data")
 			err = ctx.Request.Read(fr)
@@ -209,8 +210,6 @@ func (s *Server) serveConn(c net.Conn) (err error) {
 			println("away")
 		case FrameWindowUpdate:
 			println("update")
-		case FrameContinuation:
-			println("continuation")
 		}
 
 		if shouldHandle {
