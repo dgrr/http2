@@ -10,7 +10,6 @@ const FrameContinuation uint8 = 0x9
 //
 // https://tools.ietf.org/html/rfc7540#section-6.10
 type Continuation struct {
-	noCopy     noCopy
 	endHeaders bool
 	rawHeaders []byte
 }

@@ -1,101 +1,13 @@
-// +build !fasthttp
-
 package http2
 
 import (
 	"crypto/tls"
 	"errors"
+	"github.com/valyala/fasthttp"
 	"log"
 	"net"
 	"sync"
 )
-
-type RequestHandler func(*Ctx)
-
-// Server ...
-type Server struct {
-	Handler RequestHandler
-
-	ctxPool sync.Pool
-}
-
-// ListenAndServeTLS ...
-func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
-	tlsConfig, err := newTLSConfig(certFile, keyFile)
-	if err != nil {
-		return err
-	}
-
-	ln, err := tls.Listen("tcp4", addr, tlsConfig)
-	if err == nil {
-		err = s.Serve(ln)
-	}
-
-	return err
-}
-
-func newTLSConfig(certFile, keyFile string) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, err
-	}
-
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{
-			cert,
-		},
-		NextProtos: []string{
-			H2TLSProto,
-		},
-	}
-	tlsConfig.BuildNameToCertificate()
-
-	return tlsConfig, nil
-}
-
-// Serve ...
-func (s *Server) Serve(ln net.Listener) error {
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			// TODO: Handle
-			break
-		}
-
-		if cTLS, ok := c.(connTLSer); ok {
-			err = cTLS.Handshake()
-			if err == nil {
-				switch cTLS.ConnectionState().NegotiatedProtocol {
-				case H2TLSProto:
-				default:
-					err = errUpgrade
-				}
-			}
-		}
-
-		if err != nil {
-			log.Printf("error serving conn: %s\n", err)
-			continue
-		}
-
-		go s.serveConn(c)
-	}
-
-	return nil
-}
-
-var errUpgrade = errors.New("error upgrading the connection")
-
-func (s *Server) acquireCtx(c net.Conn) (ctx *Ctx) {
-	ctxR := s.ctxPool.Get()
-	if ctxR == nil {
-		ctx = &Ctx{}
-	} else {
-		ctx = ctxR.(*Ctx)
-	}
-	ctx.c = c
-	return ctx
-}
 
 func nextStreamID(current, clientLast uint32) uint32 {
 	n := uint32(1)
@@ -106,6 +18,24 @@ func nextStreamID(current, clientLast uint32) uint32 {
 		current += n
 	}
 	return current
+}
+
+// ConfigureServer configures the fasthttp's server to handle
+// HTTP/2 connections. The HTTP/2 connection can be only
+// established if the fasthttp server is using TLS.
+//
+// Future implementations may support HTTP/2 through plain TCP.
+func ConfigureServer(s *fasthttp.Server) *Server {
+	s2 := &Server{
+		s: s,
+	}
+	s.NextProto(H2TLSProto, s2.serveConn)
+}
+
+
+// Server ...
+type Server struct {
+	s *fasthttp.Server
 }
 
 // serveConn ...
@@ -213,7 +143,7 @@ func (s *Server) serveConn(c net.Conn) (err error) {
 		}
 
 		if shouldHandle {
-			s.Handler(ctx)
+			s.s.Handler(ctx)
 			err = ctx.writeResponse()
 		}
 	}

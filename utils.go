@@ -18,7 +18,7 @@ var bytePool = sync.Pool{
 }
 
 func uint24ToBytes(b []byte, n uint32) {
-	_ = b[2] // bound cfrecking
+	_ = b[2] // bound checking
 	b[0] = byte(n >> 16)
 	b[1] = byte(n >> 8)
 	b[2] = byte(n)
