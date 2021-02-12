@@ -10,7 +10,6 @@ const FrameGoAway FrameType = 0x7
 //
 // https://tools.ietf.org/html/rfc7540#section-6.8
 type GoAway struct {
-	noCopy noCopy
 	stream uint32
 	code   uint32
 	data   []byte // additional data

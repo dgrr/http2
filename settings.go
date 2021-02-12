@@ -30,7 +30,6 @@ const (
 //
 // This options have been humanize.
 type Settings struct {
-	noCopy      noCopy
 	ack         bool
 	rawSettings []byte
 	tableSize   uint32

@@ -10,7 +10,6 @@ const FrameWindowUpdate FrameType = 0x8
 //
 // https://tools.ietf.org/html/rfc7540#section-6.9
 type WindowUpdate struct {
-	noCopy    noCopy
 	increment uint32
 }
 
