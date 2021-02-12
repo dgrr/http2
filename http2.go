@@ -14,16 +14,6 @@ var (
 	prefaceLen   = len(http2Preface)
 )
 
-type State uint8
-
-// Stream states
-const (
-	Idle State = iota
-	Open
-	HalfClosed
-	Closed
-)
-
 // ReadPreface reads the connection initialisation preface.
 func ReadPreface(br io.Reader) bool {
 	b := make([]byte, prefaceLen)

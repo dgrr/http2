@@ -32,5 +32,6 @@ func main() {
 }
 
 func requestHandler(ctx *fasthttp.RequestCtx) {
+	fmt.Printf("%s\n", ctx.Request.Header.Header())
 	fmt.Fprintf(ctx, "Hello world!\n")
 }

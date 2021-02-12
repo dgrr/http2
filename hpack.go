@@ -10,7 +10,7 @@ import (
 // HPACK represents header compression methods to
 // encode and decode header fields in HTTP/2.
 //
-// HPACK is the same as a HTTP/1.1 header.
+// HPACK is equivalent to a HTTP/1 header.
 //
 // Use AcquireHPACK to acquire new HPACK structure
 // TODO: HPACK to Headers?
@@ -47,16 +47,17 @@ var hpackPool = sync.Pool{
 
 // AcquireHPACK gets HPACK from pool
 func AcquireHPACK() *HPACK {
-	return hpackPool.Get().(*HPACK)
+	hpack := hpackPool.Get().(*HPACK)
+	hpack.Reset()
+	return hpack
 }
 
 // ReleaseHPACK puts HPACK to the pool
 func ReleaseHPACK(hpack *HPACK) {
-	hpack.Reset()
 	hpackPool.Put(hpack)
 }
 
-func (hpack *HPACK) releaseTable() {
+func (hpack *HPACK) releaseDynamic() {
 	for _, hf := range hpack.dynamic {
 		ReleaseHeaderField(hf)
 	}
@@ -72,7 +73,7 @@ func (hpack *HPACK) releaseFields() {
 
 // Reset deletes and realeases all dynamic header fields
 func (hpack *HPACK) Reset() {
-	hpack.releaseTable()
+	hpack.releaseDynamic()
 	hpack.releaseFields()
 	hpack.tableSize = 0
 	hpack.maxTableSize = int(defaultHeaderTableSize)
@@ -88,12 +89,28 @@ func (hpack *HPACK) AppendBytes(dst []byte) []byte {
 	return dst
 }
 
+// String returns HPACK as a string like an HTTP/1.1 header.
+func (hpack *HPACK) String() string {
+	return string(hpack.AppendBytes(nil))
+}
+
+func (hpack *HPACK) Range(fn func(*HeaderField)) {
+	for i := range hpack.fields {
+		fn(hpack.fields[i])
+	}
+}
+
+// AddField appends the field to the header list.
+func (hpack *HPACK) AddField(hf *HeaderField) {
+	hpack.fields = append(hpack.fields, hf)
+}
+
 // Add adds the key and the value to the Header.
 func (hpack *HPACK) Add(key, value string) {
 	hf := AcquireHeaderField()
 	hf.SetKey(key)
 	hf.SetValue(value)
-	hpack.fields = append(hpack.fields, hf)
+	hpack.AddField(hf)
 }
 
 // ....
@@ -126,7 +143,7 @@ func (hpack *HPACK) DynamicSize() (n int) {
 }
 
 // add adds header field to the dynamic table.
-func (hpack *HPACK) add(hf *HeaderField) {
+func (hpack *HPACK) addDynamic(hf *HeaderField) {
 	// TODO: https://tools.ietf.org/html/rfc7541#section-2.3.2
 	// apply duplicate entries
 	// TODO: Optimize using reverse indexes.
@@ -290,11 +307,11 @@ const (
 	noIndexByte = 240 // 11110000
 )
 
-// Next reads `buf` and insert the processed values into `hf`
+// Next reads and process the content of `b`. If buf contains a valid HTTP/2 header
+// the content will be parsed into `hf`.
 //
-// The returned values are the new b pointing to the next data to be read and/or error.
-//
-// This function must receive the payload of Header frame.
+// This function returns the next byte slice that should be read.
+// `b` must be a valid payload coming from a Header frame.
 func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 	var (
 		n   uint64
@@ -355,7 +372,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 					hf.SetValueBytes(dst)
 				}
 				// add to the table as RFC specifies.
-				hpack.add(hf)
+				hpack.addDynamic(hf)
 			}
 			bytePool.Put(dst)
 		}
@@ -485,7 +502,7 @@ func appendInt(dst []byte, n uint8, nn uint64) []byte {
 func readString(dst, b []byte) ([]byte, []byte, error) {
 	var n uint64
 	var err error
-	mustDecode := (b[0]&128 == 128) // huffman encoded
+	mustDecode := b[0]&128 == 128 // huffman encoded
 	b, n, err = readInt(7, b)
 	if err == nil && uint64(len(b)) < n {
 		err = fmt.Errorf("unexpected size: %d < %d", len(b), n)
@@ -531,8 +548,8 @@ func appendString(dst, src []byte, encode bool) []byte {
 
 var errHeaderFieldNotFound = errors.New("Indexed field not found")
 
-// Write writes hpack to dst returning the result byte slice.
-func (hpack *HPACK) AppendHeader(hf *HeaderField, dst []byte) []byte {
+// AppendHeader writes hpack to dst returning the result byte slice.
+func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 	var c bool
 	var n uint8
 	var idx uint64
@@ -554,13 +571,13 @@ func (hpack *HPACK) AppendHeader(hf *HeaderField, dst []byte) []byte {
 			} else {
 				dst = append(dst, literalByte)
 				// append this field to the dynamic table.
-				hpack.add(hf)
+				hpack.addDynamic(hf)
 			}
 		} else if hpack.DisableDynamicTable { // with or without indexing
 			dst = append(dst, 0, 0)
 		} else {
 			dst = append(dst, literalByte)
-			hpack.add(hf)
+			hpack.addDynamic(hf)
 		}
 	}
 

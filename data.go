@@ -7,6 +7,12 @@ import (
 const FrameData FrameType = 0x0
 
 // Data defines a FrameData
+//
+// Data frames can have the following flags:
+// END_STREAM
+// PADDED
+//
+// https://tools.ietf.org/html/rfc7540#section-6.1
 type Data struct {
 	endStream  bool
 	hasPadding bool
@@ -103,7 +109,7 @@ func (data *Data) ReadFrame(fr *Frame) (err error) {
 //
 // This function only resets the frame payload.
 func (data *Data) WriteFrame(fr *Frame) {
-	// TODO: generate hasPaddingding and set to the frame payload
+	// TODO: generate hasPadding and set to the frame payload
 	fr.SetType(FrameData)
 
 	if data.endStream {

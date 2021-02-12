@@ -101,7 +101,7 @@ func (h *Headers) Stream() uint32 {
 
 // SetStream ...
 func (h *Headers) SetStream(stream uint32) {
-	h.stream = stream & (1<<31 - 1)
+	h.stream = stream
 }
 
 // Weight ...
