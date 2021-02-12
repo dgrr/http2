@@ -10,13 +10,11 @@ import (
 // HPACK represents header compression methods to
 // encode and decode header fields in HTTP/2.
 //
-// HPACK is the same as HTTP/1.1 header.
+// HPACK is the same as a HTTP/1.1 header.
 //
 // Use AcquireHPACK to acquire new HPACK structure
 // TODO: HPACK to Headers?
 type HPACK struct {
-	noCopy noCopy
-
 	// DisableCompression disables compression for literal header fields.
 	DisableCompression bool
 

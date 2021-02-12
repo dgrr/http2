@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-const FramePushPromise uint8 = 0x5
+const FramePushPromise FrameType = 0x5
 
 // PushPromise ...
 //

@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-const FrameSettings uint8 = 0x4
+const FrameSettings FrameType = 0x4
 
 const (
 	// default Settings parameters

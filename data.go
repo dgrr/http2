@@ -4,11 +4,10 @@ import (
 	"sync"
 )
 
-const FrameData uint8 = 0x0
+const FrameData FrameType = 0x0
 
 // Data defines a FrameData
 type Data struct {
-	noCopy     noCopy
 	endStream  bool
 	hasPadding bool
 	b          []byte // data bytes
@@ -91,7 +90,7 @@ func (data *Data) Write(b []byte) (int, error) {
 // This function does not reset the Frame.
 func (data *Data) ReadFrame(fr *Frame) (err error) {
 	payload := cutPadding(fr)
-	data.endStream = fr.Has(FlagEndStream)
+	data.endStream = fr.HasFlag(FlagEndStream)
 	if len(payload) == 0 {
 		err = ErrZeroPayload
 	} else {
@@ -108,11 +107,11 @@ func (data *Data) WriteFrame(fr *Frame) {
 	fr.SetType(FrameData)
 
 	if data.endStream {
-		fr.Add(FlagEndStream)
+		fr.AddFlag(FlagEndStream)
 	}
 
 	if data.hasPadding {
-		fr.Add(FlagPadded)
+		fr.AddFlag(FlagPadded)
 		data.b = addPadding(data.b)
 	}
 

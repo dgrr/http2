@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-const FrameGoAway uint8 = 0x7
+const FrameGoAway FrameType = 0x7
 
 // GoAway ...
 //

@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-const FramePing uint8 = 0x6
+const FramePing FrameType = 0x6
 
 // Ping ...
 //

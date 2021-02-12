@@ -16,18 +16,22 @@ const (
 
 	// Frame Flag (described along the frame types)
 	// More flags have been ignored due to redundancy
-	FlagAck        uint8 = 0x1
-	FlagEndStream  uint8 = 0x1
-	FlagEndHeaders uint8 = 0x4
-	FlagPadded     uint8 = 0x8
-	FlagPriority   uint8 = 0x20
+	FlagAck        FrameFlags = 0x1
+	FlagEndStream  FrameFlags = 0x1
+	FlagEndHeaders FrameFlags = 0x4
+	FlagPadded     FrameFlags = 0x8
+	FlagPriority   FrameFlags = 0x20
 )
+
+type FrameType int8
+
+type FrameFlags int8
+
+// TODO: Develop methods for FrameFlags
 
 var framePool = sync.Pool{
 	New: func() interface{} {
-		fr := &Frame{}
-		fr.maxLen = defaultMaxLen
-		return fr
+		return &Frame{}
 	},
 }
 
@@ -37,23 +41,16 @@ var framePool = sync.Pool{
 // if you are going to use Frame as your own and ReleaseFrame to
 // delete the Frame
 //
-// Frame instance MUST NOT be used from concurrently running goroutines.
+// Frame instance MUST NOT be used from different goroutines.
+//
+// https://tools.ietf.org/html/rfc7540#section-4.1
 type Frame struct {
-	noCopy noCopy
+	length uint32     // 24 bits
+	kind   FrameType  // 8 bits
+	flags  FrameFlags // 8 bits
+	stream uint32     // 31 bits
 
-	// TODO: if length is granther than 16384 the body must not be
-	// readed unless settings specify it
-
-	length uint32 // 24 bits
 	maxLen uint32
-
-	kind uint8 // 8 bits
-
-	// flags is the flags the frame contains
-	flags uint8 // 8 bits
-
-	// Stream is the id of the stream
-	stream uint32 // 31 bits
 
 	rawHeader [defaultFrameSize]byte
 	payload   []byte
@@ -61,12 +58,13 @@ type Frame struct {
 
 // AcquireFrame gets a Frame from pool.
 func AcquireFrame() *Frame {
-	return framePool.Get().(*Frame)
+	fr := framePool.Get().(*Frame)
+	fr.Reset()
+	return fr
 }
 
 // ReleaseFrame reset and puts fr to the pool.
 func ReleaseFrame(fr *Frame) {
-	fr.Reset()
 	framePool.Put(fr)
 }
 
@@ -89,12 +87,16 @@ func resetBytes(b []byte) { // TODO: to asm using SSE if possible (github.com/tm
 }
 
 // Type returns the frame type (https://httpwg.org/specs/rfc7540.html#Frame_types)
-func (fr *Frame) Type() uint8 {
+func (fr *Frame) Type() FrameType {
 	return fr.kind
 }
 
+func (fr *Frame) Flags() FrameFlags {
+	return fr.flags
+}
+
 // Setkind sets the frame type for the current frame.
-func (fr *Frame) SetType(kind uint8) {
+func (fr *Frame) SetType(kind FrameType) {
 	fr.kind = kind
 }
 
@@ -103,11 +105,12 @@ func (fr *Frame) Stream() uint32 {
 	return fr.stream
 }
 
-// SetStreams sets the stream id on the current frame.
+// SetStream sets the stream id on the current frame.
 //
-// This function deletes the reserved bit (first bit).
+// This function DOESN'T delete the reserved bit (first bit)
+// in order to support personalized implementations of the protocol.
 func (fr *Frame) SetStream(stream uint32) {
-	fr.stream = stream & (1<<31 - 1) // TODO: Delete the first bit?
+	fr.stream = stream
 }
 
 // Len returns the payload length
@@ -120,36 +123,36 @@ func (fr *Frame) MaxLen() uint32 {
 	return fr.maxLen
 }
 
-// SetMaxLen sets max payload length to be readed.
+// SetMaxLen sets max payload length to read.
 func (fr *Frame) SetMaxLen(maxLen uint32) {
 	fr.maxLen = maxLen
 }
 
-// Has returns boolean value indicating if frame flags has f
-func (fr *Frame) Has(f uint8) bool {
-	return (fr.flags & f) == f
+// HasFlag returns if `f` is in the frame flags or not.
+func (fr *Frame) HasFlag(f FrameFlags) bool {
+	return fr.flags & f == f
 }
 
-// Add adds a flag to frame flags.
-func (fr *Frame) Add(f uint8) {
+// AddFlag adds a flag to frame flags.
+func (fr *Frame) AddFlag(f FrameFlags) {
 	fr.flags |= f
 }
 
-// Delete deletes f from frame flags
-func (fr *Frame) Delete(f uint8) {
+// DelFlag deletes f from frame flags
+func (fr *Frame) DelFlag(f FrameFlags) {
 	fr.flags ^= f
 }
 
-// Header returns frame header bytes.
-func (fr *Frame) Header() []byte {
+// RawHeader returns frame header bytes.
+func (fr *Frame) RawHeader() []byte {
 	return fr.rawHeader[:]
 }
 
 func (fr *Frame) parseValues() {
-	fr.rawToLen()                     // 3
-	fr.kind = uint8(fr.rawHeader[3])  // 1
-	fr.flags = uint8(fr.rawHeader[4]) // 1
-	fr.rawToStream()                  // 4
+	fr.rawToLen()                          // 3
+	fr.kind = FrameType(fr.rawHeader[3])   // 1
+	fr.flags = FrameFlags(fr.rawHeader[4]) // 1
+	fr.rawToStream()                       // 4
 }
 
 func (fr *Frame) parseHeader() {
@@ -174,35 +177,38 @@ func (fr *Frame) ReadFromLimitPayload(br io.Reader, max uint32) (int64, error) {
 }
 
 // TODO: Delete rb?
-func (fr *Frame) readFrom(br io.Reader, max uint32) (rb int64, err error) {
-	var n int
-	n, err = br.Read(fr.rawHeader[:])
-	if err == nil {
-		if n != defaultFrameSize {
-			err = Error(FrameSizeError) // TODO: ?
-		} else {
-			rb += int64(n)
-			// Parsing Frame's Header field.
-			fr.parseValues()
-			if max > 0 && fr.length > max {
-				// TODO: Discard bytes and return an error
-			} else if fr.length > 0 {
-				// uint32 should be extended to int64.
-				nn := int64(fr.length)
-				if nn < 0 {
-					panic(fmt.Sprintf("length is lower than 0 (%d). Overflow? (%d)", nn, fr.length))
-				}
-				fr.payload = resize(fr.payload, nn)
+func (fr *Frame) readFrom(br io.Reader, max uint32) (int64, error) {
+	n, err := br.Read(fr.rawHeader[:])
+	if err != nil {
+		return -1, err
+	}
 
-				n, err = br.Read(fr.payload[:nn])
-				if err == nil {
-					rb += int64(n)
-					fr.payload = fr.payload[:n]
-				}
+	rn := int64(n)
+
+	if n != defaultFrameSize {
+		err = Error(FrameSizeError) // TODO: ?
+	} else {
+		// Parsing Frame's Header field.
+		fr.parseValues()
+		if max > 0 && fr.length > max {
+			// TODO: Discard bytes and return an error
+		} else if fr.length > 0 {
+			// uint32 should be extended to int64.
+			nn := int64(fr.length)
+			if nn < 0 {
+				panic(fmt.Sprintf("length is lower than 0 (%d). Overflow? (%d)", nn, fr.length))
+			}
+			fr.payload = resize(fr.payload, nn)
+
+			n, err = br.Read(fr.payload[:nn])
+			if err == nil {
+				rn += int64(n)
+				fr.payload = fr.payload[:n]
 			}
 		}
 	}
-	return
+
+	return rn, err
 }
 
 // WriteTo writes frame to the Writer.
@@ -220,6 +226,7 @@ func (fr *Frame) WriteTo(w io.Writer) (wb int64, err error) {
 			wb += int64(n)
 		}
 	}
+
 	return
 }
 
@@ -265,16 +272,16 @@ func (fr *Frame) Write(b []byte) (int, error) {
 //
 // If the result payload exceeds the max length ErrPayloadExceeds is returned.
 // TODO: Split a frame if the length is exceeded
-func (fr *Frame) AppendPayload(b []byte) (int, error) {
-	return fr.appendCheckingLen(fr.payload, b)
+func (fr *Frame) AppendPayload(src []byte) (int, error) {
+	return fr.appendCheckingLen(fr.payload, src)
 }
 
-func (fr *Frame) appendCheckingLen(b, bb []byte) (n int, err error) {
-	n = len(bb)
-	if uint32(n+len(b)) > fr.maxLen {
+func (fr *Frame) appendCheckingLen(dst, src []byte) (n int, err error) {
+	n = len(src)
+	if uint32(n+len(dst)) > fr.maxLen {
 		err = ErrPayloadExceeds
 	} else {
-		fr.payload = append(b, bb...)
+		fr.payload = append(dst, src...)
 		fr.length = uint32(len(fr.payload))
 	}
 	return

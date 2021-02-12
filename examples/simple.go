@@ -1,22 +1,22 @@
 package main
 
 import (
-	"log"
 	"fmt"
+	"log"
 
-	"github.com/valyala/fasthttp"
 	"github.com/dgrr/http2"
+	"github.com/valyala/fasthttp"
 )
 
 func main() {
 	cert, priv, err = fasthttp.GenerateTestCertificate("localhost:8080")
-        if err != nil {
-                log.Fatalln(err)
-        }
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	s := &fasthttp.Server{
 		Handler: requestHandler,
-		Name: "http2 test",
+		Name:    "http2 test",
 	}
 	err := s.AppendCertEmbed(cert, priv)
 	if err != nil {

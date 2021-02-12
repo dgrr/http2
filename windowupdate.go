@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-const FrameWindowUpdate uint8 = 0x8
+const FrameWindowUpdate FrameType = 0x8
 
 // WindowUpdate ...
 //

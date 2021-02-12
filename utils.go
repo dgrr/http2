@@ -82,13 +82,14 @@ func resize(b []byte, neededLen int64) []byte {
 // from the payload and returns the new payload as byte slice.
 func cutPadding(fr *Frame) []byte {
 	payload := fr.payload
-	if fr.Has(FlagPadded) {
+	if fr.HasFlag(FlagPadded) {
 		pad := uint32(payload[0])
 		if uint32(len(payload)) < fr.length-pad-1 {
 			panic(fmt.Sprintf("out of range: %d < %d", uint32(len(payload)), fr.length-pad-1)) // TODO: Change this panic...
 		}
-		payload = payload[1 : fr.length-pad]
+		payload = append(payload[:0], payload[1 : fr.length-pad]...)
 	}
+
 	return payload
 }
 

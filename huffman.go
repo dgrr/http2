@@ -6,6 +6,9 @@ package http2
 func HuffmanEncode(dst, src []byte) []byte {
 	var code uint64
 	var length uint8
+	// TODO: I'd be nice to implement this lookup using SSE.
+	// But since you need to use the Golang's ASM I don't know
+	// how much will that take.
 	for _, b := range src {
 		n := huffmanCodeLen[b]
 		c := uint64(huffmanCodes[b])
@@ -16,11 +19,13 @@ func HuffmanEncode(dst, src []byte) []byte {
 			dst = append(dst, byte(code>>length))
 		}
 	}
+
 	if length > 0 {
 		n := 8 - length
 		code = code<<n | (1<<n - 1)
 		dst = append(dst, byte(code))
 	}
+
 	return dst
 }
 
@@ -48,6 +53,7 @@ func HuffmanDecode(dst, src []byte) []byte {
 			}
 		}
 	}
+
 	for bits > 0 {
 		root = root.sub[byte(cum<<(8-bits))]
 		if root == nil {
@@ -60,6 +66,7 @@ func HuffmanDecode(dst, src []byte) []byte {
 		bits -= root.codeLen
 		root = rootHuffmanNode
 	}
+
 	return dst
 }
 

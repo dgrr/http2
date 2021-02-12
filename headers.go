@@ -4,16 +4,15 @@ import (
 	"sync"
 )
 
-const FrameHeaders uint8 = 0x1
+const FrameHeaders FrameType = 0x1
 
 // Headers defines a FrameHeaders
 //
 // https://tools.ietf.org/html/rfc7540#section-6.2
 type Headers struct {
-	noCopy     noCopy
 	hasPadding bool
 	stream     uint32
-	weight     byte // TODO: byte or uint8?
+	weight     uint8
 	endStream  bool
 	endHeaders bool
 	parsed     bool
@@ -130,7 +129,7 @@ func (h *Headers) SetPadding(value bool) {
 // This function appends over rawHeaders .....
 func (h *Headers) ReadFrame(fr *Frame) (err error) {
 	payload := cutPadding(fr)
-	if fr.Has(FlagPriority) {
+	if fr.HasFlag(FlagPriority) {
 		if len(fr.payload) < 5 { // 4 (stream) + 1 (weight) = 5
 			err = ErrMissingBytes
 		} else {
@@ -140,8 +139,8 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 		}
 	}
 	if err == nil {
-		h.endStream = fr.Has(FlagEndStream)
-		h.endHeaders = fr.Has(FlagEndHeaders)
+		h.endStream = fr.HasFlag(FlagEndStream)
+		h.endHeaders = fr.HasFlag(FlagEndHeaders)
 		h.rawHeaders = append(h.rawHeaders, payload...)
 	}
 
@@ -151,21 +150,21 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 func (h *Headers) WriteFrame(fr *Frame) error {
 	fr.SetType(FrameHeaders)
 	if h.endStream {
-		fr.Add(FlagEndStream)
+		fr.AddFlag(FlagEndStream)
 	}
 	if h.endHeaders {
-		fr.Add(FlagEndHeaders)
+		fr.AddFlag(FlagEndHeaders)
 	}
 
 	if h.stream > 0 && h.weight > 0 {
-		fr.Add(FlagPriority)
+		fr.AddFlag(FlagPriority)
 
 		uint32ToBytes(h.rawHeaders[1:5], fr.stream)
 		h.rawHeaders[5] = h.weight
 	}
 
 	if h.hasPadding {
-		fr.Add(FlagPadded)
+		fr.AddFlag(FlagPadded)
 		h.rawHeaders = addPadding(h.rawHeaders)
 	}
 

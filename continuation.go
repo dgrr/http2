@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-const FrameContinuation uint8 = 0x9
+const FrameContinuation FrameType = 0x9
 
 // Continuation ...
 //

@@ -32,7 +32,6 @@ func ConfigureServer(s *fasthttp.Server) *Server {
 	s.NextProto(H2TLSProto, s2.serveConn)
 }
 
-
 // Server ...
 type Server struct {
 	s *fasthttp.Server

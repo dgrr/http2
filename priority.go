@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-const FramePriority uint8 = 0x2
+const FramePriority FrameType = 0x2
 
 // Priority represents the Priority frame.
 //
