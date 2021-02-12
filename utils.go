@@ -87,7 +87,7 @@ func cutPadding(fr *Frame) []byte {
 		if uint32(len(payload)) < fr.length-pad-1 {
 			panic(fmt.Sprintf("out of range: %d < %d", uint32(len(payload)), fr.length-pad-1)) // TODO: Change this panic...
 		}
-		payload = append(payload[:0], payload[1 : fr.length-pad]...)
+		payload = append(payload[:0], payload[1:fr.length-pad]...)
 	}
 
 	return payload

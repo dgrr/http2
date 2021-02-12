@@ -266,7 +266,7 @@ func (st *Settings) SetAck(ack bool) {
 
 // ReadFrame reads and decodes frame payload into st values
 func (st *Settings) ReadFrame(fr *Frame) error {
-	st.ack = fr.Has(FlagAck)
+	st.ack = fr.HasFlag(FlagAck)
 	st.Read(fr.Payload()) // TODO: return error?
 	return nil
 }
@@ -277,7 +277,7 @@ func (st *Settings) WriteFrame(fr *Frame) error {
 
 	fr.kind = FrameSettings
 	if st.ack {
-		fr.Add(FlagAck)
+		fr.AddFlag(FlagAck)
 	}
 	return fr.SetPayload(st.rawSettings)
 }

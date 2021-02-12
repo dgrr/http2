@@ -67,7 +67,7 @@ func (ping *Ping) SetData(b []byte) {
 
 // ReadFrame ...
 func (ping *Ping) ReadFrame(fr *Frame) error {
-	ping.ack = fr.Has(FlagAck)
+	ping.ack = fr.HasFlag(FlagAck)
 	ping.SetData(fr.payload)
 	return nil
 }
@@ -75,7 +75,7 @@ func (ping *Ping) ReadFrame(fr *Frame) error {
 // WriteFrame ...
 func (ping *Ping) WriteFrame(fr *Frame) error {
 	if ping.ack {
-		fr.Add(FlagAck)
+		fr.AddFlag(FlagAck)
 	}
 	return nil
 }

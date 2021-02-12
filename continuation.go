@@ -71,7 +71,7 @@ func (c *Continuation) Write(b []byte) (int, error) {
 
 // ReadFrame reads decodes fr payload into c.
 func (c *Continuation) ReadFrame(fr *Frame) (err error) {
-	c.endHeaders = fr.Has(FlagEndHeaders)
+	c.endHeaders = fr.HasFlag(FlagEndHeaders)
 	c.SetHeader(fr.payload)
 	return
 }
@@ -79,7 +79,7 @@ func (c *Continuation) ReadFrame(fr *Frame) (err error) {
 // WriteFrame ...
 func (c *Continuation) WriteFrame(fr *Frame) error {
 	if c.endHeaders {
-		fr.Add(FlagEndHeaders)
+		fr.AddFlag(FlagEndHeaders)
 	}
 	fr.kind = FrameContinuation
 	return fr.SetPayload(c.rawHeaders)

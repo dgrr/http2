@@ -130,7 +130,7 @@ func (fr *Frame) SetMaxLen(maxLen uint32) {
 
 // HasFlag returns if `f` is in the frame flags or not.
 func (fr *Frame) HasFlag(f FrameFlags) bool {
-	return fr.flags & f == f
+	return fr.flags&f == f
 }
 
 // AddFlag adds a flag to frame flags.

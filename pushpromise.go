@@ -10,7 +10,6 @@ const FramePushPromise FrameType = 0x5
 //
 // https://tools.ietf.org/html/rfc7540#section-6.6
 type PushPromise struct {
-	noCopy noCopy
 	pad    bool
 	ended  bool
 	stream uint32
@@ -57,7 +56,7 @@ func (pp *PushPromise) ReadFrame(fr *Frame) (err error) {
 	} else {
 		pp.stream = bytesToUint32(payload) & (1<<31 - 1)
 		pp.header = append(pp.header, payload[4:]...)
-		pp.ended = fr.Has(FlagEndHeaders)
+		pp.ended = fr.HasFlag(FlagEndHeaders)
 	}
 	return
 }
@@ -67,7 +66,7 @@ func (pp *PushPromise) WriteFrame(fr *Frame) (err error) {
 	fr.kind = FramePushPromise
 	fr.payload = fr.payload[:0]
 	if pp.pad {
-		fr.Add(FlagPadded)
+		fr.AddFlag(FlagPadded)
 		// TODO: Write padding flag
 	}
 	_, err = fr.Write(pp.header)

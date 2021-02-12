@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	cert, priv, err = fasthttp.GenerateTestCertificate("localhost:8080")
+	cert, priv, err := GenerateTestCertificate("localhost:8080")
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -18,14 +18,14 @@ func main() {
 		Handler: requestHandler,
 		Name:    "http2 test",
 	}
-	err := s.AppendCertEmbed(cert, priv)
+	err = s.AppendCertEmbed(cert, priv)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
 	http2.ConfigureServer(s)
 
-	err := s.ListenAndServeTLS(":8443", "", "")
+	err = s.ListenAndServeTLS(":8443", "", "")
 	if err != nil {
 		log.Fatalln(err)
 	}

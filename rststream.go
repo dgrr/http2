@@ -10,7 +10,7 @@ const FrameResetStream FrameType = 0x3
 //
 // https://tools.ietf.org/html/rfc7540#section-6.4
 type RstStream struct {
-	code   uint32
+	code uint32
 }
 
 var rstStreamPool = sync.Pool{
