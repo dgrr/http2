@@ -36,6 +36,6 @@ func requestHandler(ctx *fasthttp.RequestCtx) {
 	if ctx.Request.Header.IsPost() {
 		fmt.Fprintf(ctx, "%s\n", ctx.Request.Body())
 	} else {
-		fmt.Fprintf(ctx, "Hello world!\n")
+		fmt.Fprintf(ctx, "Hello 21th century!\n")
 	}
 }

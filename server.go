@@ -200,7 +200,6 @@ func (s *Server) Handle(ctx *connCtx, strm *Stream) (err error) {
 		println("priority")
 		// TODO: If a PRIORITY frame is received with a stream identifier of 0x0, the recipient MUST respond with a connection error
 	case FrameResetStream:
-		println("reset")
 		err = s.handleReset(ctx, strm)
 	case FrameSettings:
 		err = s.handleSettings(ctx, strm)
