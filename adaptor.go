@@ -1,7 +1,9 @@
 package http2
 
 import (
+	"bytes"
 	"github.com/valyala/fasthttp"
+	"strconv"
 )
 
 func fasthttpRequestHeaders(hp *HPACK, req *fasthttp.Request) {
@@ -22,8 +24,24 @@ func fasthttpRequestHeaders(hp *HPACK, req *fasthttp.Request) {
 			uri.SetSchemeBytes(v)
 		case 'a': // authority
 			uri.SetHostBytes(v)
-		// TODO: See below?? case 'u': // user-agent
-		// 	req.Header.SetUserAgentBytes(v)
+			// TODO: See below?? case 'u': // user-agent
+			// 	req.Header.SetUserAgentBytes(v)
 		}
+	})
+}
+
+func fasthttpResponseHeaders(hp *HPACK, res *fasthttp.Response) {
+	hp.AddBytesK(strStatus,
+		strconv.FormatInt(
+			int64(res.Header.StatusCode()), 10,
+		),
+	)
+
+	hp.AddBytesK(strContentLength,
+		strconv.FormatInt(int64(len(res.Body())), 10),
+	)
+
+	res.Header.VisitAll(func(k, v []byte) {
+		hp.AddBytes(bytes.ToLower(k), v)
 	})
 }

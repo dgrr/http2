@@ -1,12 +1,12 @@
 package http2
 
 var (
-	strUserAgent = []byte("user-agent")
-	strPath      = []byte("path")
-	strMethod    = []byte("method")
-	strGET       = []byte("GET")
-	strHEAD      = []byte("HEAD")
-	strPOST      = []byte("POST")
+	strStatus        = []byte(":status")
+	strServer        = []byte("server")
+	strContentLength = []byte("content-length")
+	strGET           = []byte("GET")
+	strHEAD          = []byte("HEAD")
+	strPOST          = []byte("POST")
 )
 
 const (

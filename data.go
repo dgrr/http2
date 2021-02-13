@@ -28,12 +28,12 @@ var dataPool = sync.Pool{
 // AcquireData ...
 func AcquireData() (data *Data) {
 	data = dataPool.Get().(*Data)
+	data.Reset()
 	return
 }
 
 // ReleaseData ...
 func ReleaseData(data *Data) {
-	data.Reset()
 	dataPool.Put(data)
 }
 

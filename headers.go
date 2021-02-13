@@ -15,7 +15,6 @@ type Headers struct {
 	weight     uint8
 	endStream  bool
 	endHeaders bool
-	parsed     bool
 	rawHeaders []byte // this field is used to store uncompleted headers.
 }
 
@@ -28,12 +27,12 @@ var headersPool = sync.Pool{
 // AcquireHeaders ...
 func AcquireHeaders() *Headers {
 	h := headersPool.Get().(*Headers)
+	h.Reset()
 	return h
 }
 
 // ReleaaseHeaders ...
 func ReleaseHeaders(h *Headers) {
-	h.Reset()
 	headersPool.Put(h)
 }
 
@@ -44,14 +43,12 @@ func (h *Headers) Reset() {
 	h.weight = 0
 	h.endStream = false
 	h.endHeaders = false
-	h.parsed = false
 	h.rawHeaders = h.rawHeaders[:0]
 }
 
 // CopyTo copies h fields to h2.
 func (h *Headers) CopyTo(h2 *Headers) {
 	h2.hasPadding = h.hasPadding
-	h2.parsed = h.parsed
 	h2.stream = h.stream
 	h2.weight = h.weight
 	h2.endStream = h.endStream
@@ -149,9 +146,11 @@ func (h *Headers) ReadFrame(fr *Frame) (err error) {
 
 func (h *Headers) WriteFrame(fr *Frame) error {
 	fr.SetType(FrameHeaders)
+
 	if h.endStream {
 		fr.AddFlag(FlagEndStream)
 	}
+
 	if h.endHeaders {
 		fr.AddFlag(FlagEndHeaders)
 	}
@@ -168,7 +167,5 @@ func (h *Headers) WriteFrame(fr *Frame) error {
 		h.rawHeaders = addPadding(h.rawHeaders)
 	}
 
-	fr.SetPayload(h.rawHeaders)
-
-	return nil
+	return fr.SetPayload(h.rawHeaders)
 }

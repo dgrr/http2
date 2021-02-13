@@ -546,7 +546,14 @@ func appendString(dst, src []byte, encode bool) []byte {
 	return dst
 }
 
-var errHeaderFieldNotFound = errors.New("Indexed field not found")
+var errHeaderFieldNotFound = errors.New("indexed field not found")
+
+func (hpack *HPACK) MarshalTo(dst []byte) []byte {
+	for i := range hpack.fields {
+		dst = hpack.AppendHeader(dst, hpack.fields[i])
+	}
+	return dst
+}
 
 // AppendHeader writes hpack to dst returning the result byte slice.
 func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {

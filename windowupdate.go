@@ -21,12 +21,13 @@ var windowUpdatePool = sync.Pool{
 
 // AcquireWindowUpdate ...
 func AcquireWindowUpdate() *WindowUpdate {
-	return windowUpdatePool.Get().(*WindowUpdate)
+	wu := windowUpdatePool.Get().(*WindowUpdate)
+	wu.Reset()
+	return wu
 }
 
 // ReleaseWindowUpdate ...
 func ReleaseWindowUpdate(wu *WindowUpdate) {
-	wu.Reset()
 	windowUpdatePool.Put(wu)
 }
 
@@ -64,4 +65,5 @@ func (wu *WindowUpdate) ReadFrame(fr *Frame) (err error) {
 func (wu *WindowUpdate) WriteFrame(fr *Frame) {
 	fr.kind = FrameWindowUpdate
 	fr.payload = appendUint32Bytes(fr.payload[:0], wu.increment)
+	fr.length = 4
 }

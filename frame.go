@@ -284,5 +284,6 @@ func (fr *Frame) appendCheckingLen(dst, src []byte) (n int, err error) {
 		fr.payload = append(dst, src...)
 		fr.length = uint32(len(fr.payload))
 	}
+
 	return
 }

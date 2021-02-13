@@ -46,13 +46,13 @@ func (rst *RstStream) Error() error {
 }
 
 // ReadFrame ...
-func (rst *RstStream) ReadFrame(fr *Frame) (err error) {
+func (rst *RstStream) ReadFrame(fr *Frame) error {
 	if len(fr.payload) < 4 {
-		err = ErrMissingBytes
-	} else {
-		rst.code = bytesToUint32(fr.payload)
+		return ErrMissingBytes
 	}
-	return err
+
+	rst.code = bytesToUint32(fr.payload)
+	return nil
 }
 
 // WriteFrame ...

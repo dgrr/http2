@@ -11,10 +11,11 @@ const (
 	defaultHeaderTableSize   uint32 = 4096
 	defaultConcurrentStreams uint32 = 100
 	defaultWindowSize        uint32 = 1<<15 - 1
-	defaultframeSize         uint32 = 1 << 14
+	defaultDataFrameSize     uint32 = 1 << 14
+	defaultMaxHeaderListSize uint32 = 1048896
 
-	windowSizeSize = 1<<31 - 1
-	maxFrameSize   = 1<<24 - 1
+	windowSize   = 1<<31 - 1
+	maxFrameSize = 1<<24 - 1
 
 	// FrameSettings string values (https://httpwg.org/specs/rfc7540.html#SettingValues)
 	HeaderTableSize      uint16 = 0x1
@@ -25,7 +26,7 @@ const (
 	MaxHeaderListSize    uint16 = 0x6
 )
 
-// Settings is the options to stablish between endpoints
+// Settings is the options to establish between endpoints
 // when starting the connection.
 //
 // This options have been humanize.
@@ -42,23 +43,19 @@ type Settings struct {
 
 var settingsPool = sync.Pool{
 	New: func() interface{} {
-		return &Settings{
-			tableSize:  defaultHeaderTableSize,
-			maxStreams: defaultConcurrentStreams,
-			windowSize: defaultWindowSize,
-			frameSize:  defaultframeSize,
-		}
+		return &Settings{}
 	},
 }
 
 // AcquireSettings gets a Settings object from the pool with default values.
 func AcquireSettings() *Settings {
-	return settingsPool.Get().(*Settings)
+	st := settingsPool.Get().(*Settings)
+	st.Reset()
+	return st
 }
 
 // ReleaseSettings puts st into settings pool to be reused in the future.
 func ReleaseSettings(st *Settings) {
-	st.Reset()
 	settingsPool.Put(st)
 }
 
@@ -68,7 +65,18 @@ func (st *Settings) Reset() {
 	st.tableSize = defaultHeaderTableSize
 	st.maxStreams = defaultConcurrentStreams
 	st.windowSize = defaultWindowSize
-	st.frameSize = defaultframeSize
+	st.frameSize = defaultDataFrameSize
+	st.enablePush = false
+	st.headerSize = 0
+	st.rawSettings = st.rawSettings[:0]
+	st.ack = false
+}
+
+func (st *Settings) Clear() {
+	st.tableSize = 0
+	st.maxStreams = 0
+	st.windowSize = 0
+	st.frameSize = 0
 	st.enablePush = false
 	st.headerSize = 0
 	st.rawSettings = st.rawSettings[:0]
@@ -103,12 +111,16 @@ func (st *Settings) HeaderTableSize() uint32 {
 	return st.tableSize
 }
 
-// Push allows to set the PushPromise settings.
+// SetPush allows to set the PushPromise settings.
 //
 // If value is true the Push Promise will be enable.
 // if not the Push Promise will be disabled.
-func (st *Settings) Push(value bool) {
+func (st *Settings) SetPush(value bool) {
 	st.enablePush = value
+}
+
+func (st *Settings) Push() bool {
+	return st.enablePush
 }
 
 // SetMaxConcurrentStreams sets the maximum number of
@@ -177,13 +189,13 @@ func (st *Settings) MaxHeaderListSize() uint32 {
 	return st.headerSize
 }
 
-// Read reads from d and decodes the readed values into st.
+// Read reads from d and decodes the read values into st.
 func (st *Settings) Read(d []byte) { // TODO: return error?
 	var b []byte
 	var key uint16
 	var value uint32
-	last, i, len := 0, 6, len(d)
-	for i <= len {
+	last, i, n := 0, 6, len(d)
+	for i <= n {
 		b = d[last:i]
 		key = uint16(b[0])<<8 | uint16(b[1])
 		value = uint32(b[2])<<24 | uint32(b[3])<<16 | uint32(b[4])<<8 | uint32(b[5])
@@ -192,7 +204,7 @@ func (st *Settings) Read(d []byte) { // TODO: return error?
 		case HeaderTableSize:
 			st.tableSize = value
 		case EnablePush:
-			st.enablePush = (value != 0)
+			st.enablePush = value != 0
 		case MaxConcurrentStreams:
 			st.maxStreams = value
 		case MaxWindowSize:
@@ -207,7 +219,7 @@ func (st *Settings) Read(d []byte) { // TODO: return error?
 	}
 }
 
-// Encode encodes settings to be sended through the wire
+// Encode encodes settings to be sent through the wire
 func (st *Settings) Encode() {
 	st.rawSettings = st.rawSettings[:0]
 	if st.tableSize != 0 {
@@ -274,9 +286,10 @@ func (st *Settings) ReadFrame(fr *Frame) error {
 func (st *Settings) WriteFrame(fr *Frame) error {
 	st.Encode()
 
-	fr.kind = FrameSettings
+	fr.SetType(FrameSettings)
 	if st.ack {
 		fr.AddFlag(FlagAck)
 	}
+
 	return fr.SetPayload(st.rawSettings)
 }

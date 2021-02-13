@@ -74,6 +74,7 @@ func (px *Proxy) handleConn(c net.Conn) {
 	if err != nil {
 		log.Fatalln(err)
 	}
+	defer bc.Close()
 
 	if !fasthttp2.ReadPreface(c) {
 		log.Fatalln("error reading preface")
@@ -142,6 +143,7 @@ func debugFrame(c net.Conn, fr *fasthttp2.Frame, symbol byte) {
 	case fasthttp2.FrameSettings:
 		fmt.Fprintf(bf, "%c [SETTINGS]\n", symbol)
 		st := fasthttp2.AcquireSettings()
+		st.ReadFrame(fr)
 		debugSettings(bf, st, symbol)
 		fasthttp2.ReleaseSettings(st)
 	case fasthttp2.FramePushPromise:
@@ -164,10 +166,10 @@ func debugFrame(c net.Conn, fr *fasthttp2.Frame, symbol byte) {
 func debugSettings(bf *bytes.Buffer, st *fasthttp2.Settings, symbol byte) {
 	fmt.Fprintf(bf, "%c   ACK: %v\n", symbol, st.IsAck())
 	fmt.Fprintf(bf, "%c   TableSize: %d\n", symbol, st.HeaderTableSize())
-	fmt.Fprintf(bf, "%c   EnablePush: %v\n", symbol, "NONE")
-	fmt.Fprintf(bf, "%c   MaxStreams: %d\n", symbol,  st.MaxConcurrentStreams())
-	fmt.Fprintf(bf, "%c   WindowSize: %d\n", symbol,  st.MaxWindowSize())
-	fmt.Fprintf(bf, "%c   FrameSize: %d\n",  symbol, st.MaxFrameSize())
+	fmt.Fprintf(bf, "%c   EnablePush: %v\n", symbol, st.Push())
+	fmt.Fprintf(bf, "%c   MaxStreams: %d\n", symbol, st.MaxConcurrentStreams())
+	fmt.Fprintf(bf, "%c   WindowSize: %d\n", symbol, st.MaxWindowSize())
+	fmt.Fprintf(bf, "%c   FrameSize: %d\n", symbol, st.MaxFrameSize())
 	fmt.Fprintf(bf, "%c   HeaderSize: %d\n", symbol, st.MaxHeaderListSize())
 }
 
@@ -179,6 +181,8 @@ func debugHeaders(bf *bytes.Buffer, fr *fasthttp2.Headers, symbol byte) {
 	defer fasthttp2.ReleaseHeaderField(hf)
 
 	fmt.Fprintf(bf, "%c   EndHeaders: %v\n", symbol, fr.EndHeaders())
+	fmt.Fprintf(bf, "%c   HasPadding: %v\n", symbol, fr.Padding())
+	fmt.Fprintf(bf, "%c   Dependency: %d\n", symbol, fr.Stream())
 
 	var err error
 	b := fr.Headers()
@@ -195,7 +199,7 @@ func debugHeaders(bf *bytes.Buffer, fr *fasthttp2.Headers, symbol byte) {
 }
 
 func debugData(bf *bytes.Buffer, fr *fasthttp2.Data, symbol byte) {
-	fmt.Fprintf(bf, "%c   Data: %s\n", symbol,  fr.Data())
+	fmt.Fprintf(bf, "%c   Data: %s\n", symbol, fr.Data())
 }
 
 var (
@@ -263,7 +267,7 @@ func startFastBackend() {
 	}
 
 	s := &fasthttp.Server{
-		Name: "idk",
+		Name:    "idk",
 		Handler: fastHandler,
 	}
 	s.AppendCertEmbed(certData, priv)
@@ -279,5 +283,5 @@ func startFastBackend() {
 }
 
 func fastHandler(ctx *fasthttp.RequestCtx) {
-	fmt.Fprintf(ctx,"Hello fast HTTP/2\n")
+	fmt.Fprintf(ctx, "Hello fast HTTP/2\n")
 }
