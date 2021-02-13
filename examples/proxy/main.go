@@ -11,7 +11,12 @@ import (
 	"net/http"
 
 	fasthttp2 "github.com/dgrr/http2"
+	"github.com/valyala/fasthttp"
 	"golang.org/x/net/http2"
+)
+
+var (
+	useFastHTTP2 = flag.Bool("fast", false, "Fasthttp backend")
 )
 
 func main() {
@@ -34,7 +39,11 @@ func main() {
 		Backend: "localhost:8081",
 	}
 
-	go startBackend()
+	if !*useFastHTTP2 {
+		go startSlowBackend() // hehe
+	} else {
+		go startFastBackend()
+	}
 
 	ln, err := tls.Listen("tcp", ":8443", tlsConfig)
 	if err != nil {
@@ -197,7 +206,7 @@ func init() {
 	flag.Parse()
 }
 
-func startBackend() {
+func startSlowBackend() {
 	certData, priv, err := GenerateTestCertificate(*hostArg)
 	if err != nil {
 		log.Fatalln(err)
@@ -245,4 +254,30 @@ type ReqHandler struct{}
 
 func (rh *ReqHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Hello HTTP/2\n")
+}
+
+func startFastBackend() {
+	certData, priv, err := GenerateTestCertificate(*hostArg)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	s := &fasthttp.Server{
+		Name: "idk",
+		Handler: fastHandler,
+	}
+	s.AppendCertEmbed(certData, priv)
+
+	fasthttp2.ConfigureServer(s)
+
+	_, port, _ := net.SplitHostPort(*hostArg)
+
+	err = s.ListenAndServeTLS(":"+port, "", "")
+	if err != nil {
+		log.Fatalln(err)
+	}
+}
+
+func fastHandler(ctx *fasthttp.RequestCtx) {
+	fmt.Fprintf(ctx,"Hello fast HTTP/2\n")
 }
