@@ -9,13 +9,19 @@ import (
 func fasthttpRequestHeaders(hp *HPACK, req *fasthttp.Request) {
 	hp.Range(func(hf *HeaderField) {
 		k, v := hf.KeyBytes(), hf.ValueBytes()
-		if !hf.IsPseudo() { // TODO: && !bytes.Equal(k, strUserAgent) {
+		if !hf.IsPseudo() &&
+			!(bytes.Equal(k, strUserAgent) ||
+				bytes.Equal(k, strContentType)) {
 			req.Header.AddBytesKV(k, v)
 			return
 		}
 
+		if hf.IsPseudo() {
+			k = k[1:]
+		}
+
 		uri := req.URI()
-		switch k[1] {
+		switch k[0] {
 		case 'm': // method
 			req.Header.SetMethodBytes(v)
 		case 'p': // path
@@ -24,8 +30,10 @@ func fasthttpRequestHeaders(hp *HPACK, req *fasthttp.Request) {
 			uri.SetSchemeBytes(v)
 		case 'a': // authority
 			uri.SetHostBytes(v)
-			// TODO: See below?? case 'u': // user-agent
-			// 	req.Header.SetUserAgentBytes(v)
+		case 'u': // user-agent
+			req.Header.SetUserAgentBytes(v)
+		case 'c': // content-type
+			req.Header.SetContentTypeBytes(v)
 		}
 	})
 }

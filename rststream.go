@@ -30,6 +30,16 @@ func ReleaseRstStream(rst *RstStream) {
 	rstStreamPool.Put(rst)
 }
 
+// Code ...
+func (rst *RstStream) Code() uint32 {
+	return rst.code
+}
+
+// SetCode ...
+func (rst *RstStream) SetCode(code uint32) {
+	rst.code = code
+}
+
 // Reset ...
 func (rst *RstStream) Reset() {
 	rst.code = 0
@@ -59,4 +69,5 @@ func (rst *RstStream) ReadFrame(fr *Frame) error {
 func (rst *RstStream) WriteFrame(fr *Frame) {
 	fr.kind = FrameResetStream
 	fr.payload = appendUint32Bytes(fr.payload[:0], rst.code)
+	fr.length = 4
 }

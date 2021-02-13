@@ -4,6 +4,8 @@ var (
 	strStatus        = []byte(":status")
 	strServer        = []byte("server")
 	strContentLength = []byte("content-length")
+	strContentType   = []byte("content-type")
+	strUserAgent     = []byte("user-agent")
 	strGET           = []byte("GET")
 	strHEAD          = []byte("HEAD")
 	strPOST          = []byte("POST")

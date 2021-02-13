@@ -33,5 +33,9 @@ func main() {
 
 func requestHandler(ctx *fasthttp.RequestCtx) {
 	fmt.Printf("%s\n", ctx.Request.Header.Header())
-	fmt.Fprintf(ctx, "Hello world!\n")
+	if ctx.Request.Header.IsPost() {
+		fmt.Fprintf(ctx, "%s\n", ctx.Request.Body())
+	} else {
+		fmt.Fprintf(ctx, "Hello world!\n")
+	}
 }
