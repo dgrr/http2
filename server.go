@@ -317,7 +317,7 @@ func (s *Server) handleReset(ctx *connCtx, strm *Stream) error {
 	return nil
 }
 
-func (s *Server) handleSettings(ctx *connCtx, strm *Stream) (err error) {
+func (s *Server) handleSettings(ctx *connCtx, strm *Stream) error {
 	if ctx.fr.Len() == 0 {
 		return ctx.writeFrame()
 	}
@@ -326,32 +326,28 @@ func (s *Server) handleSettings(ctx *connCtx, strm *Stream) (err error) {
 	defer ReleaseSettings(st)
 	st.ReadFrame(ctx.fr)
 
-	if !ctx.st.IsAck() {
-		ctx.st.SetAck(false)
-		if st.HeaderTableSize() < ctx.st.HeaderTableSize() {
-			ctx.st.SetHeaderTableSize(st.HeaderTableSize())
-		}
-		if st.MaxConcurrentStreams() > ctx.st.MaxConcurrentStreams() {
-			ctx.st.SetMaxConcurrentStreams(st.MaxConcurrentStreams())
-		}
-		if st.MaxWindowSize() < ctx.st.MaxWindowSize() {
-			ctx.st.SetMaxWindowSize(st.MaxWindowSize())
-		}
-		if st.MaxFrameSize() < ctx.st.MaxFrameSize() {
-			ctx.st.SetMaxFrameSize(st.MaxFrameSize())
-		}
-		if st.MaxHeaderListSize() < ctx.st.MaxHeaderListSize() {
-			ctx.st.SetMaxHeaderListSize(st.MaxHeaderListSize())
-		}
-		if !st.Push() {
-			ctx.st.SetPush(false)
-		}
-
-		ctx.st.WriteFrame(ctx.fr)
-		err = ctx.writeFrame()
+	ctx.st.SetAck(false)
+	if st.HeaderTableSize() < ctx.st.HeaderTableSize() {
+		ctx.st.SetHeaderTableSize(st.HeaderTableSize())
+	}
+	if st.MaxConcurrentStreams() > ctx.st.MaxConcurrentStreams() {
+		ctx.st.SetMaxConcurrentStreams(st.MaxConcurrentStreams())
+	}
+	if st.MaxWindowSize() < ctx.st.MaxWindowSize() {
+		ctx.st.SetMaxWindowSize(st.MaxWindowSize())
+	}
+	if st.MaxFrameSize() < ctx.st.MaxFrameSize() {
+		ctx.st.SetMaxFrameSize(st.MaxFrameSize())
+	}
+	if st.MaxHeaderListSize() < ctx.st.MaxHeaderListSize() {
+		ctx.st.SetMaxHeaderListSize(st.MaxHeaderListSize())
+	}
+	if !st.Push() {
+		ctx.st.SetPush(false)
 	}
 
-	return
+	ctx.st.WriteFrame(ctx.fr)
+	return ctx.writeFrame()
 }
 
 func (s *Server) tryReply(ctx *connCtx, strm *Stream) error {
