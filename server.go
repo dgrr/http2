@@ -153,8 +153,11 @@ func (s *Server) serveConn(c net.Conn) error {
 			ctx.lastStreamOpen = strm.id
 			ctx.streamsOpen++
 		}
-		if strm.IsClosed() && ctx.fr.Type() != FrameWindowUpdate {
-			log.Println("error stream has been closed before...")
+		if strm.IsClosed() &&
+			ctx.fr.Type() != FrameWindowUpdate &&
+			ctx.fr.Type() != FramePriority {
+			log.Printf(
+				"recv %s after close\n", ctx.fr.Type())
 			continue
 		}
 
@@ -227,6 +230,7 @@ func (s *Server) Handle(ctx *connCtx, strm *Stream) (err error) {
 	}
 
 	if err == nil && strm.istate == stateExecHandler {
+		// TODO: Execute in a goroutine
 		s.s.Handler(strm.ctx)
 		err = s.tryReply(ctx, strm)
 		strm.istate = stateNone
@@ -566,13 +570,13 @@ func (ctx *connCtx) writeData(strm *Stream, dfr *Data) error {
 	step := 1 << 14
 
 	for i := 0; err == nil && i < len(body); i += step {
-		if i + step > len(body) {
+		if i+step > len(body) {
 			step = len(body) - i
 		}
 
-		dfr.SetData(body[i:i+step])
+		dfr.SetData(body[i : i+step])
 		dfr.SetPadding(false)
-		dfr.SetEndStream(i + step >= len(body))
+		dfr.SetEndStream(i+step == len(body))
 		dfr.WriteFrame(fr)
 
 		n, err = fr.WriteTo(ctx.c)

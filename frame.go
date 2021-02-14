@@ -25,6 +25,30 @@ const (
 
 type FrameType int8
 
+func (ft FrameType) String() string {
+	switch ft {
+	case FrameData:
+		return "FrameData"
+	case FrameHeaders:
+		return "FrameHeaders"
+	case FramePriority:
+		return "FramePriority"
+	case FrameSettings:
+		return "FrameSettings"
+	case FramePushPromise:
+		return "FramePushPromise"
+	case FramePing:
+		return "FramePing"
+	case FrameGoAway:
+		return "FrameGoAway"
+	case FrameWindowUpdate:
+		return "FrameWindowUpdate"
+	case FrameContinuation:
+		return "FrameContinuation"
+	}
+	return "IDK"
+}
+
 type FrameFlags int8
 
 // TODO: Develop methods for FrameFlags

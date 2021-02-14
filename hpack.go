@@ -37,6 +37,17 @@ type HPACK struct {
 	maxTableSize int
 }
 
+// func (hp *HPACK) Fork() *HPACK {
+// 	hp2 := AcquireHPACK()
+// 	for i := range hp.dynamic {
+// 		hf := AcquireHeaderField()
+// 		hp.dynamic[i].CopyTo(hf)
+// 		hp2.dynamic = append(hp2.dynamic, hf)
+// 	}
+//
+// 	return hp2
+// }
+
 var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPACK{
