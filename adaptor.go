@@ -2,7 +2,6 @@ package http2
 
 import (
 	"bytes"
-	"fmt"
 	"github.com/valyala/fasthttp"
 	"strconv"
 )
@@ -42,8 +41,6 @@ func fasthttpRequestHeaders(hp *HPACK, req *fasthttp.Request) {
 			req.Header.SetContentTypeBytes(v)
 		}
 	})
-	// in order to parse the query...
-	fmt.Println("-----", req.URI().String())
 }
 
 func fasthttpResponseHeaders(hp *HPACK, res *fasthttp.Response) {
