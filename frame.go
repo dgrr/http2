@@ -33,6 +33,8 @@ func (ft FrameType) String() string {
 		return "FrameHeaders"
 	case FramePriority:
 		return "FramePriority"
+	case FrameResetStream:
+		return "FrameResetStream"
 	case FrameSettings:
 		return "FrameSettings"
 	case FramePushPromise:

@@ -2,11 +2,17 @@ package http2
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/valyala/fasthttp"
 	"strconv"
 )
 
 func fasthttpRequestHeaders(hp *HPACK, req *fasthttp.Request) {
+	v := hp.Peek(":path")
+	if len(v) > 0 {
+		req.SetRequestURIBytes(v)
+	}
+
 	hp.Range(func(hf *HeaderField) {
 		k, v := hf.KeyBytes(), hf.ValueBytes()
 		if !hf.IsPseudo() &&
@@ -24,7 +30,7 @@ func fasthttpRequestHeaders(hp *HPACK, req *fasthttp.Request) {
 		case 'm': // method
 			req.Header.SetMethodBytes(v)
 		case 'p': // path
-			req.SetRequestURIBytes(v)
+			// req.URI().SetPathBytes(v)
 		case 's': // scheme
 			req.URI().SetSchemeBytes(v)
 		case 'a': // authority
@@ -36,6 +42,8 @@ func fasthttpRequestHeaders(hp *HPACK, req *fasthttp.Request) {
 			req.Header.SetContentTypeBytes(v)
 		}
 	})
+	// in order to parse the query...
+	fmt.Println("-----", req.URI().String())
 }
 
 func fasthttpResponseHeaders(hp *HPACK, res *fasthttp.Response) {
