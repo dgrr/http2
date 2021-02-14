@@ -47,7 +47,7 @@ var streamPool = sync.Pool{
 type connCtx struct {
 	c  net.Conn
 	br *bufio.Reader
-	bf *bufio.Writer
+	bw *bufio.Writer
 
 	hp *HPACK
 	fr *Frame // read frame
@@ -71,6 +71,8 @@ var connCtxPool = sync.Pool{
 func acquireConnCtx(c net.Conn) *connCtx {
 	ctx := connCtxPool.Get().(*connCtx)
 	ctx.c = c
+	ctx.br = bufio.NewReader(c)
+	ctx.bw = bufio.NewWriter(c)
 	ctx.hp = AcquireHPACK()
 	ctx.fr = AcquireFrame()
 	ctx.st = AcquireSettings()
@@ -84,16 +86,16 @@ func releaseConnCtx(ctx *connCtx) {
 }
 
 func (ctx *connCtx) Write(b []byte) (int, error) {
-	return ctx.c.Write(b)
+	return ctx.bw.Write(b)
 }
 
 func (ctx *connCtx) rewriteFrame() error {
-	_, err := ctx.fr.WriteTo(ctx.c)
+	_, err := ctx.fr.WriteTo(ctx.bw)
 	return err
 }
 
 func (ctx *connCtx) readFrame() error {
-	_, err := ctx.fr.ReadFrom(ctx.c)
+	_, err := ctx.fr.ReadFrom(ctx.br)
 	return err
 }
 
@@ -102,7 +104,7 @@ func (ctx *connCtx) Read(b []byte) (int, error) {
 }
 
 func (ctx *connCtx) writeFrame(fr *Frame) error {
-	_, err := fr.WriteTo(ctx.c)
+	_, err := fr.WriteTo(ctx.bw)
 	return err
 }
 
@@ -508,7 +510,10 @@ func (ctx *connCtx) writeWindowUpdate(strm *Stream, n uint32) error {
 	wu.WriteFrame(fr)
 
 	fr.SetStream(id)
-	_, err := fr.WriteTo(ctx.c)
+	_, err := fr.WriteTo(ctx.bw)
+	if err == nil {
+		err = ctx.bw.Flush()
+	}
 
 	return err
 }
@@ -526,7 +531,11 @@ func (ctx *connCtx) writeReset(strm *Stream) error {
 	rfr.SetCode(0x0)
 	rfr.WriteFrame(fr)
 
-	_, err := fr.WriteTo(ctx.c)
+	_, err := fr.WriteTo(ctx.bw)
+	if err == nil {
+		err = ctx.bw.Flush()
+	}
+
 	return err
 }
 
@@ -540,7 +549,10 @@ func (ctx *connCtx) writeHeaders(strm *Stream, hfr *Headers) error {
 	hfr.SetEndHeaders(true)
 	hfr.WriteFrame(fr)
 
-	_, err := fr.WriteTo(ctx.c)
+	_, err := fr.WriteTo(ctx.bw)
+	if err == nil {
+		err = ctx.bw.Flush()
+	}
 
 	return err
 }
@@ -570,10 +582,13 @@ func (ctx *connCtx) writeData(strm *Stream, dfr *Data) error {
 		dfr.SetEndStream(i+step == len(body))
 		dfr.WriteFrame(fr)
 
-		n, err = fr.WriteTo(ctx.c)
+		n, err = fr.WriteTo(ctx.bw)
 		if err == nil {
 			strm.windowSize -= uint32(n)
 		}
+	}
+	if err == nil {
+		err = ctx.bw.Flush()
 	}
 	if err == nil && strm.state == StateHalfClosed {
 		strm.state = StateClosed
