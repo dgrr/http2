@@ -26,10 +26,6 @@ type HPACK struct {
 	// the fields stablished by the client losing performance calculated by client.
 	DisableDynamicTable bool
 
-	// fields are the header fields
-	// TODO: Replace HeaderField with a argsKV
-	fields []*HeaderField
-
 	// dynamic represents the dynamic table
 	dynamic []*HeaderField
 
@@ -37,16 +33,23 @@ type HPACK struct {
 	maxTableSize int
 }
 
-// func (hp *HPACK) Fork() *HPACK {
-// 	hp2 := AcquireHPACK()
-// 	for i := range hp.dynamic {
-// 		hf := AcquireHeaderField()
-// 		hp.dynamic[i].CopyTo(hf)
-// 		hp2.dynamic = append(hp2.dynamic, hf)
-// 	}
-//
-// 	return hp2
-// }
+func (hp *HPACK) Fork() *HPACK {
+	hp2 := &HPACK{}
+	hp2.tableSize = hp.tableSize
+	hp2.maxTableSize = hp.maxTableSize
+	hp2.DisableCompression = hp.DisableCompression
+	hp2.DisableDynamicTable = hp.DisableDynamicTable
+
+	hp2.dynamic = make([]*HeaderField, len(hp.dynamic))
+	for i := range hp.dynamic {
+		hf := AcquireHeaderField()
+		hp.dynamic[i].CopyTo(hf)
+
+		hp2.dynamic[i] = hf
+	}
+
+	return hp2
+}
 
 var hpackPool = sync.Pool{
 	New: func() interface{} {
@@ -75,68 +78,12 @@ func (hpack *HPACK) releaseDynamic() {
 	hpack.dynamic = hpack.dynamic[:0]
 }
 
-func (hpack *HPACK) releaseFields() {
-	for _, hf := range hpack.fields {
-		ReleaseHeaderField(hf)
-	}
-	hpack.fields = hpack.fields[:0]
-}
-
 // Reset deletes and realeases all dynamic header fields
 func (hpack *HPACK) Reset() {
 	hpack.releaseDynamic()
-	hpack.releaseFields()
 	hpack.tableSize = 0
 	hpack.maxTableSize = int(defaultHeaderTableSize)
 	hpack.DisableCompression = false
-}
-
-// AppendBytes appends hpack headers to dst and returns the new dst.
-func (hpack *HPACK) AppendBytes(dst []byte) []byte {
-	for _, hf := range hpack.fields {
-		dst = hf.AppendBytes(dst)
-		dst = append(dst, '\n')
-	}
-	return dst
-}
-
-// String returns HPACK as a string like an HTTP/1.1 header.
-func (hpack *HPACK) String() string {
-	return string(hpack.AppendBytes(nil))
-}
-
-func (hpack *HPACK) Range(fn func(*HeaderField)) {
-	for i := range hpack.fields {
-		fn(hpack.fields[i])
-	}
-}
-
-// AddField appends the field to the header list.
-func (hpack *HPACK) AddField(hf *HeaderField) {
-	hpack.fields = append(hpack.fields, hf)
-}
-
-// Add adds the key and the value to the Header.
-func (hpack *HPACK) Add(key, value string) {
-	hf := AcquireHeaderField()
-	hf.SetKey(key)
-	hf.SetValue(value)
-	hpack.AddField(hf)
-}
-
-// ....
-func (hpack *HPACK) AddBytes(key, value []byte) {
-	hpack.Add(b2s(key), b2s(value))
-}
-
-// ...
-func (hpack *HPACK) AddBytesK(key []byte, value string) {
-	hpack.Add(b2s(key), value)
-}
-
-// ...
-func (hpack *HPACK) AddBytesV(key string, value []byte) {
-	hpack.Add(key, b2s(value))
 }
 
 // SetMaxTableSize sets the maximum dynamic table size.
@@ -162,10 +109,10 @@ func (hpack *HPACK) addDynamic(hf *HeaderField) {
 
 	i := 0
 	for i = range hpack.dynamic {
-		// searching if the HeaderField already exist.
+		// searching if the HeaderField already exists.
 		hf2 := hpack.dynamic[i]
 		if bytes.Equal(hf.key, hf2.key) {
-			// if exist update the value.
+			// if exists: update the value.
 			mustAdd = false
 			hf2.SetValueBytes(hf.value)
 			break
@@ -213,60 +160,6 @@ func (hpack *HPACK) shrink(add int) {
 		// shrinking slice
 		hpack.dynamic = hpack.dynamic[:n]
 	}
-}
-
-// Peek returns HeaderField value of the given key.
-//
-// value will be nil if key is not found.
-func (hpack *HPACK) Peek(key string) (value []byte) {
-	for _, hf := range hpack.fields {
-		if b2s(hf.key) == key {
-			value = hf.value
-			break
-		}
-	}
-	return
-}
-
-// PeekBytes returns HeaderField value of the given key in bytes.
-//
-// value will be nil if key is not found.
-func (hpack *HPACK) PeekBytes(key []byte) (value []byte) {
-	for _, hf := range hpack.fields {
-		if bytes.Equal(hf.key, key) {
-			value = hf.value
-			break
-		}
-	}
-	return
-}
-
-// PeekField returns HeaderField structure of the given key.
-//
-// hf will be nil in case key is not found.
-func (hpack *HPACK) PeekField(key string) (hf *HeaderField) {
-	// TODO: hf must be a copy or pointer?
-	for _, hf2 := range hpack.fields {
-		if b2s(hf2.key) == key {
-			hf = hf2
-			break
-		}
-	}
-	return
-}
-
-// PeekFieldBytes returns HeaderField structure of the given key in bytes.
-//
-// hf will be nil in case key is not found.
-func (hpack *HPACK) PeekFieldBytes(key []byte) (hf *HeaderField) {
-	// TODO: hf must be a copy or pointer?
-	for _, hf2 := range hpack.fields {
-		if bytes.Equal(hf2.key, key) {
-			hf = hf2
-			break
-		}
-	}
-	return
 }
 
 // peek returns HeaderField from static or dynamic table.
@@ -377,14 +270,14 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 				b = b[1:]
 			}
 			dst := bytePool.Get().([]byte)
+
+			b, dst, err = readString(dst[:0], b)
 			if err == nil {
-				b, dst, err = readString(dst[:0], b)
-				if err == nil {
-					hf.SetValueBytes(dst)
-				}
-				// add to the table as RFC specifies.
-				hpack.addDynamic(hf)
+				hf.SetValueBytes(dst)
 			}
+			// add to the table as RFC specifies.
+			hpack.addDynamic(hf)
+
 			bytePool.Put(dst)
 		}
 
@@ -559,14 +452,7 @@ func appendString(dst, src []byte, encode bool) []byte {
 
 var errHeaderFieldNotFound = errors.New("indexed field not found")
 
-func (hpack *HPACK) MarshalTo(dst []byte) []byte {
-	for i := range hpack.fields {
-		dst = hpack.AppendHeader(dst, hpack.fields[i])
-	}
-	return dst
-}
-
-// AppendHeader writes hpack to dst returning the result byte slice.
+// AppendHeader appends the content of an encoded HeaderField to dst.
 func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 	var c bool
 	var n uint8

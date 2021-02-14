@@ -6,55 +6,61 @@ import (
 	"strconv"
 )
 
-func fasthttpRequestHeaders(hp *HPACK, req *fasthttp.Request) {
-	v := hp.Peek(":path")
-	if len(v) > 0 {
-		req.SetRequestURIBytes(v)
+func fasthttpRequestHeaders(hf *HeaderField, req *fasthttp.Request) {
+	k, v := hf.KeyBytes(), hf.ValueBytes()
+	if !hf.IsPseudo() &&
+		!(bytes.Equal(k, strUserAgent) ||
+			bytes.Equal(k, strContentType)) {
+		req.Header.AddBytesKV(k, v)
+		return
 	}
 
-	hp.Range(func(hf *HeaderField) {
-		k, v := hf.KeyBytes(), hf.ValueBytes()
-		if !hf.IsPseudo() &&
-			!(bytes.Equal(k, strUserAgent) ||
-				bytes.Equal(k, strContentType)) {
-			req.Header.AddBytesKV(k, v)
+	if hf.IsPseudo() {
+		if bytes.Equal(k, strPath) {
+			req.SetRequestURIBytes(v)
 			return
 		}
 
-		if hf.IsPseudo() {
-			k = k[1:]
-		}
+		k = k[1:]
+	}
 
-		switch k[0] {
-		case 'm': // method
-			req.Header.SetMethodBytes(v)
-		case 'p': // path
-			// req.URI().SetPathBytes(v)
-		case 's': // scheme
-			req.URI().SetSchemeBytes(v)
-		case 'a': // authority
-			req.URI().SetHostBytes(v)
-			req.Header.AddBytesV("Host", v)
-		case 'u': // user-agent
-			req.Header.SetUserAgentBytes(v)
-		case 'c': // content-type
-			req.Header.SetContentTypeBytes(v)
-		}
-	})
+	switch k[0] {
+	case 'm': // method
+		req.Header.SetMethodBytes(v)
+	case 'p': // path
+		// req.URI().SetPathBytes(v)
+	case 's': // scheme
+		req.URI().SetSchemeBytes(v)
+	case 'a': // authority
+		req.URI().SetHostBytes(v)
+		req.Header.AddBytesV("Host", v)
+	case 'u': // user-agent
+		req.Header.SetUserAgentBytes(v)
+	case 'c': // content-type
+		req.Header.SetContentTypeBytes(v)
+	}
 }
 
-func fasthttpResponseHeaders(hp *HPACK, res *fasthttp.Response) {
-	hp.AddBytesK(strStatus,
+func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
+	hf := AcquireHeaderField()
+	defer ReleaseHeaderField(hf)
+
+	hf.SetKeyBytes(strStatus)
+	hf.SetValue(
 		strconv.FormatInt(
 			int64(res.Header.StatusCode()), 10,
 		),
 	)
+	dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf)
 
-	hp.AddBytesK(strContentLength,
+	hf.SetKeyBytes(strContentLength)
+	hf.SetValue(
 		strconv.FormatInt(int64(len(res.Body())), 10),
 	)
+	dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf)
 
 	res.Header.VisitAll(func(k, v []byte) {
-		hp.AddBytes(bytes.ToLower(k), v)
+		hf.SetBytes(bytes.ToLower(k), v)
+		dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf)
 	})
 }

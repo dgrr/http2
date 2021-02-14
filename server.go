@@ -1,6 +1,7 @@
 package http2
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
@@ -45,6 +46,9 @@ var streamPool = sync.Pool{
 // regardless the stream.
 type connCtx struct {
 	c  net.Conn
+	br *bufio.Reader
+	bf *bufio.Writer
+
 	hp *HPACK
 	fr *Frame // read frame
 	st *Settings
@@ -230,10 +234,11 @@ func (s *Server) Handle(ctx *connCtx, strm *Stream) (err error) {
 	}
 
 	if err == nil && strm.istate == stateExecHandler {
-		// TODO: Execute in a goroutine
+		//go func(ctx *connCtx, strm *Stream) {
 		s.s.Handler(strm.ctx)
 		err = s.tryReply(ctx, strm)
 		strm.istate = stateNone
+		//}(ctx, strm)
 	}
 
 	return err
@@ -332,11 +337,8 @@ func (s *Server) handleHeaders(ctx *connCtx, strm *Stream) error {
 		return err
 	}
 
-	if strm.hfr.EndHeaders() {
-		err = s.parseHeaders(ctx, strm)
-	}
 
-	return err
+	return s.parseHeaders(ctx, strm, strm.hfr.EndHeaders())
 }
 
 func (s *Server) handleContinuation(ctx *connCtx, strm *Stream) (err error) {
@@ -344,27 +346,25 @@ func (s *Server) handleContinuation(ctx *connCtx, strm *Stream) (err error) {
 	defer ReleaseContinuation(fr)
 
 	fr.ReadFrame(ctx.fr)
-	if fr.HasEndHeaders() {
-		err = s.parseHeaders(ctx, strm)
-	}
+	err = s.parseHeaders(ctx, strm, fr.HasEndHeaders())
 
 	return
 }
 
-func (s *Server) parseHeaders(ctx *connCtx, strm *Stream) (err error) {
+func (s *Server) parseHeaders(ctx *connCtx, strm *Stream, isEnd bool) (err error) {
+	hf := AcquireHeaderField()
 	b := strm.hfr.rawHeaders
+
 	for len(b) > 0 {
-		hf := AcquireHeaderField()
 		b, err = ctx.hp.Next(hf, b)
 		if err != nil {
 			break
 		}
-		ctx.hp.AddField(hf)
+
+		fasthttpRequestHeaders(hf, &strm.ctx.Request)
 	}
 
 	if err == nil {
-		fasthttpRequestHeaders(ctx.hp, &strm.ctx.Request)
-
 		if strm.ctx.Request.Header.IsGet() ||
 			strm.ctx.Request.Header.IsHead() {
 			strm.istate = stateExecHandler
@@ -481,12 +481,6 @@ func (s *Server) tryReply(ctx *connCtx, strm *Stream) error {
 	hfr := AcquireHeaders()
 	defer ReleaseHeaders(hfr)
 
-	// if n := len(strm.ctx.Response.Body()) - int(ctx.st.windowSize); n > 0 {
-	// 	if err := ctx.writeWindowUpdate(strm, uint32(n+1)); err != nil {
-	// 		return err
-	// 	}
-	// }
-
 	err := ctx.writeHeaders(strm, hfr)
 	if err == nil {
 		err = ctx.writeData(strm, dfr)
@@ -542,15 +536,12 @@ func (ctx *connCtx) writeHeaders(strm *Stream, hfr *Headers) error {
 
 	fr.SetStream(strm.id)
 
-	ctx.hp.releaseFields()
-
-	fasthttpResponseHeaders(ctx.hp, &strm.ctx.Response)
-
-	hfr.rawHeaders = ctx.hp.MarshalTo(hfr.rawHeaders[:0])
+	fasthttpResponseHeaders(hfr, ctx.hp, &strm.ctx.Response)
 	hfr.SetEndHeaders(true)
-
 	hfr.WriteFrame(fr)
+
 	_, err := fr.WriteTo(ctx.c)
+
 	return err
 }
 

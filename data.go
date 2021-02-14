@@ -40,6 +40,7 @@ func ReleaseData(data *Data) {
 // Reset ...
 func (data *Data) Reset() {
 	data.endStream = false
+	data.hasPadding = false
 	data.b = data.b[:0]
 }
 
