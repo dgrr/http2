@@ -278,7 +278,7 @@ func (fr *Frame) AppendPayload(src []byte) (int, error) {
 
 func (fr *Frame) appendCheckingLen(dst, src []byte) (n int, err error) {
 	n = len(src)
-	if uint32(n+len(dst)) > fr.maxLen {
+	if fr.maxLen > 0 && uint32(n+len(dst)) > fr.maxLen {
 		err = ErrPayloadExceeds
 	} else {
 		fr.payload = append(dst, src...)

@@ -29,9 +29,6 @@ func ConfigureServer(s *fasthttp.Server) *Server {
 	s2 := &Server{
 		s: s,
 	}
-	if len(s.Name) != 0 {
-		s.Name = "fasthttp using http2"
-	}
 	s.NextProto(H2TLSProto, s2.serveConn)
 	return s2
 }
@@ -52,9 +49,11 @@ type connCtx struct {
 	fr *Frame // read frame
 	st *Settings
 
-	lastStreamOpen uint32
-	streamsOpen    int
-	isClosing      bool // after recv goaway
+	windowSize uint32 // client's window size
+	unackedSettings int
+	lastStreamOpen  uint32
+	streamsOpen     int
+	isClosing       bool // after recv goaway
 }
 
 var connCtxPool = sync.Pool{
@@ -82,7 +81,7 @@ func (ctx *connCtx) Write(b []byte) (int, error) {
 	return ctx.c.Write(b)
 }
 
-func (ctx *connCtx) writeInternalFrame() error {
+func (ctx *connCtx) rewriteFrame() error {
 	_, err := ctx.fr.WriteTo(ctx.c)
 	return err
 }
@@ -102,6 +101,8 @@ func (ctx *connCtx) writeFrame(fr *Frame) error {
 }
 
 // Server ...
+//
+// TODO: Shared windowSize
 type Server struct {
 	s *fasthttp.Server
 }
@@ -117,21 +118,7 @@ func (s *Server) serveConn(c net.Conn) error {
 	ctx := acquireConnCtx(c)
 	defer releaseConnCtx(ctx)
 
-	// prepare to send the empty settings frame
-	err := ctx.st.WriteFrame(ctx.fr)
-	if err == nil {
-		err = ctx.writeInternalFrame()
-	}
-
-	if err == nil {
-		ctx.fr.Reset()
-		(&WindowUpdate{increment: 1 << 14}).WriteFrame(ctx.fr)
-		err = ctx.writeInternalFrame()
-	}
-	if err != nil {
-		return err
-	}
-
+	var err error
 	streams := make(map[uint32]*Stream)
 
 	for err == nil {
@@ -144,9 +131,14 @@ func (s *Server) serveConn(c net.Conn) error {
 			break
 		}
 
+		// wrong stream id
+		if ctx.fr.stream&1 == 0 {
+			// TODO: Handle
+		}
+
 		strm := streams[ctx.fr.stream]
 		if strm == nil {
-			strm = acquireStream(s.s.Name, ctx.fr.stream)
+			strm = acquireStream(ctx.fr.stream)
 			streams[ctx.fr.stream] = strm
 			ctx.lastStreamOpen = strm.id
 			ctx.streamsOpen++
@@ -193,7 +185,7 @@ func (s *Server) Handle(ctx *connCtx, strm *Stream) (err error) {
 	case FrameHeaders:
 		err = s.handleHeaders(ctx, strm)
 	case FrameContinuation:
-		println("continuation")
+		err = s.handleContinuation(ctx, strm)
 	case FrameData:
 		err = s.handleData(ctx, strm)
 	case FramePriority:
@@ -203,22 +195,15 @@ func (s *Server) Handle(ctx *connCtx, strm *Stream) (err error) {
 		err = s.handleReset(ctx, strm)
 	case FrameSettings:
 		err = s.handleSettings(ctx, strm)
-		// TODO: Check if the client's settings fit the server ones
 	case FramePushPromise:
 		println("pp")
 	case FramePing:
-		println("ping")
+		ctx.fr.AddFlag(FlagAck)
+		err = ctx.rewriteFrame()
 	case FrameGoAway:
 		err = s.handleGoAway(ctx, strm)
-		ctx.isClosing = true
 	case FrameWindowUpdate:
-		println("update")
-	}
-
-	if err == nil && strm.istate == stateExecHandler {
-		s.s.Handler(strm.ctx)
-		err = s.tryReply(ctx, strm)
-		strm.istate = stateNone
+		s.handleWindowUpdate(ctx, strm)
 	}
 
 	if ctx.fr.HasFlag(FlagEndStream) {
@@ -231,10 +216,33 @@ func (s *Server) Handle(ctx *connCtx, strm *Stream) (err error) {
 		}
 	}
 
+	if err == nil && strm.istate == stateExecHandler {
+		s.s.Handler(strm.ctx)
+		err = s.tryReply(ctx, strm)
+		strm.istate = stateNone
+	}
+
 	return err
 }
 
 type StreamState int8
+
+func (s StreamState) String() string {
+	switch s {
+	case StateIdle:
+		return "Idle"
+	case StateReserved:
+		return "Reserved"
+	case StateOpen:
+		return "Open"
+	case StateHalfClosed:
+		return "HalfClosed"
+	case StateClosed:
+		return "Closed"
+	}
+
+	return "IDK"
+}
 
 const (
 	StateIdle StreamState = iota
@@ -262,11 +270,10 @@ type Stream struct {
 	hfr *Headers
 }
 
-func acquireStream(serverName string, id uint32) *Stream {
+func acquireStream(id uint32) *Stream {
 	strm := streamPool.Get().(*Stream)
 	strm.ctx.Request.Reset()
 	strm.ctx.Response.Reset()
-	strm.ctx.Response.Header.SetServer(serverName)
 
 	strm.state = StateIdle
 	strm.istate = stateNone
@@ -311,29 +318,47 @@ func (s *Server) handleHeaders(ctx *connCtx, strm *Stream) error {
 	}
 
 	if strm.hfr.EndHeaders() {
-		b := strm.hfr.rawHeaders
-		for len(b) > 0 {
-			hf := AcquireHeaderField()
-			b, err = ctx.hp.Next(hf, b)
-			if err != nil {
-				break
-			}
-			ctx.hp.AddField(hf)
-		}
-
-		if err == nil {
-			fasthttpRequestHeaders(ctx.hp, &strm.ctx.Request)
-
-			if strm.ctx.Request.Header.IsGet() ||
-				strm.ctx.Request.Header.IsHead() {
-				strm.istate = stateExecHandler
-			} else { // post, put or delete
-				strm.istate = stateAwaitData
-			}
-		}
+		err = s.parseHeaders(ctx, strm)
 	}
 
 	return err
+}
+
+func (s *Server) handleContinuation(ctx *connCtx, strm *Stream) (err error) {
+	fr := AcquireContinuation()
+	defer ReleaseContinuation(fr)
+
+	fr.ReadFrame(ctx.fr)
+	if fr.HasEndHeaders() {
+		err = s.parseHeaders(ctx, strm)
+	}
+
+	return
+}
+
+func (s *Server) parseHeaders(ctx *connCtx, strm *Stream) (err error) {
+	b := strm.hfr.rawHeaders
+	for len(b) > 0 {
+		hf := AcquireHeaderField()
+		b, err = ctx.hp.Next(hf, b)
+		if err != nil {
+			break
+		}
+		ctx.hp.AddField(hf)
+	}
+
+	if err == nil {
+		fasthttpRequestHeaders(ctx.hp, &strm.ctx.Request)
+
+		if strm.ctx.Request.Header.IsGet() ||
+			strm.ctx.Request.Header.IsHead() {
+			strm.istate = stateExecHandler
+		} else { // post, put or delete
+			strm.istate = stateAwaitData
+		}
+	}
+
+	return
 }
 
 func (s *Server) handleData(ctx *connCtx, strm *Stream) error {
@@ -371,6 +396,8 @@ func (s *Server) handleGoAway(ctx *connCtx, strm *Stream) error {
 	ga := AcquireGoAway()
 	defer ReleaseGoAway(ga)
 
+	ctx.isClosing = true
+
 	ga.SetStream(ctx.lastStreamOpen)
 	// TODO: Replace with proper code
 	ga.SetCode(0x0)
@@ -381,17 +408,29 @@ func (s *Server) handleGoAway(ctx *connCtx, strm *Stream) error {
 	return ctx.writeFrame(fr)
 }
 
+func (s *Server) handleWindowUpdate(ctx *connCtx, strm *Stream) error {
+	wu := AcquireWindowUpdate()
+	defer ReleaseWindowUpdate(wu)
+
+	wu.ReadFrame(ctx.fr)
+	ctx.windowSize += wu.increment
+
+	return nil
+}
+
 func (s *Server) handleSettings(ctx *connCtx, strm *Stream) error {
-	if ctx.fr.Len() == 0 {
-		return ctx.writeInternalFrame()
-	}
-
-	fr := AcquireFrame()
-	defer ReleaseFrame(fr)
-
 	st := AcquireSettings()
 	defer ReleaseSettings(st)
+
 	st.ReadFrame(ctx.fr)
+
+	if st.IsAck() {
+		ctx.unackedSettings--
+		if ctx.unackedSettings < 0 {
+			ctx.unackedSettings = 0
+		}
+		return nil
+	}
 
 	ctx.st.SetAck(false)
 	if st.HeaderTableSize() < ctx.st.HeaderTableSize() {
@@ -413,8 +452,21 @@ func (s *Server) handleSettings(ctx *connCtx, strm *Stream) error {
 		ctx.st.SetPush(false)
 	}
 
+	ctx.windowSize = st.MaxWindowSize()
+
+	fr := AcquireFrame()
+	defer ReleaseFrame(fr)
+
 	ctx.st.WriteFrame(fr)
-	return ctx.writeFrame(fr)
+	err := ctx.writeFrame(fr)
+	if err == nil {
+		fr.Reset()
+		fr.SetType(FrameSettings)
+		fr.AddFlag(FlagAck)
+		err = ctx.writeFrame(fr)
+	}
+
+	return err
 }
 
 func (s *Server) tryReply(ctx *connCtx, strm *Stream) error {
@@ -424,13 +476,33 @@ func (s *Server) tryReply(ctx *connCtx, strm *Stream) error {
 	hfr := AcquireHeaders()
 	defer ReleaseHeaders(hfr)
 
+	// if n := len(strm.ctx.Response.Body()) - int(ctx.st.windowSize); n > 0 {
+	// 	if err := ctx.writeWindowUpdate(strm, uint32(n+1)); err != nil {
+	// 		return err
+	// 	}
+	// }
+
 	err := ctx.writeHeaders(strm, hfr)
 	if err == nil {
 		err = ctx.writeData(strm, dfr)
 	}
-	if err == nil {
-		ctx.writeReset(strm)
-	}
+
+	return err
+}
+
+func (ctx *connCtx) writeWindowUpdate(strm *Stream, n uint32) error {
+	fr := AcquireFrame()
+	defer ReleaseFrame(fr)
+
+	wu := AcquireWindowUpdate()
+	defer ReleaseWindowUpdate(wu)
+
+	wu.SetIncrement(n)
+	wu.WriteFrame(fr)
+	ctx.st.SetMaxWindowSize(ctx.st.MaxWindowSize() + wu.increment)
+
+	fr.SetStream(strm.id)
+	_, err := fr.WriteTo(ctx.c)
 
 	return err
 }
@@ -474,13 +546,20 @@ func (ctx *connCtx) writeData(strm *Stream, dfr *Data) error {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
-	fr.SetStream(strm.id)
+	body := strm.ctx.Response.Body()
 
-	dfr.SetData(strm.ctx.Response.Body())
+	fr.SetStream(strm.id)
+	fr.SetMaxLen(uint32(len(body)))
+
+	dfr.SetData(body)
 	dfr.SetPadding(false)
 	dfr.SetEndStream(true)
 	dfr.WriteFrame(fr)
 
 	_, err := fr.WriteTo(ctx.c)
+	if err == nil && strm.state == StateHalfClosed {
+		strm.state = StateClosed
+	}
+
 	return err
 }

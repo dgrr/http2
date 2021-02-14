@@ -32,10 +32,17 @@ func main() {
 }
 
 func requestHandler(ctx *fasthttp.RequestCtx) {
-	fmt.Printf("%s\n", ctx.Request.Header.Header())
+	fmt.Printf("%s\n%s\n", ctx.Request.URI(), ctx.Request.Header.Header())
 	if ctx.Request.Header.IsPost() {
 		fmt.Fprintf(ctx, "%s\n", ctx.Request.Body())
-	} else {
+		return
+	}
+
+	if ctx.FormValue("long") == nil {
 		fmt.Fprintf(ctx, "Hello 21th century!\n")
+	} else {
+		for i := 0; i < 1<<16; i++ {
+			ctx.Response.AppendBodyString("A")
+		}
 	}
 }

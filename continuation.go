@@ -47,9 +47,14 @@ func (c *Continuation) Header() []byte {
 	return c.rawHeaders
 }
 
-// SetEndStream ...
-func (c *Continuation) SetEndStream(value bool) {
+// SetEndHeaders ...
+func (c *Continuation) SetEndHeaders(value bool) {
 	c.endHeaders = value
+}
+
+// HasEndHeaders ...
+func (c *Continuation) HasEndHeaders() bool {
+	return c.endHeaders
 }
 
 // SetHeader ...

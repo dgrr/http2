@@ -98,6 +98,8 @@ func readFramesFrom(c, c2 net.Conn, primaryIsProxy bool) {
 		symbol = '<'
 	}
 
+	fr.SetMaxLen(0)
+
 	var err error
 	for err == nil {
 		_, err = fr.ReadFrom(c) // TODO: Use ReadFromLimitPayload?
@@ -118,6 +120,7 @@ func debugFrame(c net.Conn, fr *fasthttp2.Frame, symbol byte) {
 	bf := bytes.NewBuffer(nil)
 
 	fmt.Fprintf(bf, "%c %d - %s\n", symbol, fr.Stream(), c.RemoteAddr())
+	fmt.Fprintf(bf, "%c %d\n", symbol, fr.Len())
 	fmt.Fprintf(bf, "%c EndStream: %v\n", symbol, fr.HasFlag(fasthttp2.FlagEndStream))
 
 	switch fr.Type() {
@@ -257,7 +260,15 @@ func startSlowBackend() {
 type ReqHandler struct{}
 
 func (rh *ReqHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Hello HTTP/2\n")
+	if r.FormValue("long") == "" {
+		fmt.Fprintf(w, "Hello 21th century!\n")
+	} else {
+		bf := bytes.NewBuffer(nil)
+		for i := 0; i < 1<<24; i++ {
+			io.WriteString(bf, "A")
+		}
+		w.Write(bf.Bytes())
+	}
 }
 
 func startFastBackend() {
@@ -283,5 +294,11 @@ func startFastBackend() {
 }
 
 func fastHandler(ctx *fasthttp.RequestCtx) {
-	fmt.Fprintf(ctx, "Hello fast HTTP/2\n")
+	if ctx.FormValue("long") == nil {
+		fmt.Fprintf(ctx, "Hello 21th century!\n")
+	} else {
+		for i := 0; i < 1<<24; i++ {
+			ctx.Response.AppendBodyString("A")
+		}
+	}
 }
