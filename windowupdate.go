@@ -48,17 +48,19 @@ func (wu *WindowUpdate) Increment() uint32 {
 
 // SetIncrement ...
 func (wu *WindowUpdate) SetIncrement(increment uint32) {
-	wu.increment = increment & (1<<31 - 1)
+	wu.increment = increment
 }
 
 // ReadFrame ...
-func (wu *WindowUpdate) ReadFrame(fr *Frame) (err error) {
+func (wu *WindowUpdate) ReadFrame(fr *Frame) error {
 	if len(fr.payload) < 4 {
-		err = ErrMissingBytes
-	} else {
-		wu.increment = bytesToUint32(fr.payload) & (1<<31 - 1)
+		wu.increment = 0
+		return ErrMissingBytes
 	}
-	return
+
+	wu.increment = bytesToUint32(fr.payload) & (1<<31 - 1)
+
+	return nil
 }
 
 // WriteFrame ...

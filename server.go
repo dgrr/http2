@@ -49,7 +49,9 @@ type connCtx struct {
 	fr *Frame // read frame
 	st *Settings
 
-	windowSize uint32 // client's window size
+	cst        *Settings
+	windowSize uint32
+
 	unackedSettings int
 	lastStreamOpen  uint32
 	streamsOpen     int
@@ -121,6 +123,13 @@ func (s *Server) serveConn(c net.Conn) error {
 	var err error
 	streams := make(map[uint32]*Stream)
 
+	// write own settings
+	ctx.st.WriteFrame(ctx.fr)
+	err = ctx.rewriteFrame()
+	if err == nil {
+		err = ctx.writeWindowUpdate(nil, ctx.st.windowSize-65535)
+	}
+
 	for err == nil {
 		// TODO: works without reseting? fr.Reset()
 		err = ctx.readFrame()
@@ -140,10 +149,11 @@ func (s *Server) serveConn(c net.Conn) error {
 		if strm == nil {
 			strm = acquireStream(ctx.fr.stream)
 			streams[ctx.fr.stream] = strm
+			strm.windowSize = ctx.windowSize
 			ctx.lastStreamOpen = strm.id
 			ctx.streamsOpen++
 		}
-		if strm.IsClosed() {
+		if strm.IsClosed() && ctx.fr.Type() != FrameWindowUpdate {
 			log.Println("error stream has been closed before...")
 			continue
 		}
@@ -262,10 +272,11 @@ const (
 )
 
 type Stream struct {
-	id     uint32
-	state  StreamState
-	istate internalState
-	ctx    *fasthttp.RequestCtx
+	id         uint32
+	state      StreamState
+	istate     internalState
+	ctx        *fasthttp.RequestCtx
+	windowSize uint32
 
 	hfr *Headers
 }
@@ -368,6 +379,7 @@ func (s *Server) handleData(ctx *connCtx, strm *Stream) error {
 	dfr.ReadFrame(ctx.fr)
 	strm.ctx.Request.SetBody(dfr.Data())
 
+	ctx.writeWindowUpdate(strm, uint32(len(strm.ctx.Request.Body())))
 	strm.istate = stateExecHandler
 
 	return nil
@@ -413,14 +425,21 @@ func (s *Server) handleWindowUpdate(ctx *connCtx, strm *Stream) error {
 	defer ReleaseWindowUpdate(wu)
 
 	wu.ReadFrame(ctx.fr)
-	ctx.windowSize += wu.increment
+	if ctx.cst == nil {
+		// TODO: xd
+	}
+
+	if ctx.fr.stream == 0 {
+		ctx.windowSize += wu.increment
+	} else {
+		strm.windowSize += wu.increment
+	}
 
 	return nil
 }
 
 func (s *Server) handleSettings(ctx *connCtx, strm *Stream) error {
 	st := AcquireSettings()
-	defer ReleaseSettings(st)
 
 	st.ReadFrame(ctx.fr)
 
@@ -429,42 +448,24 @@ func (s *Server) handleSettings(ctx *connCtx, strm *Stream) error {
 		if ctx.unackedSettings < 0 {
 			ctx.unackedSettings = 0
 		}
+		ReleaseSettings(st)
 		return nil
 	}
 
-	ctx.st.SetAck(false)
-	if st.HeaderTableSize() < ctx.st.HeaderTableSize() {
-		ctx.st.SetHeaderTableSize(st.HeaderTableSize())
+	if ctx.cst == nil {
+		ctx.cst = st
+		ctx.windowSize = st.windowSize
+	} else {
+		st.CopyTo(ctx.cst)
+		defer ReleaseSettings(st)
 	}
-	if st.MaxConcurrentStreams() > ctx.st.MaxConcurrentStreams() {
-		ctx.st.SetMaxConcurrentStreams(st.MaxConcurrentStreams())
-	}
-	if st.MaxWindowSize() < ctx.st.MaxWindowSize() {
-		ctx.st.SetMaxWindowSize(st.MaxWindowSize())
-	}
-	if st.MaxFrameSize() < ctx.st.MaxFrameSize() {
-		ctx.st.SetMaxFrameSize(st.MaxFrameSize())
-	}
-	if st.MaxHeaderListSize() < ctx.st.MaxHeaderListSize() {
-		ctx.st.SetMaxHeaderListSize(st.MaxHeaderListSize())
-	}
-	if !st.Push() {
-		ctx.st.SetPush(false)
-	}
-
-	ctx.windowSize = st.MaxWindowSize()
 
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
-	ctx.st.WriteFrame(fr)
+	fr.SetType(FrameSettings)
+	fr.AddFlag(FlagAck)
 	err := ctx.writeFrame(fr)
-	if err == nil {
-		fr.Reset()
-		fr.SetType(FrameSettings)
-		fr.AddFlag(FlagAck)
-		err = ctx.writeFrame(fr)
-	}
 
 	return err
 }
@@ -497,11 +498,18 @@ func (ctx *connCtx) writeWindowUpdate(strm *Stream, n uint32) error {
 	wu := AcquireWindowUpdate()
 	defer ReleaseWindowUpdate(wu)
 
+	id := uint32(0)
+	if strm != nil {
+		id = strm.id
+		strm.windowSize += n
+	} else {
+		ctx.windowSize += n
+	}
+
 	wu.SetIncrement(n)
 	wu.WriteFrame(fr)
-	ctx.st.SetMaxWindowSize(ctx.st.MaxWindowSize() + wu.increment)
 
-	fr.SetStream(strm.id)
+	fr.SetStream(id)
 	_, err := fr.WriteTo(ctx.c)
 
 	return err
@@ -546,17 +554,32 @@ func (ctx *connCtx) writeData(strm *Stream, dfr *Data) error {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
-	body := strm.ctx.Response.Body()
-
 	fr.SetStream(strm.id)
-	fr.SetMaxLen(uint32(len(body)))
+	fr.SetMaxLen(strm.windowSize)
 
-	dfr.SetData(body)
-	dfr.SetPadding(false)
-	dfr.SetEndStream(true)
-	dfr.WriteFrame(fr)
+	var (
+		n   int64
+		err error
+	)
 
-	_, err := fr.WriteTo(ctx.c)
+	body := strm.ctx.Response.Body()
+	step := 1 << 14
+
+	for i := 0; err == nil && i < len(body); i += step {
+		if i + step > len(body) {
+			step = len(body) - i
+		}
+
+		dfr.SetData(body[i:i+step])
+		dfr.SetPadding(false)
+		dfr.SetEndStream(i + step >= len(body))
+		dfr.WriteFrame(fr)
+
+		n, err = fr.WriteTo(ctx.c)
+		if err == nil {
+			strm.windowSize -= uint32(n)
+		}
+	}
 	if err == nil && strm.state == StateHalfClosed {
 		strm.state = StateClosed
 	}

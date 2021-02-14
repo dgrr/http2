@@ -168,12 +168,14 @@ func debugFrame(c net.Conn, fr *fasthttp2.Frame, symbol byte) {
 
 func debugSettings(bf *bytes.Buffer, st *fasthttp2.Settings, symbol byte) {
 	fmt.Fprintf(bf, "%c   ACK: %v\n", symbol, st.IsAck())
-	fmt.Fprintf(bf, "%c   TableSize: %d\n", symbol, st.HeaderTableSize())
-	fmt.Fprintf(bf, "%c   EnablePush: %v\n", symbol, st.Push())
-	fmt.Fprintf(bf, "%c   MaxStreams: %d\n", symbol, st.MaxConcurrentStreams())
-	fmt.Fprintf(bf, "%c   WindowSize: %d\n", symbol, st.MaxWindowSize())
-	fmt.Fprintf(bf, "%c   FrameSize: %d\n", symbol, st.MaxFrameSize())
-	fmt.Fprintf(bf, "%c   HeaderSize: %d\n", symbol, st.MaxHeaderListSize())
+	if !st.IsAck() {
+		fmt.Fprintf(bf, "%c   TableSize: %d\n", symbol, st.HeaderTableSize())
+		fmt.Fprintf(bf, "%c   EnablePush: %v\n", symbol, st.Push())
+		fmt.Fprintf(bf, "%c   MaxStreams: %d\n", symbol, st.MaxConcurrentStreams())
+		fmt.Fprintf(bf, "%c   WindowSize: %d\n", symbol, st.MaxWindowSize())
+		fmt.Fprintf(bf, "%c   FrameSize: %d\n", symbol, st.MaxFrameSize())
+		fmt.Fprintf(bf, "%c   HeaderSize: %d\n", symbol, st.MaxHeaderListSize())
+	}
 }
 
 func debugHeaders(bf *bytes.Buffer, fr *fasthttp2.Headers, symbol byte) {
