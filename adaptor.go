@@ -26,7 +26,9 @@ func fasthttpRequestHeaders(hp *HPACK, req *fasthttp.Request) {
 		case 'p': // path
 			req.SetRequestURIBytes(v)
 		case 's': // scheme
+			req.URI().SetSchemeBytes(v)
 		case 'a': // authority
+			req.URI().SetHostBytes(v)
 			req.Header.AddBytesV("Host", v)
 		case 'u': // user-agent
 			req.Header.SetUserAgentBytes(v)
