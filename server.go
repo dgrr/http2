@@ -169,6 +169,7 @@ func (s *Server) serveConn(c net.Conn) error {
 
 		err = s.Handle(ctx, strm)
 		if strm.IsClosed() {
+			ctx.streamsOpen--
 			releaseStream(strm)
 			// delete(streams, strm.id)
 		}
@@ -236,11 +237,9 @@ func (s *Server) Handle(ctx *connCtx, strm *Stream) (err error) {
 	}
 
 	if err == nil && strm.istate == stateExecHandler {
-		//go func(ctx *connCtx, strm *Stream) {
 		s.s.Handler(strm.ctx)
 		err = s.tryReply(ctx, strm)
 		strm.istate = stateNone
-		//}(ctx, strm)
 	}
 
 	return err
@@ -338,7 +337,6 @@ func (s *Server) handleHeaders(ctx *connCtx, strm *Stream) error {
 	if err != nil {
 		return err
 	}
-
 
 	return s.parseHeaders(ctx, strm, strm.hfr.EndHeaders())
 }
@@ -487,6 +485,9 @@ func (s *Server) tryReply(ctx *connCtx, strm *Stream) error {
 	if err == nil {
 		err = ctx.writeData(strm, dfr)
 	}
+	if err == nil {
+		err = ctx.bw.Flush()
+	}
 
 	return err
 }
@@ -550,10 +551,6 @@ func (ctx *connCtx) writeHeaders(strm *Stream, hfr *Headers) error {
 	hfr.WriteFrame(fr)
 
 	_, err := fr.WriteTo(ctx.bw)
-	if err == nil {
-		err = ctx.bw.Flush()
-	}
-
 	return err
 }
 
@@ -586,9 +583,6 @@ func (ctx *connCtx) writeData(strm *Stream, dfr *Data) error {
 		if err == nil {
 			strm.windowSize -= uint32(n)
 		}
-	}
-	if err == nil {
-		err = ctx.bw.Flush()
 	}
 	if err == nil && strm.state == StateHalfClosed {
 		strm.state = StateClosed

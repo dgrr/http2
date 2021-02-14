@@ -1,7 +1,7 @@
 package http2
 
 var (
-	strPath = []byte(":path")
+	strPath          = []byte(":path")
 	strStatus        = []byte(":status")
 	strServer        = []byte("server")
 	strContentLength = []byte("content-length")
