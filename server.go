@@ -247,6 +247,14 @@ func (s *Server) Handle(ctx *connCtx, strm *Stream) (err error) {
 
 type StreamState int8
 
+const (
+	StateIdle StreamState = iota
+	StateReserved
+	StateOpen
+	StateHalfClosed
+	StateClosed
+)
+
 func (s StreamState) String() string {
 	switch s {
 	case StateIdle:
@@ -264,14 +272,6 @@ func (s StreamState) String() string {
 	return "IDK"
 }
 
-const (
-	StateIdle StreamState = iota
-	StateReserved
-	StateOpen
-	StateHalfClosed
-	StateClosed
-)
-
 type internalState int8
 
 const (
@@ -282,9 +282,10 @@ const (
 )
 
 type Stream struct {
-	id         uint32
-	state      StreamState
-	istate     internalState
+	id     uint32
+	state  StreamState
+	istate internalState
+	// TODO: remove ctx from here bc client uses it too. And headers too
 	ctx        *fasthttp.RequestCtx
 	windowSize uint32
 
