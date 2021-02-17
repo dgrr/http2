@@ -2,19 +2,18 @@ package main
 
 import (
 	"context"
-	"time"
-	"log"
-        "crypto/tls"
+	"crypto/tls"
 	"encoding/pem"
-        "fmt"
-        "net/http"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
 
-        "golang.org/x/crypto/acme/autocert"
-        "golang.org/x/crypto/acme"
-        "github.com/dgrr/http2"
-        "github.com/valyala/fasthttp"
+	"github.com/dgrr/http2"
+	"github.com/valyala/fasthttp"
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
 )
-
 
 func main() {
 	hostName := "example.com"
@@ -24,32 +23,32 @@ func main() {
 		log.Fatalln(err)
 	}
 
-        s := &fasthttp.Server{
-                Handler: requestHandler,
-                Name:    "http2 test",
-        }
-        http2.ConfigureServer(s)
+	s := &fasthttp.Server{
+		Handler: requestHandler,
+		Name:    "http2 test",
+	}
+	http2.ConfigureServer(s)
 
 	log.Println("fasthttp", s.ListenAndServeTLSEmbed(":443", cert, priv))
 }
 
 func configureCert(hostName string) ([]byte, []byte, error) {
 	m := &autocert.Manager{
-                Prompt:     autocert.AcceptTOS,
-                HostPolicy: autocert.HostWhitelist(hostName),
-                Cache:      autocert.DirCache("./certs"),
-        }
+		Prompt:     autocert.AcceptTOS,
+		HostPolicy: autocert.HostWhitelist(hostName),
+		Cache:      autocert.DirCache("./certs"),
+	}
 
-        cfg := &tls.Config{
-                GetCertificate: m.GetCertificate,
-                NextProtos: []string{
-                        acme.ALPNProto,
-                },
-        }
+	cfg := &tls.Config{
+		GetCertificate: m.GetCertificate,
+		NextProtos: []string{
+			acme.ALPNProto,
+		},
+	}
 
 	s := &http.Server{
-		Addr: ":80",
-		Handler: m.HTTPHandler(nil),
+		Addr:      ":80",
+		Handler:   m.HTTPHandler(nil),
 		TLSConfig: cfg,
 	}
 	go s.ListenAndServe()
@@ -69,10 +68,10 @@ func configureCert(hostName string) ([]byte, []byte, error) {
 }
 
 func requestHandler(ctx *fasthttp.RequestCtx) {
-        fmt.Printf("%s\n", ctx.Request.Header.Header())
-        if ctx.Request.Header.IsPost() {
-                fmt.Fprintf(ctx, "%s\n", ctx.Request.Body())
-        } else {
-                fmt.Fprintf(ctx, "Hello 21th century!\n")
-        }
+	fmt.Printf("%s\n", ctx.Request.Header.Header())
+	if ctx.Request.Header.IsPost() {
+		fmt.Fprintf(ctx, "%s\n", ctx.Request.Body())
+	} else {
+		fmt.Fprintf(ctx, "Hello 21th century!\n")
+	}
 }

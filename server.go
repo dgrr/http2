@@ -371,6 +371,9 @@ func (s *Server) parseHeaders(ctx *connCtx, strm *Stream, isEnd bool) (err error
 		} else { // post, put or delete
 			strm.istate = stateAwaitData
 		}
+		strm.ctx.Request.SetRequestURIBytes(
+			strm.ctx.Request.URI().FullURI())
+		strm.ctx.Request.Header.SetProtocolBytes(strHTTP2)
 	}
 
 	return

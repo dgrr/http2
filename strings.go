@@ -10,6 +10,7 @@ var (
 	strGET           = []byte("GET")
 	strHEAD          = []byte("HEAD")
 	strPOST          = []byte("POST")
+	strHTTP2         = []byte("HTTP/2")
 )
 
 const (

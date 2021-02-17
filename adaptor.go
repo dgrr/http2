@@ -16,11 +16,6 @@ func fasthttpRequestHeaders(hf *HeaderField, req *fasthttp.Request) {
 	}
 
 	if hf.IsPseudo() {
-		if bytes.Equal(k, strPath) {
-			req.SetRequestURIBytes(v)
-			return
-		}
-
 		k = k[1:]
 	}
 
@@ -28,7 +23,7 @@ func fasthttpRequestHeaders(hf *HeaderField, req *fasthttp.Request) {
 	case 'm': // method
 		req.Header.SetMethodBytes(v)
 	case 'p': // path
-		// req.URI().SetPathBytes(v)
+		req.URI().SetPathBytes(v)
 	case 's': // scheme
 		req.URI().SetSchemeBytes(v)
 	case 'a': // authority
