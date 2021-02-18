@@ -472,6 +472,9 @@ func (s *Server) handleSettings(ctx *connCtx, strm *Stream) error {
 	fr.SetType(FrameSettings)
 	fr.AddFlag(FlagAck)
 	err := ctx.writeFrame(fr)
+	if err == nil {
+		err = ctx.bw.Flush()
+	}
 
 	return err
 }
