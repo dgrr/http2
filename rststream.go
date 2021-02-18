@@ -67,7 +67,7 @@ func (rst *RstStream) ReadFrame(fr *Frame) error {
 
 // WriteFrame ...
 func (rst *RstStream) WriteFrame(fr *Frame) {
-	fr.kind = FrameResetStream
+	fr.SetType(FrameResetStream)
 	fr.payload = appendUint32Bytes(fr.payload[:0], rst.code)
 	fr.length = 4
 }

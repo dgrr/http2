@@ -83,9 +83,9 @@ func (c *Continuation) ReadFrame(fr *Frame) (err error) {
 
 // WriteFrame ...
 func (c *Continuation) WriteFrame(fr *Frame) error {
+	fr.SetType(FrameContinuation)
 	if c.endHeaders {
 		fr.AddFlag(FlagEndHeaders)
 	}
-	fr.kind = FrameContinuation
 	return fr.SetPayload(c.rawHeaders)
 }

@@ -74,6 +74,7 @@ func (ping *Ping) ReadFrame(fr *Frame) error {
 
 // WriteFrame ...
 func (ping *Ping) WriteFrame(fr *Frame) error {
+	fr.SetType(FramePing)
 	if ping.ack {
 		fr.AddFlag(FlagAck)
 	}

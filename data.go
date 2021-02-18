@@ -56,6 +56,10 @@ func (data *Data) SetEndStream(value bool) {
 	data.endStream = value
 }
 
+func (data *Data) EndStream() bool {
+	return data.endStream
+}
+
 // Data returns the byte slice of the data readed/to be sendStream.
 func (data *Data) Data() []byte {
 	return data.b
@@ -97,12 +101,10 @@ func (data *Data) Write(b []byte) (int, error) {
 // This function does not reset the Frame.
 func (data *Data) ReadFrame(fr *Frame) (err error) {
 	payload := cutPadding(fr)
+
 	data.endStream = fr.HasFlag(FlagEndStream)
-	if len(payload) == 0 {
-		err = ErrZeroPayload
-	} else {
-		data.b = append(data.b[:0], payload...)
-	}
+	data.b = append(data.b[:0], payload...)
+
 	return
 }
 

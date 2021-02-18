@@ -187,6 +187,7 @@ func (hpack *HPACK) search(hf *HeaderField) (n uint64) {
 			break
 		}
 	}
+
 	if n == 0 {
 		for i, hf2 := range staticTable {
 			if bytes.Equal(hf.key, hf2.key) {
@@ -202,6 +203,7 @@ func (hpack *HPACK) search(hf *HeaderField) (n uint64) {
 			}
 		}
 	}
+
 	return
 }
 
@@ -210,6 +212,8 @@ const (
 	literalByte = 64  // 01000000
 	noIndexByte = 240 // 11110000
 )
+
+var ErrFieldNotFound = errors.New("field not found in neither table")
 
 // Next reads and process the content of `b`. If buf contains a valid HTTP/2 header
 // the content will be parsed into `hf`.
@@ -245,14 +249,12 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		if c != 64 { // Read key as index
 			b, n, err = readInt(6, b)
 			if err == nil {
-				if hf2 := hpack.peek(n); hf2 != nil {
-					if n < maxIndex { // peek from static table. MUST not be modified
-						hf2.CopyTo(hf)
-					}
-				} else {
-					// TODO: error
-					panic("error")
+				hf2 := hpack.peek(n)
+				if hf2 == nil {
+					return b, ErrFieldNotFound
 				}
+
+				hf2.CopyTo(hf)
 			}
 		} else { // Read key literal string
 			// Huffman encoded or not
@@ -339,29 +341,26 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 // readInt reads int type from header field.
 // https://tools.ietf.org/html/rfc7541#section-5.1
 func readInt(n int, b []byte) ([]byte, uint64, error) {
-	nu := uint64(1<<uint64(n) - 1)
-	nn := uint64(b[0])
-	nn &= nu
-	if nn < nu {
-		return b[1:], nn, nil
+	// 1<<7 - 1 = 0111 1111
+	b0 := byte(1<<n - 1)
+	// if b[0] = 0111 1111 then continue reading the int
+	// if not, then we are finished
+	// if b0 is 0011 1111, then b0&b[0] != b0 = false
+	if b0&b[0] != b0 {
+		return b[1:], uint64(b[0]&b0), nil
 	}
 
-	nn = 0
+	nn := uint64(0)
 	i := 1
-	m := uint64(0)
 	for i < len(b) {
-		c := b[i]
-		nn |= (uint64(c&127) << m)
-		m += 7
-		if m > 63 {
-			return b[i:], 0, errors.New("bit overflow reading an int")
-		}
-		i++
-		if c&128 != 128 {
+		nn |= uint64(b[i]&127) << ((i-1)*7)
+		if b[i]&128 != 128 {
 			break
 		}
+		i++
 	}
-	return b[i:], nn + nu, nil
+
+	return b[i+1:], nn + uint64(b0), nil
 }
 
 // appendInt appends int type to header field excluding the last byte
@@ -461,6 +460,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 	c = !hpack.DisableCompression
 	n = 6
 
+	// TODO: Sensible fields...
 	idx = hpack.search(hf)
 	if hf.sensible {
 		c = false
@@ -475,6 +475,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 			} else {
 				dst = append(dst, literalByte)
 				// append this field to the dynamic table.
+				// TODO: Multiple requests fails thanks to this old line
 				hpack.addDynamic(hf)
 			}
 		} else if hpack.DisableDynamicTable { // with or without indexing

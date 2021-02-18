@@ -3,6 +3,7 @@ package http2
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"sync"
 )
 
@@ -48,7 +49,7 @@ func (ft FrameType) String() string {
 	case FrameContinuation:
 		return "FrameContinuation"
 	}
-	return "IDK"
+	return strconv.Itoa(int(ft))
 }
 
 type FrameFlags int8
@@ -226,10 +227,15 @@ func (fr *Frame) readFrom(br io.Reader, max uint32) (int64, error) {
 			}
 			fr.payload = resize(fr.payload, nn)
 
-			n, err = br.Read(fr.payload[:nn])
-			if err == nil {
+			readed := int64(0)
+			for readed < nn {
+				n, err = br.Read(fr.payload[readed:nn])
+				if err != nil {
+					return rn, err
+				}
+
 				rn += int64(n)
-				fr.payload = fr.payload[:n]
+				readed += int64(n)
 			}
 		}
 	}

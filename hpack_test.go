@@ -115,10 +115,10 @@ func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []str
 		lck.Unlock()
 	}()
 
-	hpack.fields = make([]*HeaderField, len(fields)/2)
+	hfields := make([]*HeaderField, len(fields)/2)
 	for i := 0; len(b) > 0 && !ok; i++ {
-		hpack.fields[i] = AcquireHeaderField()
-		b, err = hpack.Next(hpack.fields[i], b)
+		hfields[i] = AcquireHeaderField()
+		b, err = hpack.Next(hfields[i], b)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,7 +133,7 @@ func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []str
 
 	n := 0
 	for i := 0; i < len(fields); i += 2 {
-		check(t, hpack.fields, n, fields[i], fields[i+1])
+		check(t, hfields, n, fields[i], fields[i+1])
 		n++
 	}
 	n = 0
@@ -145,7 +145,6 @@ func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []str
 	if hpack.tableSize != tableSize {
 		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, tableSize)
 	}
-	hpack.releaseFields()
 }
 
 func TestHPACKReadRequestWithoutHuffman(t *testing.T) {
@@ -362,8 +361,6 @@ func TestHPACKReadResponseWithHuffman(t *testing.T) {
 		":status", "302",
 	}, 222)
 
-	hpack.releaseFields()
-
 	b = []byte{0x48, 0x83, 0x64, 0x0e, 0xff, 0xc1, 0xc0, 0xbf}
 
 	readHPACKAndCheck(t, hpack, b, []string{
@@ -421,8 +418,11 @@ func compare(b, r []byte) int {
 
 func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []string, tableSize int) {
 	n := 0
+	hfs := make([]*HeaderField, 0)
 	for i := 0; i < len(fields); i += 2 {
-		hpack.Add(fields[i], fields[i+1])
+		hf := AcquireHeaderField()
+		hf.Set(fields[i], fields[i+1])
+		hfs = append(hfs, hf)
 		n++
 	}
 
@@ -430,8 +430,8 @@ func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []st
 		b []byte
 	)
 
-	for _, hf := range hpack.fields {
-		b = hpack.AppendHeader(hf, b)
+	for _, hf := range hfs {
+		b = hpack.AppendHeader(b, hf)
 	}
 
 	if i := compare(b, r); i != -1 {
@@ -447,7 +447,6 @@ func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []st
 	if hpack.tableSize != tableSize {
 		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, tableSize)
 	}
-	hpack.releaseFields()
 }
 
 func TestHPACKWriteRequestWithoutHuffman(t *testing.T) {

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
-	"fmt"
 	"log"
 	"net"
 	"strconv"
@@ -43,12 +42,18 @@ func acquireClientStream(id uint32) *ClientStream {
 }
 
 func releaseClientStream(strm *ClientStream) {
+	defer func() {
+		recover()
+	}()
+
 	close(strm.ch)
+	close(strm.errch)
 	streamPool.Put(strm)
 }
 
 type Client struct {
 	hp     *HPACK
+	p      *fasthttp.HostClient
 	nextID uint32
 	c      net.Conn
 	st     *Settings
@@ -70,14 +75,34 @@ func NewClient() *Client {
 	}
 }
 
+func (c *Client) Close() error {
+	close(c.closer)
+	c.releaseStreams()
+	ReleaseHPACK(c.hp)
+	ReleaseSettings(c.st)
+	close(c.wch)
+	close(c.rch)
+	return nil
+}
+
+func (c *Client) releaseStreams() {
+	for _, strm := range c.strms {
+		releaseClientStream(strm)
+	}
+}
+
 // TODO: checkout https://github.com/golang/net/blob/4acb7895a057/http2/transport.go#L570
 func ConfigureClient(c *fasthttp.HostClient) error {
 	c2 := NewClient()
-	err := c2.Dial(c.Addr, &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		MaxVersion: tls.VersionTLS13,
-		NextProtos: []string{"h2"},
-	})
+	if c.TLSConfig == nil {
+		c.TLSConfig = &tls.Config{
+			MaxVersion: tls.VersionTLS13,
+			MinVersion: tls.VersionTLS12,
+		}
+	}
+	c.TLSConfig.NextProtos = append(c.TLSConfig.NextProtos, "h2")
+
+	err := c2.Dial(c.Addr, c.TLSConfig)
 	if err != nil {
 		return err
 	}
@@ -128,7 +153,7 @@ func (c *Client) Handshake() error {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
-	c.st = AcquireSettings()
+	c.st.SetMaxWindowSize(1 << 22)
 	c.st.WriteFrame(fr)
 
 	_, err = fr.WriteTo(conn)
@@ -145,7 +170,7 @@ func (c *Client) getStream(id uint32) *ClientStream {
 }
 
 func (c *Client) readLoop() {
-	defer c.c.Close()
+	defer c.Close()
 	br := bufio.NewReader(c.c)
 
 	for {
@@ -153,23 +178,50 @@ func (c *Client) readLoop() {
 
 		_, err := fr.ReadFrom(br)
 		if err != nil {
-			log.Println(err)
+			log.Println("readLoop", err)
 			return
 		}
 
-		if fr.Stream() == 0 {
-			ReleaseFrame(fr)
-			continue
-		}
+		switch fr.Type() {
+		case FrameSettings:
+			st := AcquireSettings()
+			st.ReadFrame(fr)
+			if !st.IsAck() {
+				st.Reset()
+				fr.Reset()
 
-		strm := c.getStream(fr.Stream())
-		if strm != nil {
-			strm.ch <- fr
-		} else {
-			log.Println(fr.Stream(), "not found")
+				st.SetAck(true)
+				st.WriteFrame(fr)
+
+				st.WriteFrame(fr)
+				c.writeFrame(fr)
+
+				ReleaseSettings(st)
+				fr = nil
+			}
+		case FrameWindowUpdate:
 			ReleaseFrame(fr)
+		case FrameGoAway:
+			c.handleGoAway(fr)
+		default:
+			strm := c.getStream(fr.Stream())
+			if strm != nil {
+				strm.ch <- fr
+			} else {
+				log.Println(fr.Stream(), "not found", fr.Type())
+				ReleaseFrame(fr)
+			}
 		}
 	}
+}
+
+func (c *Client) handleGoAway(fr *Frame) {
+	ga := AcquireGoAway()
+	defer ReleaseGoAway(ga)
+
+	ga.ReadFrame(fr)
+
+	log.Printf("%d: %s\n", ga.Code(), ga.Data())
 }
 
 func (c *Client) writeLoop() {
@@ -191,6 +243,8 @@ func (c *Client) writeLoop() {
 				strm := c.getStream(fr.Stream())
 				if strm != nil {
 					strm.errch <- err
+				} else {
+					log.Println("writeLoop", err)
 				}
 			}
 
@@ -204,14 +258,26 @@ func (c *Client) writeLoop() {
 }
 
 func (c *Client) Do(req *fasthttp.Request, res *fasthttp.Response) error {
-	strm := acquireClientStream(c.nextID)
-	c.strms = append(c.strms, strm)
+	if c.c == nil {
+		err := c.Dial(c.p.Addr, c.p.TLSConfig)
+		if err != nil {
+			return err
+		}
+	}
 
+	strm := acquireClientStream(c.nextID)
 	atomic.AddUint32(&c.nextID, 2)
+
+	// TODO: Not thread safe, etc...
+	c.strms = append(c.strms, strm)
 
 	c.writeRequest(strm, req)
 	err := c.readResponse(strm, res)
+	if strm.state == StateHalfClosed {
+		c.writeReset()
+	}
 
+	// TODO: remove strm from slice
 	releaseClientStream(strm)
 
 	return err
@@ -226,12 +292,11 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	h := AcquireHeaders()
 	hf := AcquireHeaderField()
 
-	defer ReleaseFrame(fr)
 	defer ReleaseHeaders(h)
 	defer ReleaseHeaderField(hf)
 
 	hf.SetBytes(strAuthority, req.Host())
-	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
+	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders[:0], hf)
 
 	hf.SetBytes(strMethod, req.Header.Method())
 	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
@@ -263,26 +328,33 @@ func (c *Client) writeFrame(fr *Frame) {
 
 func (c *Client) readResponse(strm *ClientStream, res *fasthttp.Response) error {
 	var (
-		fr *Frame
+		fr  *Frame
+		ok  bool
 		err error
 	)
 
 	for {
 		select {
-		case fr = <-strm.ch:
-		case err = <-strm.errch:
+		case fr, ok = <-strm.ch:
+		case err, ok = <-strm.errch:
 			return err
 		}
-
-		fmt.Println(fr.Stream(), fr.Type())
+		if !ok {
+			break
+		}
 
 		var isEnd bool
 		switch fr.Type() {
 		case FrameHeaders:
 			isEnd, err = c.handleHeaders(fr, res)
 		case FrameData:
-			isEnd = true
-			err = c.handleData(fr, res)
+			isEnd, err = c.handleData(fr, res)
+		}
+
+		ReleaseFrame(fr)
+
+		if err != nil {
+			return err
 		}
 
 		if isEnd {
@@ -303,6 +375,16 @@ func (c *Client) writeWindowUpdate(update uint32) {
 	c.writeFrame(fr)
 
 	ReleaseWindowUpdate(wu)
+}
+
+func (c *Client) writeReset() {
+	fr := AcquireFrame()
+	rst := AcquireRstStream()
+
+	rst.SetCode(0)
+	rst.WriteFrame(fr)
+
+	c.writeFrame(fr)
 }
 
 func (c *Client) handleHeaders(fr *Frame, res *fasthttp.Response) (bool, error) {
@@ -336,22 +418,30 @@ func (c *Client) handleHeaders(fr *Frame, res *fasthttp.Response) (bool, error) 
 			}
 		}
 
-		res.Header.AddBytesKV(hf.KeyBytes(), hf.ValueBytes())
+		if bytes.Equal(hf.KeyBytes(), strContentLength) {
+			n, _ := strconv.Atoi(hf.Value())
+			res.Header.SetContentLength(n)
+		} else {
+			res.Header.AddBytesKV(hf.KeyBytes(), hf.ValueBytes())
+		}
 	}
 
 	return h.EndStream(), err
 }
 
-func (c *Client) handleData(fr *Frame, res *fasthttp.Response) error {
+func (c *Client) handleData(fr *Frame, res *fasthttp.Response) (bool, error) {
 	dfr := AcquireData()
 	defer ReleaseData(dfr)
 
 	err := dfr.ReadFrame(fr)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	res.SetBody(dfr.Data())
+	if dfr.Len() > 0 {
+		res.AppendBody(dfr.Data())
+		c.writeWindowUpdate(dfr.Len())
+	}
 
-	return nil
+	return dfr.EndStream(), nil
 }

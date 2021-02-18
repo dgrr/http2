@@ -284,14 +284,15 @@ func (st *Settings) ReadFrame(fr *Frame) error {
 
 // WriteFrame writes the settings frame into the frame payload
 func (st *Settings) WriteFrame(fr *Frame) error {
+	fr.SetType(FrameSettings)
+
 	if st.ack { // ACK should be empty
 		fr.AddFlag(FlagAck)
+		fr.SetPayload(nil)
 		return nil
 	}
 
 	st.Encode()
-
-	fr.SetType(FrameSettings)
 
 	return fr.SetPayload(st.rawSettings)
 }
