@@ -3,6 +3,9 @@ package http2
 var (
 	strPath          = []byte(":path")
 	strStatus        = []byte(":status")
+	strAuthority     = []byte(":authority")
+	strScheme        = []byte(":scheme")
+	strMethod        = []byte(":method")
 	strServer        = []byte("server")
 	strContentLength = []byte("content-length")
 	strContentType   = []byte("content-type")

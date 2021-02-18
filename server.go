@@ -282,10 +282,9 @@ const (
 )
 
 type Stream struct {
-	id     uint32
-	state  StreamState
-	istate internalState
-	// TODO: remove ctx from here bc client uses it too. And headers too
+	id         uint32
+	state      StreamState
+	istate     internalState
 	ctx        *fasthttp.RequestCtx
 	windowSize uint32
 

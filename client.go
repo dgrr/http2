@@ -1,21 +1,61 @@
 package http2
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/valyala/fasthttp"
 )
 
+var clientStreamPool = sync.Pool{
+	New: func() interface{} {
+		return &ClientStream{}
+	},
+}
+
+type ClientStream struct {
+	id    uint32
+	state StreamState
+
+	windowSize uint32
+
+	ch    chan *Frame
+	errch chan error
+}
+
+func acquireClientStream(id uint32) *ClientStream {
+	strm := clientStreamPool.Get().(*ClientStream)
+
+	strm.id = id
+	strm.state = StateIdle
+	strm.ch = make(chan *Frame, 1)
+	strm.errch = make(chan error, 1)
+
+	return strm
+}
+
+func releaseClientStream(strm *ClientStream) {
+	close(strm.ch)
+	streamPool.Put(strm)
+}
+
 type Client struct {
 	hp     *HPACK
 	nextID uint32
-	strms  []*Stream
 	c      net.Conn
 	st     *Settings
+	wch    chan *Frame
+	rch    chan *Frame
+	closer chan struct{}
+	strms  []*ClientStream
 }
 
 func NewClient() *Client {
@@ -23,6 +63,10 @@ func NewClient() *Client {
 		nextID: 1,
 		hp:     AcquireHPACK(),
 		st:     AcquireSettings(),
+		wch:    make(chan *Frame, 1024),
+		rch:    make(chan *Frame, 1024),
+		closer: make(chan struct{}, 1),
+		strms:  make([]*ClientStream, 0, 128),
 	}
 }
 
@@ -65,7 +109,12 @@ func (c *Client) Dial(addr string, tlsConfig *tls.Config) error {
 		return err
 	}
 
-	return err
+	go c.readLoop()
+	go c.writeLoop()
+
+	c.writeWindowUpdate(c.st.MaxWindowSize())
+
+	return nil
 }
 
 func (c *Client) Handshake() error {
@@ -79,33 +128,99 @@ func (c *Client) Handshake() error {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
-	st := AcquireSettings()
-	st.WriteFrame(fr)
+	c.st = AcquireSettings()
+	c.st.WriteFrame(fr)
 
 	_, err = fr.WriteTo(conn)
-	if err != nil {
-		return err
-	}
+	return err
+}
 
-	return c.writeWindowUpdate(st.MaxWindowSize())
+func (c *Client) getStream(id uint32) *ClientStream {
+	for _, strm := range c.strms {
+		if strm.id == id {
+			return strm
+		}
+	}
+	return nil
+}
+
+func (c *Client) readLoop() {
+	defer c.c.Close()
+	br := bufio.NewReader(c.c)
+
+	for {
+		fr := AcquireFrame()
+
+		_, err := fr.ReadFrom(br)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		if fr.Stream() == 0 {
+			ReleaseFrame(fr)
+			continue
+		}
+
+		strm := c.getStream(fr.Stream())
+		if strm != nil {
+			strm.ch <- fr
+		} else {
+			log.Println(fr.Stream(), "not found")
+			ReleaseFrame(fr)
+		}
+	}
+}
+
+func (c *Client) writeLoop() {
+	defer c.c.Close()
+	bw := bufio.NewWriter(c.c)
+
+	for {
+		select {
+		case fr, ok := <-c.wch:
+			if !ok {
+				return
+			}
+
+			_, err := fr.WriteTo(bw)
+			if err == nil {
+				err = bw.Flush()
+			}
+			if err != nil {
+				strm := c.getStream(fr.Stream())
+				if strm != nil {
+					strm.errch <- err
+				}
+			}
+
+			ReleaseFrame(fr)
+		case <-time.After(time.Second * 5):
+		// TODO: PING ...
+		case <-c.closer:
+			return
+		}
+	}
 }
 
 func (c *Client) Do(req *fasthttp.Request, res *fasthttp.Response) error {
-	err := c.Write(req)
-	if err == nil {
-		err = c.Read(res)
-	}
+	strm := acquireClientStream(c.nextID)
+	c.strms = append(c.strms, strm)
+
+	atomic.AddUint32(&c.nextID, 2)
+
+	c.writeRequest(strm, req)
+	err := c.readResponse(strm, res)
+
+	releaseClientStream(strm)
 
 	return err
 }
 
-func (c *Client) Write(req *fasthttp.Request) error {
+func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	// TODO: GET requests can have body too
 	// TODO: Send continuation if needed
 	noBody := req.Header.IsHead() || req.Header.IsGet()
-
-	strm := acquireStream(c.nextID)
-	c.nextID += 2
 
 	fr := AcquireFrame()
 	h := AcquireHeaders()
@@ -139,48 +254,27 @@ func (c *Client) Write(req *fasthttp.Request) error {
 	h.WriteFrame(fr)
 	fr.SetStream(strm.id)
 
-	_, err := fr.WriteTo(c.c)
-	if err == nil {
-		strm.state = StateOpen
-		c.strms = append(c.strms, strm)
-	}
-
-	c.nextID += 2
-
-	return err
+	c.writeFrame(fr)
 }
 
-func (c *Client) Read(res *fasthttp.Response) error {
-	var err error
+func (c *Client) writeFrame(fr *Frame) {
+	c.wch <- fr
+}
 
-	fr := AcquireFrame()
-	defer ReleaseFrame(fr)
+func (c *Client) readResponse(strm *ClientStream, res *fasthttp.Response) error {
+	var (
+		fr *Frame
+		err error
+	)
 
 	for {
-		_, err = fr.ReadFrom(c.c)
-		if err != nil {
+		select {
+		case fr = <-strm.ch:
+		case err = <-strm.errch:
 			return err
 		}
 
 		fmt.Println(fr.Stream(), fr.Type())
-
-		var strm *Stream
-		strmID := fr.Stream()
-		if strmID == 0 {
-			continue
-		}
-
-		for _, s := range c.strms {
-			println(s.id, strmID)
-			if s.id == strmID {
-				strm = s
-				break
-			}
-		}
-		println(strm)
-		if strm == nil {
-			return fmt.Errorf("stream with id not found: %d", strmID)
-		}
 
 		var isEnd bool
 		switch fr.Type() {
@@ -200,18 +294,15 @@ func (c *Client) Read(res *fasthttp.Response) error {
 	return err
 }
 
-func (c *Client) writeWindowUpdate(update uint32) error {
+func (c *Client) writeWindowUpdate(update uint32) {
 	fr := AcquireFrame()
 	wu := AcquireWindowUpdate()
 	wu.SetIncrement(update)
 
 	wu.WriteFrame(fr)
-	_, err := fr.WriteTo(c.c)
+	c.writeFrame(fr)
 
-	ReleaseFrame(fr)
 	ReleaseWindowUpdate(wu)
-
-	return err
 }
 
 func (c *Client) handleHeaders(fr *Frame, res *fasthttp.Response) (bool, error) {
