@@ -53,7 +53,7 @@ func (c *Continuation) SetEndHeaders(value bool) {
 }
 
 // HasEndHeaders ...
-func (c *Continuation) HasEndHeaders() bool {
+func (c *Continuation) EndHeaders() bool {
 	return c.endHeaders
 }
 
