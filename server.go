@@ -365,10 +365,9 @@ func (s *Server) parseHeaders(ctx *connCtx, strm *Stream, isEnd bool) (err error
 	}
 
 	if err == nil {
-		if strm.ctx.Request.Header.IsGet() ||
-			strm.ctx.Request.Header.IsHead() {
+		if strm.hfr.EndStream() {
 			strm.istate = stateExecHandler
-		} else { // post, put or delete
+		} else {
 			strm.istate = stateAwaitData
 		}
 		strm.ctx.Request.SetRequestURIBytes(
