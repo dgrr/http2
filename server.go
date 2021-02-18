@@ -50,7 +50,7 @@ type connCtx struct {
 	bw *bufio.Writer
 
 	hp *HPACK
-	fr *Frame // read frame
+
 	st *Settings
 
 	cst        *Settings
@@ -60,6 +60,8 @@ type connCtx struct {
 	lastStreamOpen  uint32
 	streamsOpen     int
 	isClosing       bool // after recv goaway
+
+	strms []*ServerStream
 }
 
 var connCtxPool = sync.Pool{
@@ -74,37 +76,21 @@ func acquireConnCtx(c net.Conn) *connCtx {
 	ctx.br = bufio.NewReader(c)
 	ctx.bw = bufio.NewWriter(c)
 	ctx.hp = AcquireHPACK()
-	ctx.fr = AcquireFrame()
 	ctx.st = AcquireSettings()
+	ctx.strms = make([]*ServerStream, 0, 128)
 	return ctx
 }
 
 func releaseConnCtx(ctx *connCtx) {
 	ReleaseHPACK(ctx.hp)
-	ReleaseFrame(ctx.fr)
 	ReleaseSettings(ctx.st)
-}
-
-func (ctx *connCtx) Write(b []byte) (int, error) {
-	return ctx.bw.Write(b)
-}
-
-func (ctx *connCtx) rewriteFrame() error {
-	_, err := ctx.fr.WriteTo(ctx.bw)
-	return err
-}
-
-func (ctx *connCtx) readFrame() error {
-	_, err := ctx.fr.ReadFrom(ctx.br)
-	return err
-}
-
-func (ctx *connCtx) Read(b []byte) (int, error) {
-	return ctx.Read(b)
 }
 
 func (ctx *connCtx) writeFrame(fr *Frame) error {
 	_, err := fr.WriteTo(ctx.bw)
+	if err == nil {
+		err = ctx.bw.Flush()
+	}
 	return err
 }
 
@@ -129,16 +115,28 @@ func (s *Server) serveConn(c net.Conn) error {
 	var err error
 	streams := make(map[uint32]*ServerStream)
 
+	fr := AcquireFrame()
+
 	// write own settings
-	ctx.st.WriteFrame(ctx.fr)
-	err = ctx.rewriteFrame()
+	ctx.st.WriteFrame(fr)
+	err = ctx.writeFrame(fr)
 	if err == nil {
 		err = ctx.writeWindowUpdate(nil, ctx.st.windowSize-65535)
 	}
 
+	ReleaseFrame(fr)
+
+	var (
+		wch       = make(chan *Frame, 1024)
+		cementery = make(chan *ServerStream, 1)
+	)
+
+	go s.writeLoop(ctx, wch, cementery)
+
 	for err == nil {
-		// TODO: works without reseting? fr.Reset()
-		err = ctx.readFrame()
+		fr := AcquireFrame()
+
+		_, err = fr.ReadFrom(ctx.br)
 		if err != nil {
 			if err == io.EOF {
 				err = nil
@@ -146,42 +144,71 @@ func (s *Server) serveConn(c net.Conn) error {
 			break
 		}
 
-		// wrong stream id
-		if ctx.fr.stream&1 == 0 {
-			// TODO: Handle
+		switch fr.Type() {
+		case FrameGoAway:
+			// TODO:
+		case FrameWindowUpdate:
+			ctx.handleWindowUpdate(fr)
+		case FrameSettings:
+			ctx.handleSettings(fr)
+		default:
+			strm := streams[fr.Stream()]
+			if strm == nil {
+				strm = acquireStream(fr.Stream(), ctx, wch)
+				streams[fr.Stream()] = strm
+				strm.windowSize = ctx.windowSize
+				ctx.lastStreamOpen = strm.id
+				ctx.streamsOpen++
+				// TODO: Use a pool
+				go strm.loop()
+			}
+
+			if strm.IsClosed() {
+				log.Printf(
+					"recv %s after close\n", fr.Type())
+				continue
+			}
+
+			strm.rch <- fr
 		}
 
-		strm := streams[ctx.fr.stream]
-		if strm == nil {
-			strm = acquireStream(ctx.fr.stream)
-			streams[ctx.fr.stream] = strm
-			strm.windowSize = ctx.windowSize
-			ctx.lastStreamOpen = strm.id
-			ctx.streamsOpen++
-		}
-		if strm.IsClosed() &&
-			ctx.fr.Type() != FrameWindowUpdate &&
-			ctx.fr.Type() != FramePriority {
-			log.Printf(
-				"recv %s after close\n", ctx.fr.Type())
-			continue
-		}
-
-		err = s.Handle(ctx, strm)
-		if strm.IsClosed() {
-			ctx.streamsOpen--
-			releaseStream(strm)
-			// delete(streams, strm.id)
-		}
-
-		if ctx.isClosing && ctx.streamsOpen == 0 {
-			break
-		}
+		// err = s.Handle(ctx, strm)
+		// if strm.IsClosed() {
+		// 	ctx.streamsOpen--
+		// 	releaseStream(strm)
+		// 	// delete(streams, strm.id)
+		// }
+		//
+		// if ctx.isClosing && ctx.streamsOpen == 0 {
+		// 	break
+		// }
 
 		// currentID = serverNextStreamID(currentID, ctx.fr.stream)
 	}
 
 	return err
+}
+
+func (s *Server) writeLoop(ctx *connCtx, wch <-chan *Frame, cementery chan *ServerStream) {
+	for {
+		select {
+		case fr, ok := <-wch:
+			if !ok {
+				return
+			}
+
+			err := ctx.writeFrame(fr)
+			if err != nil {
+				// TODO: handle xd
+				log.Println(err)
+			}
+		case strm, ok := <-cementery:
+			if !ok {
+				return
+			}
+			releaseStream(strm)
+		}
+	}
 }
 
 type HTTP2ProtoError struct {
@@ -200,46 +227,36 @@ func (pe *HTTP2ProtoError) Error() string {
 	return fmt.Sprintf("%d: %s", pe.Code, pe.Reason)
 }
 
-func (s *Server) Handle(ctx *connCtx, strm *ServerStream) (err error) {
-	switch ctx.fr.Type() {
+func (strm *ServerStream) handleFrame(fr *Frame) (err error) {
+	switch fr.Type() {
 	case FrameHeaders:
-		err = s.handleHeaders(ctx, strm)
+		err = strm.handleHeaders(fr)
 	case FrameContinuation:
-		err = s.handleContinuation(ctx, strm)
+		err = strm.handleContinuation(fr)
 	case FrameData:
-		err = s.handleData(ctx, strm)
+		err = strm.handleData(fr)
 	case FramePriority:
 		println("priority")
 		// TODO: If a PRIORITY frame is received with a stream identifier of 0x0, the recipient MUST respond with a connection error
 	case FrameResetStream:
-		err = s.handleReset(ctx, strm)
-	case FrameSettings:
-		err = s.handleSettings(ctx, strm)
+		err = strm.handleReset(fr)
 	case FramePushPromise:
 		println("pp")
 	case FramePing:
-		ctx.fr.AddFlag(FlagAck)
-		err = ctx.rewriteFrame()
-	case FrameGoAway:
-		err = s.handleGoAway(ctx, strm)
+		fr.AddFlag(FlagAck)
+		strm.writeFrame(fr)
 	case FrameWindowUpdate:
-		s.handleWindowUpdate(ctx, strm)
+		strm.handleWindowUpdate(fr)
 	}
 
-	if ctx.fr.HasFlag(FlagEndStream) {
+	if fr.HasFlag(FlagEndStream) {
 		switch strm.state {
 		case StateOpen:
 			strm.state = StateHalfClosed
 		case StateHalfClosed:
 			strm.state = StateClosed
-			ctx.streamsOpen--
+			// TODO: ctx.streamsOpen--
 		}
-	}
-
-	if err == nil && strm.istate == stateExecHandler {
-		s.s.Handler(strm.ctx)
-		err = s.tryReply(ctx, strm)
-		strm.istate = stateNone
 	}
 
 	return err
@@ -285,13 +302,23 @@ type ServerStream struct {
 	id         uint32
 	state      StreamState
 	istate     internalState
-	ctx        *fasthttp.RequestCtx
 	windowSize uint32
+
+	ctx     *connCtx
+	fastCtx *fasthttp.RequestCtx
+
+	// chan to write
+	wch chan<- *Frame
+	// chan to read
+	rch chan *Frame
+
+	// when the stream dies, it goes there
+	cementery chan<- *ServerStream
 
 	hfr *Headers
 }
 
-func acquireStream(id uint32) *ServerStream {
+func acquireStream(id uint32, ctx *connCtx, wch chan<- *Frame) *ServerStream {
 	strm := streamPool.Get().(*ServerStream)
 	strm.ctx.Request.Reset()
 	strm.ctx.Response.Reset()
@@ -299,6 +326,9 @@ func acquireStream(id uint32) *ServerStream {
 	strm.state = StateIdle
 	strm.istate = stateNone
 	strm.id = id
+	strm.ctx = ctx
+	strm.wch = wch
+	strm.rch = make(chan *Frame, 128)
 
 	return strm
 }
@@ -320,7 +350,29 @@ func (strm *ServerStream) IsClosed() bool {
 	return strm.state == StateClosed
 }
 
-func (s *Server) handleHeaders(ctx *connCtx, strm *ServerStream) error {
+func (strm *ServerStream) writeFrame(fr *Frame) {
+	strm.wch <- fr
+}
+
+func (strm *ServerStream) loop() {
+	for {
+		select {
+		case fr, ok := <-strm.rch:
+			if !ok {
+				return
+			}
+
+			err := strm.handleFrame(fr)
+			if err == nil && strm.istate == stateExecHandler {
+				s.s.Handler(strm.ctx)
+				err = s.tryReply(ctx, strm)
+				strm.istate = stateNone
+			}
+		}
+	}
+}
+
+func (strm *ServerStream) handleHeaders(fr *Frame) error {
 	switch strm.state {
 	case StateIdle:
 		strm.state = StateOpen
@@ -333,30 +385,30 @@ func (s *Server) handleHeaders(ctx *connCtx, strm *ServerStream) error {
 	}
 
 	// Read data from ctx.fr to Headers
-	err := strm.hfr.ReadFrame(ctx.fr)
+	err := strm.hfr.ReadFrame(fr)
 	if err != nil {
 		return err
 	}
 
-	return s.parseHeaders(ctx, strm, strm.hfr.EndHeaders())
+	return strm.parseHeaders()
 }
 
-func (s *Server) handleContinuation(ctx *connCtx, strm *ServerStream) (err error) {
-	fr := AcquireContinuation()
-	defer ReleaseContinuation(fr)
+func (strm *ServerStream) handleContinuation(fr *Frame) (err error) {
+	cfr := AcquireContinuation()
+	defer ReleaseContinuation(cfr)
 
-	fr.ReadFrame(ctx.fr)
-	err = s.parseHeaders(ctx, strm, fr.HasEndHeaders())
+	cfr.ReadFrame(fr)
+	err = strm.parseHeaders()
 
 	return
 }
 
-func (s *Server) parseHeaders(ctx *connCtx, strm *ServerStream, isEnd bool) (err error) {
+func (strm *ServerStream) parseHeaders() (err error) {
 	hf := AcquireHeaderField()
 	b := strm.hfr.rawHeaders
 
 	for len(b) > 0 {
-		b, err = ctx.hp.Next(hf, b)
+		b, err = strm.hp.Next(hf, b)
 		if err != nil {
 			break
 		}
@@ -378,20 +430,23 @@ func (s *Server) parseHeaders(ctx *connCtx, strm *ServerStream, isEnd bool) (err
 	return
 }
 
-func (s *Server) handleData(ctx *connCtx, strm *ServerStream) error {
+func (strm *ServerStream) handleData(fr *Frame) error {
 	dfr := AcquireData()
 	defer ReleaseData(dfr)
 
-	dfr.ReadFrame(ctx.fr)
-	strm.ctx.Request.SetBody(dfr.Data())
-
-	ctx.writeWindowUpdate(strm, uint32(len(strm.ctx.Request.Body())))
-	strm.istate = stateExecHandler
+	dfr.ReadFrame(fr)
+	if dfr.Len() > 0 {
+		strm.ctx.Request.AppendBody(dfr.Data())
+		strm.writeWindowUpdate(uint32(len(strm.ctx.Request.Body())))
+	}
+	if dfr.EndStream() {
+		strm.istate = stateExecHandler
+	}
 
 	return nil
 }
 
-func (s *Server) handleReset(ctx *connCtx, strm *ServerStream) error {
+func (strm *ServerStream) handleReset(fr *Frame) error {
 	// fr := AcquireRstStream()
 	// defer ReleaseRstStream(fr)
 
@@ -402,52 +457,48 @@ func (s *Server) handleReset(ctx *connCtx, strm *ServerStream) error {
 	// }
 
 	strm.state = StateClosed
-	ctx.streamsOpen--
+	// TODO: propagate ctx.streamsOpen--
 
 	return nil
 }
 
-func (s *Server) handleGoAway(ctx *connCtx, strm *ServerStream) error {
-	fr := AcquireFrame()
-	defer ReleaseFrame(fr)
-
-	ga := AcquireGoAway()
-	defer ReleaseGoAway(ga)
-
-	ctx.isClosing = true
-
-	ga.SetStream(ctx.lastStreamOpen)
-	// TODO: Replace with proper code
-	ga.SetCode(0x0)
-
-	fr.SetStream(strm.id)
-
-	ga.WriteFrame(fr)
-	return ctx.writeFrame(fr)
+func (strm *ServerStream) handleGoAway(fr *Frame) error {
+	// TODO:
+	// fr.Reset()
+	//
+	// ga := AcquireGoAway()
+	// defer ReleaseGoAway(ga)
+	//
+	// // TODO: ... ctx.isClosing = true
+	//
+	// ga.SetStream(ctx.lastStreamOpen)
+	// // TODO: Replace with proper code
+	// ga.SetCode(0x0)
+	//
+	// fr.SetStream(strm.id)
+	//
+	// ga.WriteFrame(fr)
+	// return ctx.writeFrame(fr)
+	return nil
 }
 
-func (s *Server) handleWindowUpdate(ctx *connCtx, strm *ServerStream) error {
+func (strm *ServerStream) handleWindowUpdate(fr *Frame) error {
 	wu := AcquireWindowUpdate()
 	defer ReleaseWindowUpdate(wu)
 
-	wu.ReadFrame(ctx.fr)
-	if ctx.cst == nil {
-		// TODO: xd
-	}
+	wu.ReadFrame(fr)
 
-	if ctx.fr.stream == 0 {
-		ctx.windowSize += wu.increment
-	} else {
-		strm.windowSize += wu.increment
-	}
+	// TODO: Should be shared ...
+	strm.windowSize += wu.increment
 
 	return nil
 }
 
-func (s *Server) handleSettings(ctx *connCtx, strm *ServerStream) error {
+func (strm *ServerStream) handleSettings(fr *Frame) error {
+	// TODO: ...
 	st := AcquireSettings()
 
-	st.ReadFrame(ctx.fr)
+	st.ReadFrame(fr)
 
 	if st.IsAck() {
 		ctx.unackedSettings--
