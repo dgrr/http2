@@ -145,7 +145,7 @@ func (s *Server) serveConn(c net.Conn) error {
 	ctx.st.WriteFrame(fr)
 	err = ctx.writeFrame(fr)
 	if err == nil {
-		// ctx.writeWindowUpdate(ctx.st.windowSize - 65535)
+		err = ctx.writeWindowUpdate(ctx.st.windowSize - 65535)
 	}
 
 	ReleaseFrame(fr)
@@ -173,7 +173,7 @@ func (s *Server) serveConn(c net.Conn) error {
 			// TODO:
 			return nil
 		case FrameWindowUpdate:
-			 ctx.handleWindowUpdate(fr)
+			ctx.handleWindowUpdate(fr)
 		case FrameSettings:
 			err = ctx.handleSettings(fr)
 		default:
@@ -213,7 +213,7 @@ func (s *Server) serveConn(c net.Conn) error {
 	return err
 }
 
-func (s *Server) writeLoop(ctx *connCtx, wch <-chan *Frame, cementery chan *ServerStream) {
+func (s *Server) writeLoop(ctx *connCtx, wch <-chan *Frame, cemetery chan *ServerStream) {
 	for {
 		select {
 		case fr, ok := <-wch:
@@ -226,7 +226,7 @@ func (s *Server) writeLoop(ctx *connCtx, wch <-chan *Frame, cementery chan *Serv
 				// TODO: handle xd
 				log.Println(err)
 			}
-		case strm, ok := <-cementery:
+		case strm, ok := <-cemetery:
 			if !ok {
 				return
 			}
@@ -260,7 +260,7 @@ func (strm *ServerStream) handleFrame(fr *Frame) (err error) {
 	case FrameData:
 		err = strm.handleData(fr)
 	case FramePriority:
-		println("priority")
+		// println("priority")
 		// TODO: If a PRIORITY frame is received with a stream identifier of 0x0, the recipient MUST respond with a connection error
 	case FrameResetStream:
 		strm.handleReset(fr)
@@ -380,7 +380,7 @@ func (strm *ServerStream) writeFrame(fr *Frame) {
 }
 
 func (strm *ServerStream) loop() {
-	for {
+	for strm.state != StateClosed {
 		select {
 		case fr, ok := <-strm.rch:
 			if !ok {
@@ -390,11 +390,18 @@ func (strm *ServerStream) loop() {
 			err := strm.handleFrame(fr)
 			if err == nil && strm.istate == stateExecHandler {
 				strm.ctx.handle(strm.fastCtx)
-				// err = s.tryReply(ctx, strm)
-				// strm.istate = stateNone
+				strm.tryReply()
+				strm.istate = stateNone
 			}
+			if err != nil {
+				log.Println(err)
+			}
+
+			ReleaseFrame(fr)
 		}
 	}
+
+	strm.cemetery <- strm
 }
 
 func (strm *ServerStream) handleHeaders(fr *Frame) error {
@@ -435,6 +442,7 @@ func (strm *ServerStream) parseHeaders(b []byte, isEnd bool) (err error) {
 	for len(b) > 0 {
 		b, err = strm.ctx.hp.Next(hf, b)
 		if err != nil {
+			println(err, hf.Key())
 			break
 		}
 
@@ -451,6 +459,8 @@ func (strm *ServerStream) parseHeaders(b []byte, isEnd bool) (err error) {
 			strm.fastCtx.Request.URI().FullURI())
 		strm.fastCtx.Request.Header.SetProtocolBytes(strHTTP2)
 	}
+
+	ReleaseHeaderField(hf)
 
 	return
 }
@@ -556,6 +566,28 @@ func (strm *ServerStream) tryReply() {
 
 	ReleaseHeaders(hfr)
 	ReleaseData(dfr)
+}
+
+func (ctx *connCtx) writeWindowUpdate(n uint32) error {
+	fr := AcquireFrame()
+	wu := AcquireWindowUpdate()
+
+	// TODO: increment
+	ctx.st.windowSize += n
+
+	wu.SetIncrement(n)
+	wu.WriteFrame(fr)
+
+	fr.SetStream(0)
+
+	_, err := fr.WriteTo(ctx.bw)
+	if err == nil {
+		err = ctx.bw.Flush()
+	}
+
+	ReleaseWindowUpdate(wu)
+
+	return err
 }
 
 func (strm *ServerStream) writeWindowUpdate(n uint32) {

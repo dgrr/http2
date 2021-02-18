@@ -2,8 +2,9 @@ package http2
 
 import (
 	"bytes"
-	"github.com/valyala/fasthttp"
 	"strconv"
+
+	"github.com/valyala/fasthttp"
 )
 
 func fasthttpRequestHeaders(hf *HeaderField, req *fasthttp.Request) {

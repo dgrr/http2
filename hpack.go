@@ -15,6 +15,8 @@ import (
 // Use AcquireHPACK to acquire new HPACK structure
 // TODO: HPACK to Headers?
 type HPACK struct {
+	lck sync.Mutex
+
 	// DisableCompression disables compression for literal header fields.
 	DisableCompression bool
 
@@ -84,18 +86,18 @@ func (hpack *HPACK) DynamicSize() (n int) {
 
 // add adds header field to the dynamic table.
 func (hpack *HPACK) addDynamic(hf *HeaderField) {
-	// TODO: https://tools.ietf.org/html/rfc7541#section-2.3.2
-	// apply duplicate entries
 	// TODO: Optimize using reverse indexes.
 	mustAdd := true
+
+	println(len(hpack.dynamic), hf.Key())
 
 	i := 0
 	for i = range hpack.dynamic {
 		// searching if the HeaderField already exists.
 		hf2 := hpack.dynamic[i]
-		if bytes.Equal(hf.key, hf2.key) {
+		if bytes.Equal(hf.key, hf2.key) &&
+			bytes.Equal(hf.value, hf2.value) {
 			mustAdd = false
-			hf2.SetValueBytes(hf.value)
 			break
 		}
 	}
@@ -121,6 +123,8 @@ func (hpack *HPACK) addDynamic(hf *HeaderField) {
 			hpack.dynamic[0] = hf2
 		}
 	}
+
+	println(len(hpack.dynamic))
 }
 
 // shrink shrinks the dynamic table if needed.
@@ -205,6 +209,9 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		c   byte
 		err error
 	)
+
+	hpack.lck.Lock()
+	defer hpack.lck.Unlock()
 
 	c = b[0]
 	switch {
@@ -425,6 +432,9 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 	c = !hpack.DisableCompression
 	bits = 6
 
+	hpack.lck.Lock()
+	defer hpack.lck.Unlock()
+
 	index, hf2 = hpack.search(hf)
 	if hf.sensible {
 		c = false
@@ -439,7 +449,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 				dst = append(dst, literalByte)
 				// append this field to the dynamic table.
 				// TODO: Multiple requests fails thanks to this old line
-				// hpack.addDynamic(hf)
+				hpack.addDynamic(hf)
 			}
 		} else if hpack.DisableDynamicTable { // with or without indexing
 			dst = append(dst, 0, 0)
