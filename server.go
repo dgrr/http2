@@ -36,7 +36,7 @@ func ConfigureServer(s *fasthttp.Server) *Server {
 
 var streamPool = sync.Pool{
 	New: func() interface{} {
-		return &Stream{
+		return &ServerStream{
 			ctx: &fasthttp.RequestCtx{},
 		}
 	},
@@ -127,7 +127,7 @@ func (s *Server) serveConn(c net.Conn) error {
 	defer releaseConnCtx(ctx)
 
 	var err error
-	streams := make(map[uint32]*Stream)
+	streams := make(map[uint32]*ServerStream)
 
 	// write own settings
 	ctx.st.WriteFrame(ctx.fr)
@@ -200,7 +200,7 @@ func (pe *HTTP2ProtoError) Error() string {
 	return fmt.Sprintf("%d: %s", pe.Code, pe.Reason)
 }
 
-func (s *Server) Handle(ctx *connCtx, strm *Stream) (err error) {
+func (s *Server) Handle(ctx *connCtx, strm *ServerStream) (err error) {
 	switch ctx.fr.Type() {
 	case FrameHeaders:
 		err = s.handleHeaders(ctx, strm)
@@ -281,7 +281,7 @@ const (
 	stateAfterPushPromise
 )
 
-type Stream struct {
+type ServerStream struct {
 	id         uint32
 	state      StreamState
 	istate     internalState
@@ -291,8 +291,8 @@ type Stream struct {
 	hfr *Headers
 }
 
-func acquireStream(id uint32) *Stream {
-	strm := streamPool.Get().(*Stream)
+func acquireStream(id uint32) *ServerStream {
+	strm := streamPool.Get().(*ServerStream)
 	strm.ctx.Request.Reset()
 	strm.ctx.Response.Reset()
 
@@ -303,7 +303,7 @@ func acquireStream(id uint32) *Stream {
 	return strm
 }
 
-func releaseStream(strm *Stream) {
+func releaseStream(strm *ServerStream) {
 	if strm.hfr != nil {
 		ReleaseHeaders(strm.hfr)
 		strm.hfr = nil
@@ -312,15 +312,15 @@ func releaseStream(strm *Stream) {
 	streamPool.Put(strm)
 }
 
-func (strm *Stream) State() StreamState {
+func (strm *ServerStream) State() StreamState {
 	return strm.state
 }
 
-func (strm *Stream) IsClosed() bool {
+func (strm *ServerStream) IsClosed() bool {
 	return strm.state == StateClosed
 }
 
-func (s *Server) handleHeaders(ctx *connCtx, strm *Stream) error {
+func (s *Server) handleHeaders(ctx *connCtx, strm *ServerStream) error {
 	switch strm.state {
 	case StateIdle:
 		strm.state = StateOpen
@@ -341,7 +341,7 @@ func (s *Server) handleHeaders(ctx *connCtx, strm *Stream) error {
 	return s.parseHeaders(ctx, strm, strm.hfr.EndHeaders())
 }
 
-func (s *Server) handleContinuation(ctx *connCtx, strm *Stream) (err error) {
+func (s *Server) handleContinuation(ctx *connCtx, strm *ServerStream) (err error) {
 	fr := AcquireContinuation()
 	defer ReleaseContinuation(fr)
 
@@ -351,7 +351,7 @@ func (s *Server) handleContinuation(ctx *connCtx, strm *Stream) (err error) {
 	return
 }
 
-func (s *Server) parseHeaders(ctx *connCtx, strm *Stream, isEnd bool) (err error) {
+func (s *Server) parseHeaders(ctx *connCtx, strm *ServerStream, isEnd bool) (err error) {
 	hf := AcquireHeaderField()
 	b := strm.hfr.rawHeaders
 
@@ -378,7 +378,7 @@ func (s *Server) parseHeaders(ctx *connCtx, strm *Stream, isEnd bool) (err error
 	return
 }
 
-func (s *Server) handleData(ctx *connCtx, strm *Stream) error {
+func (s *Server) handleData(ctx *connCtx, strm *ServerStream) error {
 	dfr := AcquireData()
 	defer ReleaseData(dfr)
 
@@ -391,7 +391,7 @@ func (s *Server) handleData(ctx *connCtx, strm *Stream) error {
 	return nil
 }
 
-func (s *Server) handleReset(ctx *connCtx, strm *Stream) error {
+func (s *Server) handleReset(ctx *connCtx, strm *ServerStream) error {
 	// fr := AcquireRstStream()
 	// defer ReleaseRstStream(fr)
 
@@ -407,7 +407,7 @@ func (s *Server) handleReset(ctx *connCtx, strm *Stream) error {
 	return nil
 }
 
-func (s *Server) handleGoAway(ctx *connCtx, strm *Stream) error {
+func (s *Server) handleGoAway(ctx *connCtx, strm *ServerStream) error {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
@@ -426,7 +426,7 @@ func (s *Server) handleGoAway(ctx *connCtx, strm *Stream) error {
 	return ctx.writeFrame(fr)
 }
 
-func (s *Server) handleWindowUpdate(ctx *connCtx, strm *Stream) error {
+func (s *Server) handleWindowUpdate(ctx *connCtx, strm *ServerStream) error {
 	wu := AcquireWindowUpdate()
 	defer ReleaseWindowUpdate(wu)
 
@@ -444,7 +444,7 @@ func (s *Server) handleWindowUpdate(ctx *connCtx, strm *Stream) error {
 	return nil
 }
 
-func (s *Server) handleSettings(ctx *connCtx, strm *Stream) error {
+func (s *Server) handleSettings(ctx *connCtx, strm *ServerStream) error {
 	st := AcquireSettings()
 
 	st.ReadFrame(ctx.fr)
@@ -479,7 +479,7 @@ func (s *Server) handleSettings(ctx *connCtx, strm *Stream) error {
 	return err
 }
 
-func (s *Server) tryReply(ctx *connCtx, strm *Stream) error {
+func (s *Server) tryReply(ctx *connCtx, strm *ServerStream) error {
 	dfr := AcquireData()
 	defer ReleaseData(dfr)
 
@@ -497,7 +497,7 @@ func (s *Server) tryReply(ctx *connCtx, strm *Stream) error {
 	return err
 }
 
-func (ctx *connCtx) writeWindowUpdate(strm *Stream, n uint32) error {
+func (ctx *connCtx) writeWindowUpdate(strm *ServerStream, n uint32) error {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
@@ -524,7 +524,7 @@ func (ctx *connCtx) writeWindowUpdate(strm *Stream, n uint32) error {
 	return err
 }
 
-func (ctx *connCtx) writeReset(strm *Stream) error {
+func (ctx *connCtx) writeReset(strm *ServerStream) error {
 	rfr := AcquireRstStream()
 	defer ReleaseRstStream(rfr)
 
@@ -545,7 +545,7 @@ func (ctx *connCtx) writeReset(strm *Stream) error {
 	return err
 }
 
-func (ctx *connCtx) writeHeaders(strm *Stream, hfr *Headers) error {
+func (ctx *connCtx) writeHeaders(strm *ServerStream, hfr *Headers) error {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
@@ -559,7 +559,7 @@ func (ctx *connCtx) writeHeaders(strm *Stream, hfr *Headers) error {
 	return err
 }
 
-func (ctx *connCtx) writeData(strm *Stream, dfr *Data) error {
+func (ctx *connCtx) writeData(strm *ServerStream, dfr *Data) error {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
