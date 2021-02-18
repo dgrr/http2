@@ -51,13 +51,13 @@ func TestHPACKReadInt(t *testing.T) {
 	n := uint64(0)
 	b := []byte{15, 31, 154, 10, 122}
 
-	b, n, err = readInt(5, b)
+	b, n = readInt(5, b)
 	checkInt(t, err, n, 15, 4, b)
 
-	b, n, err = readInt(5, b)
+	b, n = readInt(5, b)
 	checkInt(t, err, n, 1337, 1, b)
 
-	b, n, err = readInt(7, b)
+	b, n = readInt(7, b)
 	checkInt(t, err, n, 122, 0, b)
 }
 

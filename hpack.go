@@ -33,24 +33,6 @@ type HPACK struct {
 	maxTableSize int
 }
 
-func (hp *HPACK) Fork() *HPACK {
-	hp2 := &HPACK{}
-	hp2.tableSize = hp.tableSize
-	hp2.maxTableSize = hp.maxTableSize
-	hp2.DisableCompression = hp.DisableCompression
-	hp2.DisableDynamicTable = hp.DisableDynamicTable
-
-	hp2.dynamic = make([]*HeaderField, len(hp.dynamic))
-	for i := range hp.dynamic {
-		hf := AcquireHeaderField()
-		hp.dynamic[i].CopyTo(hf)
-
-		hp2.dynamic[i] = hf
-	}
-
-	return hp2
-}
-
 var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPACK{
@@ -112,7 +94,6 @@ func (hpack *HPACK) addDynamic(hf *HeaderField) {
 		// searching if the HeaderField already exists.
 		hf2 := hpack.dynamic[i]
 		if bytes.Equal(hf.key, hf2.key) {
-			// if exists: update the value.
 			mustAdd = false
 			hf2.SetValueBytes(hf.value)
 			break
@@ -122,10 +103,8 @@ func (hpack *HPACK) addDynamic(hf *HeaderField) {
 	if !mustAdd {
 		hf = hpack.dynamic[i]
 		// moving the HeaderField to the first element.
-		for i > 0 {
-			hpack.dynamic[i] = hpack.dynamic[i-1]
-			i--
-		}
+		hpack.dynamic = append(hpack.dynamic[:1],
+			append(hpack.dynamic[:i], hpack.dynamic[i+1:]...)...)
 		hpack.dynamic[0] = hf
 		hpack.shrink(0)
 	} else {
@@ -147,13 +126,10 @@ func (hpack *HPACK) addDynamic(hf *HeaderField) {
 // shrink shrinks the dynamic table if needed.
 func (hpack *HPACK) shrink(add int) {
 	for {
-		hpack.tableSize = hpack.DynamicSize() + add
-		if hpack.tableSize <= hpack.maxTableSize {
-			break
-		}
 		n := len(hpack.dynamic) - 1
-		if n == -1 {
-			break // TODO: panic()?
+		hpack.tableSize = hpack.DynamicSize() + add
+		if hpack.tableSize <= hpack.maxTableSize || n == -1 {
+			break
 		}
 		// release the header field
 		ReleaseHeaderField(hpack.dynamic[n])
@@ -179,11 +155,12 @@ func (hpack *HPACK) peek(n uint64) (hf *HeaderField) {
 }
 
 // find gets the index of existent key in static or dynamic tables.
-func (hpack *HPACK) search(hf *HeaderField) (n uint64) {
+func (hpack *HPACK) search(hf *HeaderField) (n uint64, hft *HeaderField) {
 	// start searching in the dynamic table (probably it contains less fields than the static.
 	for i, hf2 := range hpack.dynamic {
 		if bytes.Equal(hf.key, hf2.key) && bytes.Equal(hf.value, hf2.value) {
 			n = uint64(i + maxIndex)
+			hft = hf2
 			break
 		}
 	}
@@ -195,10 +172,12 @@ func (hpack *HPACK) search(hf *HeaderField) (n uint64) {
 					if bytes.Equal(hf.value, hf2.value) {
 						// must add 1 because of indexing
 						n = uint64(i + 1)
+						hft = hf2
 						break
 					}
 				} else {
 					n = uint64(i + 1)
+					hft = hf2
 				}
 			}
 		}
@@ -233,31 +212,27 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 	// The value must be indexed in the static or the dynamic table.
 	// https://httpwg.org/specs/rfc7541.html#indexed.header.representation
 	case c&indexByte == indexByte: // 1000 0000
-		b, n, err = readInt(7, b)
-		if err == nil {
-			if hf2 := hpack.peek(n); hf2 != nil {
-				hf2.CopyTo(hf)
-			}
+		b, n = readInt(7, b)
+		hf2 := hpack.peek(n)
+		if hf2 == nil {
+			return b, ErrFieldNotFound
 		}
+		hf2.CopyTo(hf)
 
 	// Literal Header Field with Incremental Indexing.
-	// Key can be indexed or not. So if the first byte is equal to 64
-	// the key value must be appended to the dynamic table.
+	// Key can be indexed or not. Then appened to the table
 	// https://tools.ietf.org/html/rfc7541#section-6.1
 	case c&literalByte == literalByte: // 0100 0000
 		// Reading key
 		if c != 64 { // Read key as index
-			b, n, err = readInt(6, b)
-			if err == nil {
-				hf2 := hpack.peek(n)
-				if hf2 == nil {
-					return b, ErrFieldNotFound
-				}
-
-				hf2.CopyTo(hf)
+			b, n = readInt(6, b)
+			hf2 := hpack.peek(n)
+			if hf2 == nil {
+				return b, ErrFieldNotFound
 			}
+
+			hf2.CopyTo(hf)
 		} else { // Read key literal string
-			// Huffman encoded or not
 			b = b[1:]
 			dst := bytePool.Get().([]byte)
 			b, dst, err = readString(dst[:0], b)
@@ -276,9 +251,9 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 			b, dst, err = readString(dst[:0], b)
 			if err == nil {
 				hf.SetValueBytes(dst)
+				// add to the table as RFC specifies.
+				hpack.addDynamic(hf)
 			}
-			// add to the table as RFC specifies.
-			hpack.addDynamic(hf)
 
 			bytePool.Put(dst)
 		}
@@ -295,14 +270,13 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 	case c&noIndexByte == 0: // 0000 0000
 		// Reading key
 		if c != 0 { // Reading key as index
-			b, n, err = readInt(4, b)
-			if err == nil {
-				if hf2 := hpack.peek(n); hf2 != nil {
-					hf.SetKeyBytes(hf2.key)
-				} else {
-					// TODO: error
-				}
+			b, n = readInt(4, b)
+			hf2 := hpack.peek(n)
+			if hf2 == nil {
+				return b, ErrFieldNotFound
 			}
+
+			hf.SetKeyBytes(hf2.key)
 		} else { // Reading key as string literal
 			b = b[1:]
 			dst := bytePool.Get().([]byte)
@@ -329,10 +303,9 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 	// Changes the size of the dynamic table.
 	// https://tools.ietf.org/html/rfc7541#section-6.3
 	case c&32 == 32: // 001- ----
-		b, n, err = readInt(5, b)
-		if err == nil {
-			hpack.maxTableSize = int(n)
-		}
+		b, n = readInt(5, b)
+		hpack.maxTableSize = int(n)
+		hpack.shrink(0)
 	}
 
 	return b, err
@@ -340,59 +313,50 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 
 // readInt reads int type from header field.
 // https://tools.ietf.org/html/rfc7541#section-5.1
-func readInt(n int, b []byte) ([]byte, uint64, error) {
+func readInt(n int, b []byte) ([]byte, uint64) {
 	// 1<<7 - 1 = 0111 1111
 	b0 := byte(1<<n - 1)
 	// if b[0] = 0111 1111 then continue reading the int
 	// if not, then we are finished
 	// if b0 is 0011 1111, then b0&b[0] != b0 = false
 	if b0&b[0] != b0 {
-		return b[1:], uint64(b[0]&b0), nil
+		return b[1:], uint64(b[0] & b0)
 	}
 
 	nn := uint64(0)
 	i := 1
 	for i < len(b) {
-		nn |= uint64(b[i]&127) << ((i-1)*7)
+		nn |= uint64(b[i]&127) << ((i - 1) * 7)
 		if b[i]&128 != 128 {
 			break
 		}
 		i++
 	}
 
-	return b[i+1:], nn + uint64(b0), nil
+	return b[i+1:], nn + uint64(b0)
 }
 
 // appendInt appends int type to header field excluding the last byte
 // which will be OR'ed.
 // https://tools.ietf.org/html/rfc7541#section-5.1
-func appendInt(dst []byte, n uint8, nn uint64) []byte {
-	nu := uint64(1<<n - 1)
-	m := len(dst) - 1
-	if m == -1 {
+func appendInt(dst []byte, bits uint8, index uint64) []byte {
+	b0 := byte(1<<bits - 1)
+	if len(dst) == 0 {
 		dst = append(dst, 0)
-		m++
 	}
 
-	if nn < nu {
-		dst[m] |= byte(nn)
-	} else {
-		nn -= nu
-		dst[m] |= byte(nu)
-		m = len(dst)
-		nu = 1 << (n + 1)
-		i := 0
-		for nn > 0 {
-			i++
-			if i == m {
-				dst = append(dst, 0)
-				m++
-			}
-			dst[i] = byte(nn | 128)
-			nn >>= 7
-		}
-		dst[i] &= 127
+	dst[len(dst)-1] |= b0 & byte(index)
+	if dst[len(dst)-1]&b0 != b0 {
+		return dst
 	}
+
+	index -= uint64(b0)
+	for index != 0 {
+		dst = append(dst, 128|byte(index&127))
+		index >>= 7
+	}
+	dst[len(dst)-1] &= 127
+
 	return dst
 }
 
@@ -406,8 +370,8 @@ func readString(dst, b []byte) ([]byte, []byte, error) {
 	var n uint64
 	var err error
 	mustDecode := b[0]&128 == 128 // huffman encoded
-	b, n, err = readInt(7, b)
-	if err == nil && uint64(len(b)) < n {
+	b, n = readInt(7, b)
+	if uint64(len(b)) < n {
 		err = fmt.Errorf("unexpected size: %d < %d", len(b), n)
 	}
 	if err == nil {
@@ -449,33 +413,33 @@ func appendString(dst, src []byte, encode bool) []byte {
 	return dst
 }
 
-var errHeaderFieldNotFound = errors.New("indexed field not found")
-
 // AppendHeader appends the content of an encoded HeaderField to dst.
 func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
-	var c bool
-	var n uint8
-	var idx uint64
+	var (
+		c     bool
+		bits  uint8
+		index uint64
+		hf2   *HeaderField
+	)
 
 	c = !hpack.DisableCompression
-	n = 6
+	bits = 6
 
-	// TODO: Sensible fields...
-	idx = hpack.search(hf)
+	index, hf2 = hpack.search(hf)
 	if hf.sensible {
 		c = false
 		dst = append(dst, 16)
 	} else {
-		if idx > 0 { // key and/or value can be used as index
-			hf2 := hpack.peek(idx)
+		if index > 0 { // key and/or value can be used as index
 			if bytes.Equal(hf.value, hf2.value) {
-				n, dst = 7, append(dst, indexByte) // could be indexed
+				bits, dst = 7, append(dst, indexByte) // could be indexed
 			} else if hpack.DisableDynamicTable { // must be used as literal index
-				n, dst = 4, append(dst, 0)
+				bits, dst = 4, append(dst, 0)
 			} else {
 				dst = append(dst, literalByte)
 				// append this field to the dynamic table.
 				// TODO: Multiple requests fails thanks to this old line
+				// fmt.Printf("%s -- %s\n", hf.Key(), hf.Value())
 				hpack.addDynamic(hf)
 			}
 		} else if hpack.DisableDynamicTable { // with or without indexing
@@ -488,14 +452,14 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 
 	// the only requirement to write the index is that the idx must be
 	// granther than zero. Any Header Field Representation can use indexes.
-	if idx > 0 {
-		dst = appendInt(dst, n, idx)
+	if index > 0 {
+		dst = appendInt(dst, bits, index)
 	} else {
 		dst = appendString(dst, hf.key, c)
 	}
 	// Only writes the value if the prefix is lower than 7. So if the
 	// Header Field Representation is not indexed.
-	if n != 7 {
+	if bits != 7 {
 		dst = appendString(dst, hf.value, c)
 	}
 
