@@ -187,6 +187,8 @@ func (c *Client) readLoop() {
 			st := AcquireSettings()
 			st.ReadFrame(fr)
 			if !st.IsAck() {
+				c.hp.SetMaxTableSize(int(st.HeaderTableSize()))
+
 				st.Reset()
 				fr.Reset()
 
@@ -274,7 +276,7 @@ func (c *Client) Do(req *fasthttp.Request, res *fasthttp.Response) error {
 	c.writeRequest(strm, req)
 	err := c.readResponse(strm, res)
 	if strm.state == StateHalfClosed {
-		c.writeReset()
+		c.writeReset(strm.id)
 	}
 
 	// TODO: remove strm from slice
@@ -320,6 +322,8 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	fr.SetStream(strm.id)
 
 	c.writeFrame(fr)
+	// TODO: Control frame states from the writeLoop?
+	strm.state = StateOpen
 }
 
 func (c *Client) writeFrame(fr *Frame) {
@@ -377,12 +381,14 @@ func (c *Client) writeWindowUpdate(update uint32) {
 	ReleaseWindowUpdate(wu)
 }
 
-func (c *Client) writeReset() {
+func (c *Client) writeReset(id uint32) {
 	fr := AcquireFrame()
 	rst := AcquireRstStream()
 
 	rst.SetCode(0)
+
 	rst.WriteFrame(fr)
+	fr.SetStream(id)
 
 	c.writeFrame(fr)
 }

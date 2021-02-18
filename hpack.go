@@ -439,8 +439,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 				dst = append(dst, literalByte)
 				// append this field to the dynamic table.
 				// TODO: Multiple requests fails thanks to this old line
-				// fmt.Printf("%s -- %s\n", hf.Key(), hf.Value())
-				hpack.addDynamic(hf)
+				// hpack.addDynamic(hf)
 			}
 		} else if hpack.DisableDynamicTable { // with or without indexing
 			dst = append(dst, 0, 0)
@@ -466,7 +465,6 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 	return dst
 }
 
-// TODO: Change to non-pointer?
 var staticTable = []*HeaderField{ // entry + 1
 	&HeaderField{key: []byte(":authority")},                          // 1
 	&HeaderField{key: []byte(":method"), value: []byte("GET")},       // 2
