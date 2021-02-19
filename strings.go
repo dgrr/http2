@@ -10,6 +10,7 @@ var (
 	strContentLength = []byte("content-length")
 	strContentType   = []byte("content-type")
 	strUserAgent     = []byte("user-agent")
+	strGzip          = []byte("gzip")
 	strGET           = []byte("GET")
 	strHEAD          = []byte("HEAD")
 	strPOST          = []byte("POST")

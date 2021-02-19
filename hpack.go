@@ -37,6 +37,7 @@ var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPACK{
 			maxTableSize: int(defaultHeaderTableSize),
+			dynamic:      make([]*HeaderField, 0, 16),
 		}
 	},
 }
@@ -90,12 +91,7 @@ func (hpack *HPACK) addDynamic(hf *HeaderField) {
 	hf2 := AcquireHeaderField()
 	hf.CopyTo(hf2)
 
-	if len(hpack.dynamic) == 0 {
-		hpack.dynamic = append(hpack.dynamic, hf2)
-	} else {
-		hpack.dynamic = append(hpack.dynamic[:1], hpack.dynamic...)
-		hpack.dynamic[0] = hf2
-	}
+	hpack.dynamic = append(hpack.dynamic, hf2)
 
 	// checking table size
 	hpack.shrink(hf.Size())
@@ -103,16 +99,23 @@ func (hpack *HPACK) addDynamic(hf *HeaderField) {
 
 // shrink shrinks the dynamic table if needed.
 func (hpack *HPACK) shrink(add int) {
-	for {
-		n := len(hpack.dynamic) - 1
-		hpack.tableSize = hpack.DynamicSize() + add
-		if hpack.tableSize <= hpack.maxTableSize || n == -1 {
+	n := 0 // elements to remove
+	dynSize := hpack.DynamicSize() + add
+	for i := range hpack.dynamic {
+		if dynSize < hpack.maxTableSize {
 			break
 		}
+		dynSize -= hpack.dynamic[i].Size()
+		n++
+	}
+
+	for i := 0; i < n; i++ {
 		// release the header field
-		ReleaseHeaderField(hpack.dynamic[n])
+		ReleaseHeaderField(hpack.dynamic[i])
 		// shrinking slice
-		hpack.dynamic = hpack.dynamic[:n]
+	}
+	if n > 0 {
+		hpack.dynamic = append(hpack.dynamic[:0], hpack.dynamic[n:]...)
 	}
 }
 
@@ -124,8 +127,11 @@ func (hpack *HPACK) peek(n uint64) (hf *HeaderField) {
 	if n < maxIndex {
 		hf = staticTable[n-1]
 	} else { // search in dynamic table
-		nn := int(n - maxIndex)
-		if nn < len(hpack.dynamic) {
+		nn := len(hpack.dynamic) - int(n - maxIndex) - 1
+		if nn >= 0 {
+			// dynamic_len = 11
+			// n = 64
+			// nn = 11 - (64 - 62) = 9
 			hf = hpack.dynamic[nn]
 		}
 	}
@@ -135,7 +141,8 @@ func (hpack *HPACK) peek(n uint64) (hf *HeaderField) {
 // find gets the index of existent key in static or dynamic tables.
 func (hpack *HPACK) search(hf *HeaderField) (n uint64, fullMatch bool) {
 	// start searching in the dynamic table (probably it contains less fields than the static.
-	for i, hf2 := range hpack.dynamic {
+	for i := len(hpack.dynamic) - 1; i >= 0; i-- {
+		hf2 := hpack.dynamic[i]
 		if fullMatch = bytes.Equal(hf.key, hf2.key) &&
 			bytes.Equal(hf.value, hf2.value); fullMatch {
 			n = uint64(i + maxIndex)

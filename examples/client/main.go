@@ -13,7 +13,7 @@ func main() {
 		Addr:  "api.binance.com:443",
 		IsTLS: true,
 	}
-	http2.ConfigureClient(c)
+	http2.ConfigureClient(c, http2.OptionEnableCompression)
 
 	req := fasthttp.AcquireRequest()
 	res := fasthttp.AcquireResponse()

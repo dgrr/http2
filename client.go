@@ -52,15 +52,21 @@ func releaseClientStream(strm *ClientStream) {
 }
 
 type Client struct {
-	hp     *HPACK
+	c  net.Conn
+	br *bufio.Reader
+	bw *bufio.Writer
+	hp *HPACK
+
 	p      *fasthttp.HostClient
 	nextID uint32
-	c      net.Conn
-	br     *bufio.Reader
-	bw     *bufio.Writer
-	st     *Settings
-	wch    chan *Frame
-	rch    chan *Frame
+
+	st *Settings
+
+	wch chan *Frame
+	rch chan *Frame
+
+	enableCompression bool
+
 	closer chan struct{}
 	strms  []*ClientStream
 }
@@ -93,8 +99,14 @@ func (c *Client) releaseStreams() {
 	}
 }
 
+type Options int8
+
+const (
+	OptionEnableCompression Options = iota
+)
+
 // TODO: checkout https://github.com/golang/net/blob/4acb7895a057/http2/transport.go#L570
-func ConfigureClient(c *fasthttp.HostClient) error {
+func ConfigureClient(c *fasthttp.HostClient, opts ...Options) error {
 	c2 := NewClient()
 	if c.TLSConfig == nil {
 		c.TLSConfig = &tls.Config{
@@ -110,6 +122,13 @@ func ConfigureClient(c *fasthttp.HostClient) error {
 	}
 
 	// TODO: Checkout the tlsconfig....
+
+	for _, opt := range opts {
+		switch opt {
+		case OptionEnableCompression:
+			c2.enableCompression = true
+		}
+	}
 
 	c.Transport = c2.Do
 
@@ -286,6 +305,17 @@ func (c *Client) Do(req *fasthttp.Request, res *fasthttp.Response) error {
 		c.writeReset(strm.id)
 	}
 
+	if c.enableCompression {
+		encoding := res.Header.Peek("Content-Encoding")
+		if bytes.Contains(encoding, strGzip) {
+			body, err := res.BodyGunzip()
+			if err != nil {
+				return err
+			}
+			res.SetBody(body)
+		}
+	}
+
 	// TODO: remove strm from slice
 	releaseClientStream(strm)
 
@@ -296,6 +326,10 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	// TODO: GET requests can have body too
 	// TODO: Send continuation if needed
 	noBody := len(req.Body()) == 0
+
+	if c.enableCompression {
+		req.Header.Set("Accept-Encoding", "gzip")
+	}
 
 	fr := AcquireFrame()
 	h := AcquireHeaders()
