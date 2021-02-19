@@ -16,13 +16,15 @@ func main() {
 	http2.ConfigureClient(c)
 
 	req := fasthttp.AcquireRequest()
-	req.Header.SetMethod("GET")
-	req.URI().Update("https://api.binance.com/api/v3/exchangeInfo")
-
 	res := fasthttp.AcquireResponse()
+
+	req.Header.SetMethod("GET")
+	// TODO: Use SetRequestURI
+	req.URI().Update("https://api.binance.com/api/v3/exchangeInfo")
 
 	for i := 0; i < 4; i++ {
 		res.ResetBody()
+
 		err := c.Do(req, res)
 		if err != nil {
 			log.Fatalln(err)

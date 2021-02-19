@@ -49,14 +49,9 @@ func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
 	)
 	dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf)
 
-	hf.SetKeyBytes(strContentLength)
-	hf.SetValue(
-		strconv.FormatInt(int64(len(res.Body())), 10),
-	)
-	dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf)
-
+	res.Header.SetContentLength(len(res.Body()))
 	res.Header.VisitAll(func(k, v []byte) {
-		hf.SetBytes(bytes.ToLower(k), v)
+		hf.SetBytes(toLower(k), v)
 		dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf)
 	})
 }

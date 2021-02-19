@@ -56,6 +56,8 @@ type Client struct {
 	p      *fasthttp.HostClient
 	nextID uint32
 	c      net.Conn
+	br     *bufio.Reader
+	bw     *bufio.Writer
 	st     *Settings
 	wch    chan *Frame
 	rch    chan *Frame
@@ -127,6 +129,8 @@ func (c *Client) Dial(addr string, tlsConfig *tls.Config) error {
 	}
 
 	c.c = conn
+	c.br = bufio.NewReader(conn)
+	c.bw = bufio.NewWriter(conn)
 
 	err = c.Handshake()
 	if err != nil {
@@ -143,9 +147,10 @@ func (c *Client) Dial(addr string, tlsConfig *tls.Config) error {
 }
 
 func (c *Client) Handshake() error {
-	conn := c.c
-
-	_, err := conn.Write(http2Preface)
+	_, err := c.bw.Write(http2Preface)
+	if err == nil {
+		err = c.bw.Flush()
+	}
 	if err != nil {
 		return err
 	}
@@ -156,7 +161,11 @@ func (c *Client) Handshake() error {
 	c.st.SetMaxWindowSize(1 << 22)
 	c.st.WriteFrame(fr)
 
-	_, err = fr.WriteTo(conn)
+	_, err = fr.WriteTo(c.bw)
+	if err == nil {
+		err = c.bw.Flush()
+	}
+
 	return err
 }
 
@@ -171,12 +180,11 @@ func (c *Client) getStream(id uint32) *ClientStream {
 
 func (c *Client) readLoop() {
 	defer c.Close()
-	br := bufio.NewReader(c.c)
 
 	for {
 		fr := AcquireFrame()
 
-		_, err := fr.ReadFrom(br)
+		_, err := fr.ReadFrom(c.br)
 		if err != nil {
 			log.Println("readLoop", err)
 			return
@@ -228,7 +236,6 @@ func (c *Client) handleGoAway(fr *Frame) {
 
 func (c *Client) writeLoop() {
 	defer c.c.Close()
-	bw := bufio.NewWriter(c.c)
 
 	for {
 		select {
@@ -237,9 +244,9 @@ func (c *Client) writeLoop() {
 				return
 			}
 
-			_, err := fr.WriteTo(bw)
+			_, err := fr.WriteTo(c.bw)
 			if err == nil {
-				err = bw.Flush()
+				err = c.bw.Flush()
 			}
 			if err != nil {
 				strm := c.getStream(fr.Stream())
@@ -288,7 +295,7 @@ func (c *Client) Do(req *fasthttp.Request, res *fasthttp.Response) error {
 func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	// TODO: GET requests can have body too
 	// TODO: Send continuation if needed
-	noBody := req.Header.IsHead() || req.Header.IsGet()
+	noBody := len(req.Body()) == 0
 
 	fr := AcquireFrame()
 	h := AcquireHeaders()
@@ -297,8 +304,8 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	defer ReleaseHeaders(h)
 	defer ReleaseHeaderField(hf)
 
-	hf.SetBytes(strAuthority, req.Host())
-	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders[:0], hf)
+	hf.SetBytes(strAuthority, req.URI().Host())
+	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
 
 	hf.SetBytes(strMethod, req.Header.Method())
 	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
@@ -306,11 +313,11 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	hf.SetBytes(strScheme, req.URI().Scheme())
 	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
 
-	hf.SetBytes(strPath, req.URI().Path())
+	hf.SetBytes(strPath, req.URI().PathOriginal())
 	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
 
 	req.Header.VisitAll(func(k, v []byte) {
-		hf.SetBytes(bytes.ToLower(k), v)
+		hf.SetBytes(toLower(k), v)
 		h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
 	})
 
@@ -337,7 +344,7 @@ func (c *Client) readResponse(strm *ClientStream, res *fasthttp.Response) error 
 		err error
 	)
 
-	for {
+	for strm.state < StateHalfClosed {
 		select {
 		case fr, ok = <-strm.ch:
 		case err, ok = <-strm.errch:
@@ -363,7 +370,6 @@ func (c *Client) readResponse(strm *ClientStream, res *fasthttp.Response) error 
 
 		if isEnd {
 			strm.state++
-			break
 		}
 	}
 

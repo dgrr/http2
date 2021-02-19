@@ -1,6 +1,7 @@
 package http2
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"strconv"
@@ -102,15 +103,7 @@ func (fr *Frame) Reset() {
 	fr.stream = 0
 	fr.length = 0
 	fr.maxLen = defaultMaxLen
-	resetBytes(fr.rawHeader[:])
 	fr.payload = fr.payload[:0]
-}
-
-func resetBytes(b []byte) { // TODO: to asm using SSE if possible (github.com/tmthrgd/go-memset)
-	n := len(b)
-	for i := 0; i < n; i++ {
-		b[i] = 0
-	}
 }
 
 // Type returns the frame type (https://httpwg.org/specs/rfc7540.html#Frame_types)
@@ -170,23 +163,18 @@ func (fr *Frame) DelFlag(f FrameFlags) {
 	fr.flags ^= f
 }
 
-// RawHeader returns frame header bytes.
-func (fr *Frame) RawHeader() []byte {
-	return fr.rawHeader[:]
+func (fr *Frame) parseValues(header []byte) {
+	fr.length = bytesToUint24(header[:3])               // & (1<<24 - 1)    // 3
+	fr.kind = FrameType(header[3])                      // 1
+	fr.flags = FrameFlags(header[4])                    // 1
+	fr.stream = bytesToUint32(header[5:]) & (1<<31 - 1) // 4
 }
 
-func (fr *Frame) parseValues() {
-	fr.rawToLen()                          // 3
-	fr.kind = FrameType(fr.rawHeader[3])   // 1
-	fr.flags = FrameFlags(fr.rawHeader[4]) // 1
-	fr.rawToStream()                       // 4
-}
-
-func (fr *Frame) parseHeader() {
-	fr.lenToRaw()                    // 2
-	fr.rawHeader[3] = byte(fr.kind)  // 1
-	fr.rawHeader[4] = byte(fr.flags) // 1
-	fr.streamToRaw()                 // 4
+func (fr *Frame) parseHeader(header []byte) {
+	uint24ToBytes(header[:3], fr.length) // 2
+	header[3] = byte(fr.kind)            // 1
+	header[4] = byte(fr.flags)           // 1
+	uint32ToBytes(header[5:], fr.stream) // 4
 }
 
 // ReadFrom reads frame from Reader.
@@ -194,49 +182,43 @@ func (fr *Frame) parseHeader() {
 // This function returns readed bytes and/or error.
 //
 // Unlike io.ReaderFrom this method does not read until io.EOF
-func (fr *Frame) ReadFrom(br io.Reader) (int64, error) {
+func (fr *Frame) ReadFrom(br *bufio.Reader) (int64, error) {
 	return fr.readFrom(br, 0)
 }
 
 // ReadFromLimitPayload reads frame from reader limiting the payload.
-func (fr *Frame) ReadFromLimitPayload(br io.Reader, max uint32) (int64, error) {
+func (fr *Frame) ReadFromLimitPayload(br *bufio.Reader, max uint32) (int64, error) {
 	return fr.readFrom(br, max)
 }
 
 // TODO: Delete rb?
-func (fr *Frame) readFrom(br io.Reader, max uint32) (int64, error) {
-	n, err := br.Read(fr.rawHeader[:])
+func (fr *Frame) readFrom(br *bufio.Reader, max uint32) (int64, error) {
+	header, err := br.Peek(defaultFrameSize)
 	if err != nil {
 		return -1, err
 	}
+	br.Discard(defaultFrameSize)
 
-	rn := int64(n)
+	rn := int64(defaultFrameSize)
 
-	if n != defaultFrameSize {
-		err = Error(FrameSizeError) // TODO: ?
-	} else {
-		// Parsing Frame's Header field.
-		fr.parseValues()
-		if max > 0 && fr.length > max {
-			// TODO: Discard bytes and return an error
-		} else if fr.length > 0 {
-			// uint32 should be extended to int64.
-			nn := int64(fr.length)
-			if nn < 0 {
-				panic(fmt.Sprintf("length is lower than 0 (%d). Overflow? (%d)", nn, fr.length))
-			}
-			fr.payload = resize(fr.payload, nn)
+	// Parsing Frame's Header field.
+	fr.parseValues(header)
 
-			readed := int64(0)
-			for readed < nn {
-				n, err = br.Read(fr.payload[readed:nn])
-				if err != nil {
-					return rn, err
-				}
+	// if max > 0 && fr.length > max {
+	// TODO: Discard bytes and return an error
+	if fr.length > 0 {
+		// uint32 should be extended to int64.
+		nn := int64(fr.length)
+		if nn < 0 {
+			panic(fmt.Sprintf("length is lower than 0 (%d). Overflow? (%d)", nn, fr.length))
+		}
 
-				rn += int64(n)
-				readed += int64(n)
-			}
+		var n int
+		fr.payload = resize(fr.payload, nn)
+
+		n, err = io.ReadFull(br, fr.payload)
+		if n > 0 {
+			rn += int64(n)
 		}
 	}
 
@@ -246,36 +228,20 @@ func (fr *Frame) readFrom(br io.Reader, max uint32) (int64, error) {
 // WriteTo writes frame to the Writer.
 //
 // This function returns Frame bytes written and/or error.
-func (fr *Frame) WriteTo(w io.Writer) (wb int64, err error) {
+func (fr *Frame) WriteTo(w *bufio.Writer) (wb int64, err error) {
 	var n int
-	fr.parseHeader()
+	fr.parseHeader(fr.rawHeader[:])
 
 	n, err = w.Write(fr.rawHeader[:])
 	if err == nil {
 		wb += int64(n)
-		n, err = w.Write(fr.payload[:fr.length]) // TODO: Must payload be limited here?
+		n, err = w.Write(fr.payload)
 		if err == nil {
 			wb += int64(n)
 		}
 	}
 
 	return
-}
-
-func (fr *Frame) rawToStream() {
-	fr.stream = bytesToUint32(fr.rawHeader[5:]) & (1<<31 - 1)
-}
-
-func (fr *Frame) streamToRaw() {
-	uint32ToBytes(fr.rawHeader[5:], fr.stream)
-}
-
-func (fr *Frame) rawToLen() {
-	fr.length = bytesToUint24(fr.rawHeader[:3]) // & (1<<24 - 1)
-}
-
-func (fr *Frame) lenToRaw() {
-	uint24ToBytes(fr.rawHeader[:3], fr.length)
 }
 
 // Payload returns processed payload deleting padding and additional headers.

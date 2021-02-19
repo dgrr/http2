@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/panjf2000/ants"
 	"github.com/valyala/fasthttp"
 )
 
@@ -46,6 +47,8 @@ var streamPool = sync.Pool{
 // connCtx is an object intended to handle the input connection
 // regardless the stream.
 type connCtx struct {
+	lck sync.Mutex
+
 	s  *Server
 	c  net.Conn
 	br *bufio.Reader
@@ -60,7 +63,7 @@ type connCtx struct {
 	streamsOpen     int32
 	isClosing       bool // after recv goaway
 
-	strms map[uint32]*ServerStream
+	strms sync.Map
 }
 
 var connCtxPool = sync.Pool{
@@ -81,7 +84,6 @@ func acquireConnCtx(s *Server, c net.Conn) *connCtx {
 	ctx.lastStreamOpen = 0
 	ctx.streamsOpen = 0
 	ctx.isClosing = false
-	ctx.strms = make(map[uint32]*ServerStream)
 	return ctx
 }
 
@@ -151,11 +153,12 @@ func (s *Server) serveConn(c net.Conn) error {
 	ReleaseFrame(fr)
 
 	var (
-		wch      = make(chan *Frame, 1024)
-		cemetery = make(chan *ServerStream, 1)
+		wch = make(chan *Frame, 1024)
 	)
 
-	go s.writeLoop(ctx, wch, cemetery)
+	pool, _ := ants.NewPool(1024, ants.WithPreAlloc(true))
+
+	go s.writeLoop(ctx, wch)
 
 	for err == nil {
 		fr := AcquireFrame()
@@ -177,14 +180,20 @@ func (s *Server) serveConn(c net.Conn) error {
 		case FrameSettings:
 			err = ctx.handleSettings(fr)
 		default:
-			strm := ctx.strms[fr.Stream()]
-			if strm == nil {
-				strm = acquireStream(fr.Stream(), ctx, wch, cemetery)
-				ctx.strms[fr.Stream()] = strm
+			var strm *ServerStream
+			strmi, ok := ctx.strms.Load(fr.Stream())
+			if ok {
+				strm = strmi.(*ServerStream)
+			} else {
+				strm = acquireStream(fr.Stream(), ctx, wch)
+				ctx.strms.Store(fr.Stream(), strm)
 				ctx.lastStreamOpen = strm.id
 				ctx.streamsOpen++
-				// TODO: Use a pool
-				go strm.loop()
+				pool.Submit(func() {
+					strm.loop()
+					ctx.strms.Delete(strm.id)
+					releaseStream(strm)
+				})
 			}
 
 			if strm.IsClosed() {
@@ -213,7 +222,7 @@ func (s *Server) serveConn(c net.Conn) error {
 	return err
 }
 
-func (s *Server) writeLoop(ctx *connCtx, wch <-chan *Frame, cemetery chan *ServerStream) {
+func (s *Server) writeLoop(ctx *connCtx, wch <-chan *Frame) {
 	for {
 		select {
 		case fr, ok := <-wch:
@@ -226,11 +235,8 @@ func (s *Server) writeLoop(ctx *connCtx, wch <-chan *Frame, cemetery chan *Serve
 				// TODO: handle xd
 				log.Println(err)
 			}
-		case strm, ok := <-cemetery:
-			if !ok {
-				return
-			}
-			releaseStream(strm)
+
+			ReleaseFrame(fr)
 		}
 	}
 }
@@ -269,16 +275,6 @@ func (strm *ServerStream) handleFrame(fr *Frame) (err error) {
 	case FramePing:
 		fr.AddFlag(FlagAck)
 		strm.writeFrame(fr)
-	}
-
-	if fr.HasFlag(FlagEndStream) {
-		switch strm.state {
-		case StateOpen:
-			strm.state = StateHalfClosed
-		case StateHalfClosed:
-			strm.state = StateClosed
-			// TODO: ctx.streamsOpen--
-		}
 	}
 
 	return err
@@ -333,17 +329,12 @@ type ServerStream struct {
 	wch chan<- *Frame
 	// chan to read
 	rch chan *Frame
-
-	// when the stream dies, it goes there
-	// TODO: Required?
-	cemetery chan<- *ServerStream
 }
 
 func acquireStream(
 	id uint32,
 	ctx *connCtx,
 	wch chan<- *Frame,
-	cemetery chan<- *ServerStream,
 ) *ServerStream {
 	strm := streamPool.Get().(*ServerStream)
 	strm.fastCtx.Request.Reset()
@@ -354,7 +345,6 @@ func acquireStream(
 	strm.id = id
 	strm.ctx = ctx
 	strm.wch = wch
-	strm.cemetery = cemetery
 
 	strm.rch = make(chan *Frame, 128)
 
@@ -391,6 +381,10 @@ func (strm *ServerStream) loop() {
 			if err == nil && strm.istate == stateExecHandler {
 				strm.ctx.handle(strm.fastCtx)
 				strm.tryReply()
+				if strm.state == StateHalfClosed {
+					strm.writeReset(0)
+					strm.state++
+				}
 				strm.istate = stateNone
 			}
 			if err != nil {
@@ -400,8 +394,6 @@ func (strm *ServerStream) loop() {
 			ReleaseFrame(fr)
 		}
 	}
-
-	strm.cemetery <- strm
 }
 
 func (strm *ServerStream) handleHeaders(fr *Frame) error {
@@ -439,15 +431,16 @@ func (strm *ServerStream) handleContinuation(fr *Frame) (err error) {
 func (strm *ServerStream) parseHeaders(b []byte, isEnd bool) (err error) {
 	hf := AcquireHeaderField()
 
+	strm.ctx.lck.Lock()
 	for len(b) > 0 {
 		b, err = strm.ctx.hp.Next(hf, b)
 		if err != nil {
-			println(err, hf.Key())
 			break
 		}
 
 		fasthttpRequestHeaders(hf, &strm.fastCtx.Request)
 	}
+	strm.ctx.lck.Unlock()
 
 	if err == nil {
 		if isEnd {
@@ -456,7 +449,7 @@ func (strm *ServerStream) parseHeaders(b []byte, isEnd bool) (err error) {
 			strm.istate = stateAwaitData
 		}
 		strm.fastCtx.Request.SetRequestURIBytes(
-			strm.fastCtx.Request.URI().FullURI())
+			strm.fastCtx.Request.URI().PathOriginal())
 		strm.fastCtx.Request.Header.SetProtocolBytes(strHTTP2)
 	}
 
@@ -564,6 +557,10 @@ func (strm *ServerStream) tryReply() {
 	strm.writeHeaders(hfr)
 	strm.writeData(dfr)
 
+	if strm.state == StateHalfClosed {
+		strm.state = StateClosed
+	}
+
 	ReleaseHeaders(hfr)
 	ReleaseData(dfr)
 }
@@ -607,14 +604,14 @@ func (strm *ServerStream) writeWindowUpdate(n uint32) {
 	ReleaseWindowUpdate(wu)
 }
 
-func (strm *ServerStream) writeReset() {
+func (strm *ServerStream) writeReset(code uint32) {
 	fr := AcquireFrame()
 	rfr := AcquireRstStream()
 
 	fr.SetStream(strm.id)
 
 	// TODO: Replace with proper code
-	rfr.SetCode(0x0)
+	rfr.SetCode(code)
 	rfr.WriteFrame(fr)
 
 	strm.writeFrame(fr)
@@ -627,8 +624,10 @@ func (strm *ServerStream) writeHeaders(hfr *Headers) {
 
 	fr.SetStream(strm.id)
 
-	// TODO: Check all ctx.hp access to make it concurrent etc
+	strm.ctx.lck.Lock()
 	fasthttpResponseHeaders(hfr, strm.ctx.hp, &strm.fastCtx.Response)
+	strm.ctx.lck.Unlock()
+
 	hfr.SetEndHeaders(true)
 	hfr.WriteFrame(fr)
 
@@ -657,7 +656,5 @@ func (strm *ServerStream) writeData(dfr *Data) {
 		strm.writeFrame(fr)
 		// TODO: strm.windowSize -= uint32(n)
 	}
-	if strm.state == StateHalfClosed {
-		strm.state = StateClosed
-	}
+	strm.state++
 }

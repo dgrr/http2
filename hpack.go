@@ -15,8 +15,6 @@ import (
 // Use AcquireHPACK to acquire new HPACK structure
 // TODO: HPACK to Headers?
 type HPACK struct {
-	lck sync.Mutex
-
 	// DisableCompression disables compression for literal header fields.
 	DisableCompression bool
 
@@ -62,7 +60,7 @@ func (hpack *HPACK) releaseDynamic() {
 	hpack.dynamic = hpack.dynamic[:0]
 }
 
-// Reset deletes and realeases all dynamic header fields
+// Reset deletes and releases all dynamic header fields
 func (hpack *HPACK) Reset() {
 	hpack.releaseDynamic()
 	hpack.tableSize = 0
@@ -87,44 +85,20 @@ func (hpack *HPACK) DynamicSize() (n int) {
 // add adds header field to the dynamic table.
 func (hpack *HPACK) addDynamic(hf *HeaderField) {
 	// TODO: Optimize using reverse indexes.
-	mustAdd := true
 
-	println(len(hpack.dynamic), hf.Key())
+	// append a copy
+	hf2 := AcquireHeaderField()
+	hf.CopyTo(hf2)
 
-	i := 0
-	for i = range hpack.dynamic {
-		// searching if the HeaderField already exists.
-		hf2 := hpack.dynamic[i]
-		if bytes.Equal(hf.key, hf2.key) &&
-			bytes.Equal(hf.value, hf2.value) {
-			mustAdd = false
-			break
-		}
-	}
-
-	if !mustAdd {
-		hf = hpack.dynamic[i]
-		// moving the HeaderField to the first element.
-		hpack.dynamic = append(hpack.dynamic[:1],
-			append(hpack.dynamic[:i], hpack.dynamic[i+1:]...)...)
-		hpack.dynamic[0] = hf
-		hpack.shrink(0)
+	if len(hpack.dynamic) == 0 {
+		hpack.dynamic = append(hpack.dynamic, hf2)
 	} else {
-		// checking table size
-		hpack.shrink(hf.Size())
-
-		// append a copy
-		hf2 := AcquireHeaderField()
-		hf.CopyTo(hf2)
-		if len(hpack.dynamic) == 0 {
-			hpack.dynamic = append(hpack.dynamic, hf2)
-		} else {
-			hpack.dynamic = append(hpack.dynamic[:1], hpack.dynamic...)
-			hpack.dynamic[0] = hf2
-		}
+		hpack.dynamic = append(hpack.dynamic[:1], hpack.dynamic...)
+		hpack.dynamic[0] = hf2
 	}
 
-	println(len(hpack.dynamic))
+	// checking table size
+	hpack.shrink(hf.Size())
 }
 
 // shrink shrinks the dynamic table if needed.
@@ -159,12 +133,12 @@ func (hpack *HPACK) peek(n uint64) (hf *HeaderField) {
 }
 
 // find gets the index of existent key in static or dynamic tables.
-func (hpack *HPACK) search(hf *HeaderField) (n uint64, hft *HeaderField) {
+func (hpack *HPACK) search(hf *HeaderField) (n uint64, fullMatch bool) {
 	// start searching in the dynamic table (probably it contains less fields than the static.
 	for i, hf2 := range hpack.dynamic {
-		if bytes.Equal(hf.key, hf2.key) && bytes.Equal(hf.value, hf2.value) {
+		if fullMatch = bytes.Equal(hf.key, hf2.key) &&
+			bytes.Equal(hf.value, hf2.value); fullMatch {
 			n = uint64(i + maxIndex)
-			hft = hf2
 			break
 		}
 	}
@@ -172,16 +146,9 @@ func (hpack *HPACK) search(hf *HeaderField) (n uint64, hft *HeaderField) {
 	if n == 0 {
 		for i, hf2 := range staticTable {
 			if bytes.Equal(hf.key, hf2.key) {
-				if n != 0 {
-					if bytes.Equal(hf.value, hf2.value) {
-						// must add 1 because of indexing
-						n = uint64(i + 1)
-						hft = hf2
-						break
-					}
-				} else {
-					n = uint64(i + 1)
-					hft = hf2
+				n = uint64(i + 1)
+				if fullMatch = bytes.Equal(hf.value, hf2.value); fullMatch {
+					break
 				}
 			}
 		}
@@ -210,9 +177,6 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		err error
 	)
 
-	hpack.lck.Lock()
-	defer hpack.lck.Unlock()
-
 	c = b[0]
 	switch {
 	// Indexed Header Field.
@@ -227,7 +191,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		hf2.CopyTo(hf)
 
 	// Literal Header Field with Incremental Indexing.
-	// Key can be indexed or not. Then appened to the table
+	// Key can be indexed or not. Then appended to the table
 	// https://tools.ietf.org/html/rfc7541#section-6.1
 	case c&literalByte == literalByte: // 0100 0000
 		// Reading key
@@ -238,7 +202,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 				return b, ErrFieldNotFound
 			}
 
-			hf2.CopyTo(hf)
+			hf.SetKeyBytes(hf2.KeyBytes())
 		} else { // Read key literal string
 			b = b[1:]
 			dst := bytePool.Get().([]byte)
@@ -248,6 +212,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 			}
 			bytePool.Put(dst)
 		}
+
 		// Reading value
 		if err == nil {
 			if b[0] == c {
@@ -293,6 +258,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 			}
 			bytePool.Put(dst)
 		}
+
 		// Reading value
 		if err == nil {
 			if b[0] == c {
@@ -423,25 +389,22 @@ func appendString(dst, src []byte, encode bool) []byte {
 // AppendHeader appends the content of an encoded HeaderField to dst.
 func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 	var (
-		c     bool
-		bits  uint8
-		index uint64
-		hf2   *HeaderField
+		c         bool
+		bits      uint8
+		index     uint64
+		fullMatch bool
 	)
 
 	c = !hpack.DisableCompression
 	bits = 6
 
-	hpack.lck.Lock()
-	defer hpack.lck.Unlock()
-
-	index, hf2 = hpack.search(hf)
+	index, fullMatch = hpack.search(hf)
 	if hf.sensible {
 		c = false
 		dst = append(dst, 16)
 	} else {
 		if index > 0 { // key and/or value can be used as index
-			if bytes.Equal(hf.value, hf2.value) {
+			if fullMatch {
 				bits, dst = 7, append(dst, indexByte) // could be indexed
 			} else if hpack.DisableDynamicTable { // must be used as literal index
 				bits, dst = 4, append(dst, 0)
@@ -449,7 +412,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 				dst = append(dst, literalByte)
 				// append this field to the dynamic table.
 				// TODO: Multiple requests fails thanks to this old line
-				hpack.addDynamic(hf)
+				// hpack.addDynamic(hf)
 			}
 		} else if hpack.DisableDynamicTable { // with or without indexing
 			dst = append(dst, 0, 0)

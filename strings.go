@@ -16,6 +16,14 @@ var (
 	strHTTP2         = []byte("HTTP/2")
 )
 
+func toLower(b []byte) []byte {
+	for i := range b {
+		b[i] |= 32
+	}
+
+	return b
+}
+
 const (
 	// H2TLSProto is the string used in ALPN-TLS negotiation.
 	H2TLSProto = "h2"
