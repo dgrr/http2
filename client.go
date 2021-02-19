@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
 )
 
@@ -52,6 +53,8 @@ func releaseClientStream(strm *ClientStream) {
 }
 
 type Client struct {
+	lck sync.Mutex
+
 	c  net.Conn
 	br *bufio.Reader
 	bw *bufio.Writer
@@ -68,7 +71,7 @@ type Client struct {
 	enableCompression bool
 
 	closer chan struct{}
-	strms  []*ClientStream
+	strms  sync.Map
 }
 
 func NewClient() *Client {
@@ -79,7 +82,6 @@ func NewClient() *Client {
 		wch:    make(chan *Frame, 1024),
 		rch:    make(chan *Frame, 1024),
 		closer: make(chan struct{}, 1),
-		strms:  make([]*ClientStream, 0, 128),
 	}
 }
 
@@ -94,9 +96,10 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) releaseStreams() {
-	for _, strm := range c.strms {
-		releaseClientStream(strm)
-	}
+	c.strms.Range(func(k, v interface{}) bool {
+		releaseClientStream(v.(*ClientStream))
+		return true
+	})
 }
 
 type Options int8
@@ -189,10 +192,9 @@ func (c *Client) Handshake() error {
 }
 
 func (c *Client) getStream(id uint32) *ClientStream {
-	for _, strm := range c.strms {
-		if strm.id == id {
-			return strm
-		}
+	ci, ok := c.strms.Load(id)
+	if ok {
+		return ci.(*ClientStream)
 	}
 	return nil
 }
@@ -286,18 +288,20 @@ func (c *Client) writeLoop() {
 }
 
 func (c *Client) Do(req *fasthttp.Request, res *fasthttp.Response) error {
+	c.lck.Lock()
 	if c.c == nil {
 		err := c.Dial(c.p.Addr, c.p.TLSConfig)
 		if err != nil {
+			c.lck.Unlock()
 			return err
 		}
 	}
+	c.lck.Unlock()
 
 	strm := acquireClientStream(c.nextID)
 	atomic.AddUint32(&c.nextID, 2)
 
-	// TODO: Not thread safe, etc...
-	c.strms = append(c.strms, strm)
+	c.strms.Store(strm.id, strm)
 
 	c.writeRequest(strm, req)
 	err := c.readResponse(strm, res)
@@ -308,11 +312,13 @@ func (c *Client) Do(req *fasthttp.Request, res *fasthttp.Response) error {
 	if c.enableCompression {
 		encoding := res.Header.Peek("Content-Encoding")
 		if bytes.Contains(encoding, strGzip) {
-			body, err := res.BodyGunzip()
+			bb := bytebufferpool.Get()
+			n, err := fasthttp.WriteGunzip(bb, res.Body())
 			if err != nil {
 				return err
 			}
-			res.SetBody(body)
+			res.SetBody(bb.B[:n])
+			bytebufferpool.Put(bb)
 		}
 	}
 
@@ -323,9 +329,8 @@ func (c *Client) Do(req *fasthttp.Request, res *fasthttp.Response) error {
 }
 
 func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
-	// TODO: GET requests can have body too
 	// TODO: Send continuation if needed
-	noBody := len(req.Body()) == 0
+	hasBody := len(req.Body()) > 0
 
 	if c.enableCompression {
 		req.Header.Set("Accept-Encoding", "gzip")
@@ -338,6 +343,7 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	defer ReleaseHeaders(h)
 	defer ReleaseHeaderField(hf)
 
+	c.lck.Lock()
 	hf.SetBytes(strAuthority, req.URI().Host())
 	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
 
@@ -347,24 +353,42 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	hf.SetBytes(strScheme, req.URI().Scheme())
 	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
 
-	hf.SetBytes(strPath, req.URI().PathOriginal())
+	hf.SetBytes(strPath, req.URI().RequestURI())
 	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
 
 	req.Header.VisitAll(func(k, v []byte) {
 		hf.SetBytes(toLower(k), v)
 		h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
 	})
+	c.lck.Unlock()
 
 	h.SetPadding(false)
-	h.SetEndStream(!noBody)
+	h.SetEndStream(!hasBody)
 	h.SetEndHeaders(true)
 
 	h.WriteFrame(fr)
 	fr.SetStream(strm.id)
 
 	c.writeFrame(fr)
-	// TODO: Control frame states from the writeLoop?
-	strm.state = StateOpen
+
+	if hasBody { // has body
+		fr = AcquireFrame() // shadow
+
+		dfr := AcquireData()
+		defer ReleaseData(dfr)
+
+		dfr.SetEndStream(true)
+		dfr.SetData(req.Body())
+
+		fr.SetStream(strm.id)
+
+		dfr.WriteFrame(fr)
+
+		c.writeFrame(fr)
+	}
+
+	// sending a frame headers sets the stream to the `open` state
+	strm.state = StateHalfClosed
 }
 
 func (c *Client) writeFrame(fr *Frame) {
@@ -378,7 +402,7 @@ func (c *Client) readResponse(strm *ClientStream, res *fasthttp.Response) error 
 		err error
 	)
 
-	for strm.state < StateHalfClosed {
+	for strm.state != StateClosed {
 		select {
 		case fr, ok = <-strm.ch:
 		case err, ok = <-strm.errch:
@@ -446,6 +470,8 @@ func (c *Client) handleHeaders(fr *Frame, res *fasthttp.Response) (bool, error) 
 	}
 
 	b := fr.Payload()
+
+	c.lck.Lock()
 	for len(b) > 0 {
 		b, err = c.hp.Next(hf, b)
 		if err != nil {
@@ -471,6 +497,7 @@ func (c *Client) handleHeaders(fr *Frame, res *fasthttp.Response) (bool, error) 
 			res.Header.AddBytesKV(hf.KeyBytes(), hf.ValueBytes())
 		}
 	}
+	c.lck.Unlock()
 
 	return h.EndStream(), err
 }

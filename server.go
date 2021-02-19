@@ -156,6 +156,7 @@ func (s *Server) serveConn(c net.Conn) error {
 		wch = make(chan *Frame, 1024)
 	)
 
+	// TODO: Use max concurrent streams
 	pool, _ := ants.NewPool(1024, ants.WithPreAlloc(true))
 
 	go s.writeLoop(ctx, wch)

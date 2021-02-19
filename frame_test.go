@@ -1,6 +1,7 @@
 package http2
 
 import (
+	"bufio"
 	"bytes"
 	"io"
 	"testing"
@@ -22,7 +23,10 @@ func TestFrameWrite(t *testing.T) {
 	}
 
 	var bf = bytes.NewBuffer(nil)
-	fr.WriteTo(bf)
+	var bw = bufio.NewWriter(bf)
+	fr.WriteTo(bw)
+	bw.Flush()
+
 	b := bf.Bytes()
 	if str := string(b[9:]); str != testStr {
 		t.Fatalf("mismatch %s<>%s", str, testStr)
@@ -32,6 +36,7 @@ func TestFrameWrite(t *testing.T) {
 func TestFrameRead(t *testing.T) {
 	var h [9]byte
 	bf := bytes.NewBuffer(nil)
+	br := bufio.NewReader(bf)
 
 	uint24ToBytes(h[:3], uint32(len(testStr)))
 
@@ -53,7 +58,8 @@ func TestFrameRead(t *testing.T) {
 
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
-	nn, err := fr.ReadFrom(bf)
+
+	nn, err := fr.ReadFrom(br)
 	if err != nil {
 		t.Fatal(err)
 	}
