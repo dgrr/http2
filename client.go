@@ -4,52 +4,69 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"fmt"
 	"log"
 	"net"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
 )
 
-var clientStreamPool = sync.Pool{
-	New: func() interface{} {
-		return &ClientStream{}
-	},
+type clientPool struct {
+	lck  sync.Mutex
+	idle []*ClientStream
+}
+
+func (cp *clientPool) Get(id uint32) (strm *ClientStream) {
+	cp.lck.Lock()
+	defer cp.lck.Unlock()
+
+	if len(cp.idle) == 0 {
+		strm = &ClientStream{}
+		initClientStream(strm)
+	} else {
+		strm = cp.idle[len(cp.idle)-1]
+		cp.idle = cp.idle[:len(cp.idle)-1]
+	}
+
+	strm.id = id
+
+	return
+}
+
+func (cp *clientPool) Put(strm *ClientStream) {
+	cp.lck.Lock()
+	cp.idle = append(cp.idle, strm)
+	cp.lck.Unlock()
 }
 
 type ClientStream struct {
 	id    uint32
 	state StreamState
 
-	windowSize uint32
+	writer chan<- *Frame
+	reader chan *Frame
+	err    chan error
+}
 
-	ch    chan *Frame
-	errch chan error
+var clientStreamPool clientPool
+
+func initClientStream(strm *ClientStream) {
+	strm.id = 0
+	strm.state = StateIdle
+	strm.reader = make(chan *Frame, 1)
+	strm.err = make(chan error, 1)
 }
 
 func acquireClientStream(id uint32) *ClientStream {
-	strm := clientStreamPool.Get().(*ClientStream)
-
-	strm.id = id
-	strm.state = StateIdle
-	strm.ch = make(chan *Frame, 1)
-	strm.errch = make(chan error, 1)
-
-	return strm
+	return clientStreamPool.Get(id)
 }
 
 func releaseClientStream(strm *ClientStream) {
-	defer func() {
-		recover()
-	}()
-
-	close(strm.ch)
-	close(strm.errch)
-	streamPool.Put(strm)
+	clientStreamPool.Put(strm)
 }
 
 type Client struct {
@@ -65,8 +82,7 @@ type Client struct {
 
 	st *Settings
 
-	wch chan *Frame
-	rch chan *Frame
+	writer chan *Frame
 
 	enableCompression bool
 
@@ -79,8 +95,7 @@ func NewClient() *Client {
 		nextID: 1,
 		hp:     AcquireHPACK(),
 		st:     AcquireSettings(),
-		wch:    make(chan *Frame, 1024),
-		rch:    make(chan *Frame, 1024),
+		writer: make(chan *Frame, 1024),
 		closer: make(chan struct{}, 1),
 	}
 }
@@ -90,8 +105,7 @@ func (c *Client) Close() error {
 	c.releaseStreams()
 	ReleaseHPACK(c.hp)
 	ReleaseSettings(c.st)
-	close(c.wch)
-	close(c.rch)
+	close(c.writer)
 	return nil
 }
 
@@ -124,8 +138,6 @@ func ConfigureClient(c *fasthttp.HostClient, opts ...Options) error {
 		return err
 	}
 
-	// TODO: Checkout the tlsconfig....
-
 	for _, opt := range opts {
 		switch opt {
 		case OptionEnableCompression:
@@ -148,6 +160,11 @@ func (c *Client) Dial(addr string, tlsConfig *tls.Config) error {
 	if err != nil {
 		conn.Close()
 		return err
+	}
+
+	state := conn.ConnectionState()
+	if p := state.NegotiatedProtocol; p != "h2" {
+		return fmt.Errorf("server doesn't support HTTP/2. Proto %s <> h2", p)
 	}
 
 	c.c = conn
@@ -237,7 +254,7 @@ func (c *Client) readLoop() {
 		default:
 			strm := c.getStream(fr.Stream())
 			if strm != nil {
-				strm.ch <- fr
+				strm.reader <- fr
 			} else {
 				log.Println(fr.Stream(), "not found", fr.Type())
 				ReleaseFrame(fr)
@@ -258,21 +275,51 @@ func (c *Client) handleGoAway(fr *Frame) {
 func (c *Client) writeLoop() {
 	defer c.c.Close()
 
+	buffered := make([]*Frame, 0, 128)
+	expectedID := uint32(1)
+
 	for {
 		select {
-		case fr, ok := <-c.wch:
+		case fr, ok := <-c.writer:
 			if !ok {
 				return
 			}
 
+			if fr.Stream() != 0 && expectedID < fr.Stream() {
+				assigned := false
+				for i := 0; i < len(buffered); i++ {
+					if assigned = buffered[i].Stream() > fr.Stream(); assigned {
+						buffered = append(buffered[:i], buffered[i:]...)
+						buffered[i] = fr
+						break
+					}
+				}
+				if !assigned {
+					buffered = append(buffered, fr)
+				}
+
+				continue
+			}
+
+			if fr.Stream() != 0 {
+				expectedID = fr.Stream() + 2
+			}
+
 			_, err := fr.WriteTo(c.bw)
+			for i := 0; err == nil && i < len(buffered); i++ {
+				_, err = buffered[i].WriteTo(c.bw)
+				expectedID = buffered[i].Stream() + 2
+			}
+
 			if err == nil {
 				err = c.bw.Flush()
+				buffered = buffered[:0]
 			}
+
 			if err != nil {
 				strm := c.getStream(fr.Stream())
 				if strm != nil {
-					strm.errch <- err
+					strm.err <- err
 				} else {
 					log.Println("writeLoop", err)
 				}
@@ -296,10 +343,13 @@ func (c *Client) Do(req *fasthttp.Request, res *fasthttp.Response) error {
 			return err
 		}
 	}
+
+	id := c.nextID
+	c.nextID += 2
+
 	c.lck.Unlock()
 
-	strm := acquireClientStream(c.nextID)
-	atomic.AddUint32(&c.nextID, 2)
+	strm := acquireClientStream(id)
 
 	c.strms.Store(strm.id, strm)
 
@@ -311,18 +361,25 @@ func (c *Client) Do(req *fasthttp.Request, res *fasthttp.Response) error {
 
 	if c.enableCompression {
 		encoding := res.Header.Peek("Content-Encoding")
-		if bytes.Contains(encoding, strGzip) {
+		if len(encoding) > 0 {
+			n := 0
 			bb := bytebufferpool.Get()
-			n, err := fasthttp.WriteGunzip(bb, res.Body())
-			if err != nil {
-				return err
+			switch encoding[0] {
+			case 'b':
+				n, err = fasthttp.WriteUnbrotli(bb, res.Body())
+			case 'd':
+				n, err = fasthttp.WriteInflate(bb, res.Body())
+			case 'g':
+				n, err = fasthttp.WriteGunzip(bb, res.Body())
 			}
-			res.SetBody(bb.B[:n])
+			if n > 0 {
+				res.SetBody(bb.B)
+			}
 			bytebufferpool.Put(bb)
 		}
 	}
 
-	// TODO: remove strm from slice
+	c.strms.Delete(strm.id)
 	releaseClientStream(strm)
 
 	return err
@@ -333,7 +390,7 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	hasBody := len(req.Body()) > 0
 
 	if c.enableCompression {
-		req.Header.Set("Accept-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	}
 
 	fr := AcquireFrame()
@@ -388,11 +445,12 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 	}
 
 	// sending a frame headers sets the stream to the `open` state
+	// then setting the END_STREAM sets the connection to half-closed state.
 	strm.state = StateHalfClosed
 }
 
 func (c *Client) writeFrame(fr *Frame) {
-	c.wch <- fr
+	c.writer <- fr
 }
 
 func (c *Client) readResponse(strm *ClientStream, res *fasthttp.Response) error {
@@ -404,8 +462,8 @@ func (c *Client) readResponse(strm *ClientStream, res *fasthttp.Response) error 
 
 	for strm.state != StateClosed {
 		select {
-		case fr, ok = <-strm.ch:
-		case err, ok = <-strm.errch:
+		case fr, ok = <-strm.reader:
+		case err, ok = <-strm.err:
 			return err
 		}
 		if !ok {
