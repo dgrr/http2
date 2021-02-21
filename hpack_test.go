@@ -137,8 +137,8 @@ func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []str
 		n++
 	}
 	n = 0
-	for i := 0; i < len(table); i += 2 {
-		check(t, hpack.dynamic, n, table[i], table[i+1])
+	for i := len(table) - 1; i >= 0; i -= 2 {
+		check(t, hpack.dynamic, n, table[i-1], table[i])
 		n++
 	}
 
@@ -418,7 +418,7 @@ func compare(b, r []byte) int {
 
 func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []string, tableSize int) {
 	n := 0
-	hfs := make([]*HeaderField, 0)
+	hfs := make([]*HeaderField, 0, len(fields)/2)
 	for i := 0; i < len(fields); i += 2 {
 		hf := AcquireHeaderField()
 		hf.Set(fields[i], fields[i+1])
@@ -435,12 +435,12 @@ func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []st
 	}
 
 	if i := compare(b, r); i != -1 {
-		t.Fatalf("failed in %d: %s", i, hexComparision(b[i:], r[i:]))
+		t.Fatalf("failed in %d (%d): %s", i, tableSize, hexComparision(b[i:], r[i:]))
 	}
 
 	n = 0
-	for i := 0; i < len(table); i += 2 {
-		check(t, hpack.dynamic, n, table[i], table[i+1])
+	for i := len(table) - 1; i >= 0; i -= 2 {
+		check(t, hpack.dynamic, n, table[i-1], table[i])
 		n++
 	}
 
@@ -491,6 +491,7 @@ func TestHPACKWriteRequestWithoutHuffman(t *testing.T) {
 		0x75, 0x73, 0x74, 0x6f, 0x6d, 0x2d,
 		0x76, 0x61, 0x6c, 0x75, 0x65,
 	}
+
 	writeHPACKAndCheck(t, hpack, r, []string{
 		":method", "GET",
 		":scheme", "https",
@@ -502,6 +503,7 @@ func TestHPACKWriteRequestWithoutHuffman(t *testing.T) {
 		"cache-control", "no-cache",
 		":authority", "www.example.com",
 	}, 164)
+
 	ReleaseHPACK(hpack)
 }
 
@@ -709,6 +711,7 @@ func TestHPACKWriteResponseWithHuffman(t *testing.T) { // WithHuffman
 }
 
 func hexComparision(b, r []byte) (s string) {
+	s += "\n"
 	for i := range b {
 		s += fmt.Sprintf("%x", b[i]) + " "
 	}

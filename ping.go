@@ -10,8 +10,8 @@ const FramePing FrameType = 0x6
 //
 // https://tools.ietf.org/html/rfc7540#section-6.7
 type Ping struct {
-	ack bool
-	data   [8]byte
+	ack  bool
+	data [8]byte
 }
 
 var pingPool = sync.Pool{
