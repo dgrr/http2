@@ -394,7 +394,7 @@ func appendString(dst, src []byte, encode bool) []byte {
 }
 
 // AppendHeader appends the content of an encoded HeaderField to dst.
-func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
+func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte {
 	var (
 		c         bool
 		bits      uint8
@@ -421,7 +421,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField) []byte {
 				// TODO: Multiple requests fails thanks to this old line
 				// hpack.addDynamic(hf)
 			}
-		} else if hpack.DisableDynamicTable { // with or without indexing
+		} else if !store || hpack.DisableDynamicTable { // with or without indexing
 			dst = append(dst, 0, 0)
 		} else {
 			dst = append(dst, literalByte)

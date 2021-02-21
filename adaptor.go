@@ -47,11 +47,11 @@ func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
 			int64(res.Header.StatusCode()), 10,
 		),
 	)
-	dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf)
+	dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf, true)
 
 	res.Header.SetContentLength(len(res.Body()))
 	res.Header.VisitAll(func(k, v []byte) {
 		hf.SetBytes(toLower(k), v)
-		dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf)
+		dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf, false)
 	})
 }

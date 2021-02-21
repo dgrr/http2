@@ -52,6 +52,11 @@ type ClientStream struct {
 	err    chan error
 }
 
+func (strm *ClientStream) Close() {
+	close(strm.reader)
+	close(strm.err)
+}
+
 var clientStreamPool clientPool
 
 func initClientStream(strm *ClientStream) {
@@ -100,20 +105,27 @@ func NewClient() *Client {
 	}
 }
 
+// TODO: Fix a leak that happens when a request still processing but the server is closing.
 func (c *Client) Close() error {
 	close(c.closer)
+
+	err := c.c.Close()
+
 	c.releaseStreams()
 	ReleaseHPACK(c.hp)
 	ReleaseSettings(c.st)
+
 	close(c.writer)
-	return nil
+
+	return err
 }
 
 func (c *Client) releaseStreams() {
 	c.strms.Range(func(k, v interface{}) bool {
-		releaseClientStream(v.(*ClientStream))
+		v.(*ClientStream).Close()
 		return true
 	})
+	c.strms = sync.Map{}
 }
 
 type Options int8
@@ -273,12 +285,19 @@ func (c *Client) handleGoAway(fr *Frame) {
 }
 
 func (c *Client) writeLoop() {
-	defer c.c.Close()
+	defer func() {
+		c.lck.Lock()
+		if c.c != nil {
+			c.c.Close()
+		}
+		c.lck.Unlock()
+	}()
 
+	var err error
 	buffered := make([]*Frame, 0, 128)
 	expectedID := uint32(1)
 
-	for {
+	for err == nil {
 		select {
 		case fr, ok := <-c.writer:
 			if !ok {
@@ -289,7 +308,7 @@ func (c *Client) writeLoop() {
 				assigned := false
 				for i := 0; i < len(buffered); i++ {
 					if assigned = buffered[i].Stream() > fr.Stream(); assigned {
-						buffered = append(buffered[:i], buffered[i:]...)
+						buffered = append(buffered[:i+1], buffered[i:]...)
 						buffered[i] = fr
 						break
 					}
@@ -305,8 +324,8 @@ func (c *Client) writeLoop() {
 				expectedID = fr.Stream() + 2
 			}
 
-			_, err := fr.WriteTo(c.bw)
-			for i := 0; err == nil && i < len(buffered); i++ {
+			_, err = fr.WriteTo(c.bw)
+			for i := 0; err == nil && i < len(buffered) && expectedID >= buffered[i].Stream(); i++ {
 				_, err = buffered[i].WriteTo(c.bw)
 				expectedID = buffered[i].Stream() + 2
 			}
@@ -402,20 +421,20 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 
 	c.lck.Lock()
 	hf.SetBytes(strAuthority, req.URI().Host())
-	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
+	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf, true)
 
 	hf.SetBytes(strMethod, req.Header.Method())
-	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
+	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf, true)
 
 	hf.SetBytes(strScheme, req.URI().Scheme())
-	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
+	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf, true)
 
 	hf.SetBytes(strPath, req.URI().RequestURI())
-	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
+	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf, true)
 
 	req.Header.VisitAll(func(k, v []byte) {
 		hf.SetBytes(toLower(k), v)
-		h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf)
+		h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf, false)
 	})
 	c.lck.Unlock()
 

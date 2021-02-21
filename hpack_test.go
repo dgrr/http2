@@ -431,7 +431,7 @@ func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []st
 	)
 
 	for _, hf := range hfs {
-		b = hpack.AppendHeader(b, hf)
+		b = hpack.AppendHeader(b, hf, true)
 	}
 
 	if i := compare(b, r); i != -1 {

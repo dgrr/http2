@@ -1,3 +1,4 @@
 .idea
 examples/proxy/proxy
 examples/simple/simple
+examples/client/client
