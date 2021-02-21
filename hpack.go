@@ -415,7 +415,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte
 	} else {
 		if index > 0 { // key and/or value can be used as index
 			if fullMatch {
-				bits, dst = 7, append(dst, indexByte) // could be indexed
+				bits, dst = 7, append(dst, indexByte) // can be indexed
 			} else if !store || hpack.DisableDynamicTable { // must be used as literal index
 				bits, dst = 4, append(dst, 0)
 			} else {
@@ -426,7 +426,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte
 				}
 			}
 		} else if !store || hpack.DisableDynamicTable { // with or without indexing
-			dst = append(dst, 0)
+			dst = append(dst, 0, 0)
 		} else {
 			dst = append(dst, literalByte)
 			hpack.addDynamic(hf)
