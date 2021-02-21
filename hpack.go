@@ -122,20 +122,25 @@ func (hpack *HPACK) shrink() {
 // peek returns HeaderField from static or dynamic table.
 //
 // n must be the index in the table.
-func (hpack *HPACK) peek(n uint64) (hf *HeaderField) {
-	// TODO: Change peek function key
+func (hpack *HPACK) peek(n uint64) *HeaderField {
+	var (
+		index int
+		table []*HeaderField
+	)
 	if n < maxIndex {
-		hf = staticTable[n-1]
+		index, table = int(n-1), staticTable
 	} else { // search in dynamic table
 		nn := len(hpack.dynamic) - int(n-maxIndex) - 1
-		if nn >= 0 {
-			// dynamic_len = 11
-			// n = 64
-			// nn = 11 - (64 - 62) = 9
-			hf = hpack.dynamic[nn]
+		if nn < 0 {
+			return nil
 		}
+		// dynamic_len = 11
+		// n = 64
+		// nn = 11 - 64 - 62 - 1 = 8
+		index, table = nn, hpack.dynamic
 	}
-	return
+
+	return table[index]
 }
 
 // find gets the index of existent key in static or dynamic tables.
@@ -152,12 +157,12 @@ func (hpack *HPACK) search(hf *HeaderField) (n uint64, fullMatch bool) {
 	if n == 0 {
 		for i, hf2 := range staticTable {
 			if bytes.Equal(hf.key, hf2.key) {
-				if n == 0 {
-					n = uint64(i + 1)
-				}
 				if fullMatch = bytes.Equal(hf.value, hf2.value); fullMatch {
 					n = uint64(i + 1)
 					break
+				}
+				if n == 0 {
+					n = uint64(i + 1)
 				}
 			}
 		}
@@ -421,7 +426,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte
 			} else {
 				dst = append(dst, literalByte)
 				// append this field to the dynamic table.
-				if index <= maxIndex {
+				if index < maxIndex {
 					hpack.addDynamic(hf)
 				}
 			}
