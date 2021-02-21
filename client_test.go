@@ -18,10 +18,12 @@ func TestClientWriteOrder(t *testing.T) {
 
 	go c.writeLoop()
 
-	id := uint32(1)
-	frames := make([]*Frame, 0, 32)
+	framesToTest := 32
 
-	for i := 0; i < 32; i++ {
+	id := uint32(1)
+	frames := make([]*Frame, 0, framesToTest)
+
+	for i := 0; i < framesToTest; i++ {
 		fr := AcquireFrame()
 		fr.SetStream(id)
 		id += 2
@@ -39,7 +41,7 @@ func TestClientWriteOrder(t *testing.T) {
 	fr := AcquireFrame()
 
 	expected := uint32(1)
-	for i := 0; i < 32; i++ {
+	for i := 0; i < framesToTest; i++ {
 		_, err := fr.ReadFrom(br)
 		if err != nil {
 			if err == io.EOF {

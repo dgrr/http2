@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
@@ -244,7 +245,9 @@ func (c *Client) readLoop() {
 		case FrameSettings:
 			st := AcquireSettings()
 			st.ReadFrame(fr)
-			if !st.IsAck() {
+			if st.IsAck() {
+				ReleaseFrame(fr)
+			} else {
 				c.hp.SetMaxTableSize(int(st.HeaderTableSize()))
 
 				st.Reset()
@@ -263,6 +266,22 @@ func (c *Client) readLoop() {
 			ReleaseFrame(fr)
 		case FrameGoAway:
 			c.handleGoAway(fr)
+			ReleaseFrame(fr)
+		case FramePing:
+			if !fr.HasFlag(FlagAck) {
+				fr.AddFlag(FlagAck)
+				c.writeFrame(fr)
+			} else {
+				pfr := AcquirePing()
+				pfr.ReadFrame(fr)
+
+				ts := binary.BigEndian.Uint64(pfr.Data())
+				// TODO: Convert to callback
+				fmt.Println("HTTP/2 Ping:", time.Now().Sub(time.Unix(0, int64(ts))))
+
+				ReleasePing(pfr)
+				ReleaseFrame(fr)
+			}
 		default:
 			strm := c.getStream(fr.Stream())
 			if strm != nil {
@@ -284,6 +303,8 @@ func (c *Client) handleGoAway(fr *Frame) {
 	log.Printf("%d: %s\n", ga.Code(), ga.Data())
 }
 
+var defaultPingTimeout = time.Second * 5
+
 func (c *Client) writeLoop() {
 	defer func() {
 		c.lck.Lock()
@@ -296,6 +317,7 @@ func (c *Client) writeLoop() {
 	var err error
 	buffered := make([]*Frame, 0, 128)
 	expectedID := uint32(1)
+	timer := time.NewTimer(defaultPingTimeout)
 
 	for err == nil {
 		select {
@@ -344,12 +366,27 @@ func (c *Client) writeLoop() {
 				}
 			}
 
+			timer.Reset(defaultPingTimeout)
+
 			ReleaseFrame(fr)
-		case <-time.After(time.Second * 5):
-		// TODO: PING ...
+		case <-timer.C:
+			fr := AcquireFrame()
+			pfr := AcquirePing()
+			// write current timestamp
+			binary.BigEndian.PutUint64(pfr.data[:], uint64(time.Now().UnixNano()))
+
+			pfr.WriteFrame(fr)
+			ReleasePing(pfr)
+
+			_, err = fr.WriteTo(c.bw)
+			ReleaseFrame(fr)
 		case <-c.closer:
 			return
 		}
+	}
+
+	if err != nil {
+		log.Println("writeLoop", err)
 	}
 }
 
