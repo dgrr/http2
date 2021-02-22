@@ -101,8 +101,8 @@ type Client struct {
 func NewClient() *Client {
 	return &Client{
 		nextID: 1,
-		enc:     AcquireHPACK(),
-		dec:     AcquireHPACK(),
+		enc:    AcquireHPACK(),
+		dec:    AcquireHPACK(),
 		st:     AcquireSettings(),
 		writer: make(chan *Frame, 1024),
 		closer: make(chan struct{}, 1),
@@ -319,30 +319,26 @@ func (c *Client) writeLoop() {
 	}()
 
 	var err error
-	buffered := make([]*Frame, 0, 128)
 	expectedID := uint32(1)
 	timer := time.NewTimer(defaultPingTimeout)
 
+	// if the writer is full, then we use the buffered
+	buffered := make(chan *Frame, 128)
+
+loop:
 	for err == nil {
 		select {
 		case fr, ok := <-c.writer:
 			if !ok {
-				return
+				break loop
 			}
 
 			if fr.Stream() != 0 && expectedID < fr.Stream() {
-				assigned := false
-				for i := 0; i < len(buffered); i++ {
-					if assigned = buffered[i].Stream() > fr.Stream(); assigned {
-						buffered = append(buffered[:i+1], buffered[i:]...)
-						buffered[i] = fr
-						break
-					}
+				select {
+				case c.writer <- fr:
+				default:
+					buffered <- fr
 				}
-				if !assigned {
-					buffered = append(buffered, fr)
-				}
-
 				continue
 			}
 
@@ -351,14 +347,8 @@ func (c *Client) writeLoop() {
 			}
 
 			_, err = fr.WriteTo(c.bw)
-			for i := 0; err == nil && i < len(buffered) && expectedID >= buffered[i].Stream(); i++ {
-				_, err = buffered[i].WriteTo(c.bw)
-				expectedID = buffered[i].Stream() + 2
-			}
-
 			if err == nil {
 				err = c.bw.Flush()
-				buffered = buffered[:0]
 			}
 
 			if err != nil {
@@ -370,9 +360,16 @@ func (c *Client) writeLoop() {
 				}
 			}
 
+			timer.Stop()
 			timer.Reset(defaultPingTimeout)
 
 			ReleaseFrame(fr)
+		case fr := <-buffered:
+			select {
+			case c.writer <- fr:
+			default:
+				buffered <- fr
+			}
 		case <-timer.C:
 			fr := AcquireFrame()
 			pfr := AcquirePing()
@@ -384,10 +381,14 @@ func (c *Client) writeLoop() {
 
 			_, err = fr.WriteTo(c.bw)
 			ReleaseFrame(fr)
+
+			timer.Reset(defaultPingTimeout)
 		case <-c.closer:
-			return
+			break loop
 		}
 	}
+
+	close(buffered)
 
 	if err != nil {
 		log.Println("writeLoop", err)
