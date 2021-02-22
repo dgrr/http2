@@ -54,7 +54,8 @@ type connCtx struct {
 	br *bufio.Reader
 	bw *bufio.Writer
 
-	hp *HPACK
+	enc *HPACK
+	dec *HPACK
 
 	st *Settings
 
@@ -78,7 +79,8 @@ func acquireConnCtx(s *Server, c net.Conn) *connCtx {
 	ctx.c = c
 	ctx.br = bufio.NewReader(c)
 	ctx.bw = bufio.NewWriter(c)
-	ctx.hp = AcquireHPACK()
+	ctx.enc = AcquireHPACK()
+	ctx.dec = AcquireHPACK()
 	ctx.st = AcquireSettings()
 	ctx.unackedSettings = 0
 	ctx.lastStreamOpen = 0
@@ -88,7 +90,8 @@ func acquireConnCtx(s *Server, c net.Conn) *connCtx {
 }
 
 func releaseConnCtx(ctx *connCtx) {
-	ReleaseHPACK(ctx.hp)
+	ReleaseHPACK(ctx.enc)
+	ReleaseHPACK(ctx.dec)
 	ReleaseSettings(ctx.st)
 }
 
@@ -434,7 +437,7 @@ func (strm *ServerStream) parseHeaders(b []byte, isEnd bool) (err error) {
 
 	strm.ctx.lck.Lock()
 	for len(b) > 0 {
-		b, err = strm.ctx.hp.Next(hf, b)
+		b, err = strm.ctx.dec.Next(hf, b)
 		if err != nil {
 			break
 		}
@@ -626,7 +629,7 @@ func (strm *ServerStream) writeHeaders(hfr *Headers) {
 	fr.SetStream(strm.id)
 
 	strm.ctx.lck.Lock()
-	fasthttpResponseHeaders(hfr, strm.ctx.hp, &strm.fastCtx.Response)
+	fasthttpResponseHeaders(hfr, strm.ctx.enc, &strm.fastCtx.Response)
 	strm.ctx.lck.Unlock()
 
 	hfr.SetEndHeaders(true)
