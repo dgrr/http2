@@ -81,7 +81,9 @@ type Client struct {
 	c  net.Conn
 	br *bufio.Reader
 	bw *bufio.Writer
-	hp *HPACK
+
+	enc *HPACK
+	dec *HPACK
 
 	p      *fasthttp.HostClient
 	nextID uint32
@@ -99,7 +101,8 @@ type Client struct {
 func NewClient() *Client {
 	return &Client{
 		nextID: 1,
-		hp:     AcquireHPACK(),
+		enc:     AcquireHPACK(),
+		dec:     AcquireHPACK(),
 		st:     AcquireSettings(),
 		writer: make(chan *Frame, 1024),
 		closer: make(chan struct{}, 1),
@@ -113,7 +116,8 @@ func (c *Client) Close() error {
 	err := c.c.Close()
 
 	c.releaseStreams()
-	ReleaseHPACK(c.hp)
+	ReleaseHPACK(c.enc)
+	ReleaseHPACK(c.dec)
 	ReleaseSettings(c.st)
 
 	close(c.writer)
@@ -248,7 +252,7 @@ func (c *Client) readLoop() {
 			if st.IsAck() {
 				ReleaseFrame(fr)
 			} else {
-				c.hp.SetMaxTableSize(int(st.HeaderTableSize()))
+				c.enc.SetMaxTableSize(int(st.HeaderTableSize()))
 
 				st.Reset()
 				fr.Reset()
@@ -458,20 +462,27 @@ func (c *Client) writeRequest(strm *ClientStream, req *fasthttp.Request) {
 
 	c.lck.Lock()
 	hf.SetBytes(strAuthority, req.URI().Host())
-	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf, true)
+	h.rawHeaders = c.enc.AppendHeader(h.rawHeaders, hf, true)
 
 	hf.SetBytes(strMethod, req.Header.Method())
-	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf, true)
-
-	hf.SetBytes(strScheme, req.URI().Scheme())
-	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf, true)
+	h.rawHeaders = c.enc.AppendHeader(h.rawHeaders, hf, true)
 
 	hf.SetBytes(strPath, req.URI().RequestURI())
-	h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf, true)
+	h.rawHeaders = c.enc.AppendHeader(h.rawHeaders, hf, true)
+
+	hf.SetBytes(strScheme, req.URI().Scheme())
+	h.rawHeaders = c.enc.AppendHeader(h.rawHeaders, hf, true)
+
+	hf.SetBytes(strUserAgent, req.Header.UserAgent())
+	h.rawHeaders = c.enc.AppendHeader(h.rawHeaders, hf, true)
 
 	req.Header.VisitAll(func(k, v []byte) {
+		if bytes.EqualFold(k, strUserAgent) {
+			return
+		}
+
 		hf.SetBytes(toLower(k), v)
-		h.rawHeaders = c.hp.AppendHeader(h.rawHeaders, hf, false)
+		h.rawHeaders = c.enc.AppendHeader(h.rawHeaders, hf, false)
 	})
 	c.lck.Unlock()
 
@@ -587,7 +598,7 @@ func (c *Client) handleHeaders(fr *Frame, res *fasthttp.Response) (bool, error) 
 
 	c.lck.Lock()
 	for len(b) > 0 {
-		b, err = c.hp.Next(hf, b)
+		b, err = c.dec.Next(hf, b)
 		if err != nil {
 			return false, err
 		}

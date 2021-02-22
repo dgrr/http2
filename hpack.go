@@ -149,7 +149,7 @@ func (hpack *HPACK) search(hf *HeaderField) (n uint64, fullMatch bool) {
 	for i, hf2 := range hpack.dynamic {
 		if fullMatch = bytes.Equal(hf.key, hf2.key) &&
 			bytes.Equal(hf.value, hf2.value); fullMatch {
-			n = uint64(len(hpack.dynamic) - i - 1 + maxIndex)
+			n = uint64(maxIndex + len(hpack.dynamic) - i - 1)
 			break
 		}
 	}
@@ -330,14 +330,15 @@ func appendInt(dst []byte, bits uint8, index uint64) []byte {
 	if len(dst) == 0 {
 		dst = append(dst, 0)
 	}
-	b0 := byte(1<<bits - 1)
+	b0 := uint64(1<<bits - 1)
 
-	dst[len(dst)-1] |= b0 & byte(index)
-	if dst[len(dst)-1]&b0 != b0 {
+	if index <= b0 {
+		dst[len(dst)-1] |= byte(index)
 		return dst
 	}
 
-	index -= uint64(b0)
+	dst[len(dst)-1] |= byte(b0)
+	index -= b0
 	for index != 0 {
 		dst = append(dst, 128|byte(index&127))
 		index >>= 7
@@ -390,6 +391,7 @@ func appendString(dst, src []byte, encode bool) []byte {
 		dst = append(dst, 0)
 		nn++
 	}
+
 	dst = appendInt(dst, 7, n)
 	dst = append(dst, b...)
 
@@ -421,7 +423,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte
 		if index > 0 { // key and/or value can be used as index
 			if fullMatch {
 				bits, dst = 7, append(dst, indexByte) // can be indexed
-			} else if !store || hpack.DisableDynamicTable { // must be used as literal index
+			} else if !store { // must be used as literal index
 				bits, dst = 4, append(dst, 0)
 			} else {
 				dst = append(dst, literalByte)
@@ -445,6 +447,7 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte
 	} else {
 		dst = appendString(dst, hf.key, c)
 	}
+
 	// Only writes the value if the prefix is lower than 7. So if the
 	// Header Field Representation is not indexed.
 	if bits != 7 {

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,13 +21,16 @@ func main() {
 	}
 
 	count := int32(0)
+	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		for atomic.LoadInt32(&count) >= 4 {
 			time.Sleep(time.Millisecond * 100)
 		}
 
+		wg.Add(1)
 		atomic.AddInt32(&count, 1)
 		go func() {
+			defer wg.Done()
 			defer atomic.AddInt32(&count, -1)
 
 			req := fasthttp.AcquireRequest()
@@ -50,6 +54,8 @@ func main() {
 			fmt.Println("------------------------")
 		}()
 	}
+
+	wg.Wait()
 
 	// fmt.Printf("%s\n", body)
 }
