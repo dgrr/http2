@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
@@ -117,12 +119,39 @@ func NewClient() *Client {
 	}
 }
 
+func chanIsClosed(ch interface{}) bool {
+	if reflect.TypeOf(ch).Kind() != reflect.Chan {
+		panic("interface is not a channel")
+	}
+
+	cptr := *(*uintptr)(unsafe.Pointer(
+		unsafe.Pointer(uintptr(unsafe.Pointer(&ch)) + unsafe.Sizeof(uint(0))),
+	))
+
+	// from https://github.com/golang/go/blob/master/src/runtime/chan.go
+
+	cptr += unsafe.Sizeof(uint(0)) * 2
+	cptr += unsafe.Sizeof(unsafe.Pointer(uintptr(0)))
+	cptr += unsafe.Sizeof(uint16(0))
+
+	return *(*uint32)(unsafe.Pointer(cptr)) > 0
+}
+
 // TODO: Fix a leak that happens when a request still processing but the server is closing.
 func (c *Client) Close() error {
-	close(c.writer)
+	c.lck.Lock()
+	if c.c == nil {
+		c.lck.Unlock()
+		return nil
+	}
+
+	if !chanIsClosed(c.writer) {
+		close(c.writer)
+	}
 
 	err := c.c.Close()
 	c.c = nil
+	c.lck.Unlock()
 
 	c.releaseStreams()
 	// ReleaseHPACK(c.enc)
@@ -310,7 +339,7 @@ func (c *Client) handleGoAway(fr *Frame) {
 	ga.ReadFrame(fr)
 
 	err := NewError(ga.Code(), string(ga.Data()))
-	log.Println(err)
+	log.Println("go away", err)
 	c.Close()
 }
 
