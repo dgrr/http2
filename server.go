@@ -615,7 +615,7 @@ func (strm *ServerStream) writeReset(code uint32) {
 	fr.SetStream(strm.id)
 
 	// TODO: Replace with proper code
-	rfr.SetCode(code)
+	rfr.SetCode(ErrorCode(code))
 	rfr.WriteFrame(fr)
 
 	strm.writeFrame(fr)

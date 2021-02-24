@@ -94,8 +94,18 @@ type Client struct {
 
 	enableCompression bool
 
-	closer chan struct{}
 	strms  sync.Map
+}
+
+func (c *Client) Reset(conn net.Conn) {
+	c.c = conn
+	c.br = bufio.NewReader(conn)
+	c.bw = bufio.NewWriter(conn)
+	c.nextID = 1
+	c.writer = make(chan *Frame, 1024)
+	c.enc.Reset()
+	c.dec.Reset()
+	c.st.Reset()
 }
 
 func NewClient() *Client {
@@ -104,23 +114,20 @@ func NewClient() *Client {
 		enc:    AcquireHPACK(),
 		dec:    AcquireHPACK(),
 		st:     AcquireSettings(),
-		writer: make(chan *Frame, 1024),
-		closer: make(chan struct{}, 1),
 	}
 }
 
 // TODO: Fix a leak that happens when a request still processing but the server is closing.
 func (c *Client) Close() error {
-	close(c.closer)
+	close(c.writer)
 
 	err := c.c.Close()
+	c.c = nil
 
 	c.releaseStreams()
-	ReleaseHPACK(c.enc)
-	ReleaseHPACK(c.dec)
-	ReleaseSettings(c.st)
-
-	close(c.writer)
+	// ReleaseHPACK(c.enc)
+	// ReleaseHPACK(c.dec)
+	// ReleaseSettings(c.st)
 
 	return err
 }
@@ -184,13 +191,11 @@ func (c *Client) Dial(addr string, tlsConfig *tls.Config) error {
 		return fmt.Errorf("server doesn't support HTTP/2. Proto %s <> h2", p)
 	}
 
-	c.c = conn
-	c.br = bufio.NewReader(conn)
-	c.bw = bufio.NewWriter(conn)
+	c.Reset(conn)
 
 	err = c.Handshake()
 	if err != nil {
-		conn.Close()
+		c.Close()
 		return err
 	}
 
@@ -304,7 +309,9 @@ func (c *Client) handleGoAway(fr *Frame) {
 
 	ga.ReadFrame(fr)
 
-	log.Printf("%d: %s\n", ga.Code(), ga.Data())
+	err := NewError(ga.Code(), string(ga.Data()))
+	log.Println(err)
+	c.Close()
 }
 
 var defaultPingTimeout = time.Second * 5
@@ -383,8 +390,6 @@ loop:
 			ReleaseFrame(fr)
 
 			timer.Reset(defaultPingTimeout)
-		case <-c.closer:
-			break loop
 		}
 	}
 

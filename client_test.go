@@ -13,7 +13,6 @@ func TestClientWriteOrder(t *testing.T) {
 
 	c := &Client{}
 	c.writer = make(chan *Frame, 1)
-	c.closer = make(chan struct{}, 1)
 	c.bw = bufio.NewWriter(bf)
 
 	go c.writeLoop()
@@ -57,5 +56,5 @@ func TestClientWriteOrder(t *testing.T) {
 		expected += 2
 	}
 
-	close(c.closer)
+	close(c.writer)
 }

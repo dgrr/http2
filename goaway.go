@@ -47,13 +47,13 @@ func (ga *GoAway) CopyTo(ga2 *GoAway) {
 }
 
 // Code ...
-func (ga *GoAway) Code() uint32 {
-	return ga.code
+func (ga *GoAway) Code() ErrorCode {
+	return ErrorCode(ga.code)
 }
 
 // SetCode ...
-func (ga *GoAway) SetCode(code uint32) {
-	ga.code = code & (1<<31 - 1)
+func (ga *GoAway) SetCode(code ErrorCode) {
+	ga.code = uint32(code & (1<<31 - 1))
 	// TODO: Set error description as a debug data?
 }
 
