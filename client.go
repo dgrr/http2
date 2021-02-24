@@ -317,14 +317,6 @@ func (c *Client) handleGoAway(fr *Frame) {
 var defaultPingTimeout = time.Second * 5
 
 func (c *Client) writeLoop() {
-	defer func() {
-		c.lck.Lock()
-		if c.c != nil {
-			c.c.Close()
-		}
-		c.lck.Unlock()
-	}()
-
 	var err error
 	expectedID := uint32(1)
 	timer := time.NewTimer(defaultPingTimeout)
@@ -396,6 +388,7 @@ loop:
 	close(buffered)
 
 	if err != nil {
+		c.c.Close()
 		log.Println("writeLoop", err)
 	}
 }
