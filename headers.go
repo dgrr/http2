@@ -2,6 +2,8 @@ package http2
 
 import (
 	"sync"
+
+	"github.com/dgrr/http2/http2utils"
 )
 
 const FrameHeaders FrameType = 0x1
@@ -71,6 +73,10 @@ func (h *Headers) AppendRawHeaders(b []byte) {
 	h.rawHeaders = append(h.rawHeaders, b...)
 }
 
+func (h *Headers) AppendHeaderField(hp *HPACK, hf *HeaderField, store bool) {
+	h.rawHeaders = hp.AppendHeader(h.rawHeaders, hf, store)
+}
+
 // EndStream ...
 func (h *Headers) EndStream() bool {
 	return h.endStream
@@ -125,16 +131,21 @@ func (h *Headers) SetPadding(value bool) {
 //
 // This function appends over rawHeaders .....
 func (h *Headers) ReadFrame(fr *Frame) (err error) {
-	payload := cutPadding(fr)
+	payload := fr.Payload()
+	if fr.HasFlag(FlagPadded) {
+		payload = http2utils.CutPadding(payload, fr.Len())
+	}
+
 	if fr.HasFlag(FlagPriority) {
 		if len(fr.payload) < 5 { // 4 (stream) + 1 (weight) = 5
 			err = ErrMissingBytes
 		} else {
-			h.stream = bytesToUint32(payload) & (1<<31 - 1)
+			h.stream = http2utils.BytesToUint32(payload) & (1<<31 - 1)
 			h.weight = payload[4]
 			payload = payload[5:]
 		}
 	}
+
 	if err == nil {
 		h.endStream = fr.HasFlag(FlagEndStream)
 		h.endHeaders = fr.HasFlag(FlagEndHeaders)
@@ -158,13 +169,13 @@ func (h *Headers) WriteFrame(fr *Frame) error {
 	if h.stream > 0 && h.weight > 0 {
 		fr.AddFlag(FlagPriority)
 
-		uint32ToBytes(h.rawHeaders[1:5], fr.stream)
+		http2utils.Uint32ToBytes(h.rawHeaders[1:5], fr.stream)
 		h.rawHeaders[5] = h.weight
 	}
 
 	if h.hasPadding {
 		fr.AddFlag(FlagPadded)
-		h.rawHeaders = addPadding(h.rawHeaders)
+		h.rawHeaders = http2utils.AddPadding(h.rawHeaders)
 	}
 
 	return fr.SetPayload(h.rawHeaders)

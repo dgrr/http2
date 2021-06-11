@@ -17,7 +17,7 @@ var (
 	StringHTTP2         = []byte("HTTP/2")
 )
 
-func toLower(b []byte) []byte {
+func ToLower(b []byte) []byte {
 	for i := range b {
 		b[i] |= 32
 	}

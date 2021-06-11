@@ -48,11 +48,12 @@ func fasthttpResponseHeaders(dst *http2.Headers, hp *http2.HPACK, res *fasthttp.
 			int64(res.Header.StatusCode()), 10,
 		),
 	)
-	dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf, true)
+
+	dst.AppendHeaderField(hp, hf, true)
 
 	res.Header.SetContentLength(len(res.Body()))
 	res.Header.VisitAll(func(k, v []byte) {
-		hf.SetBytes(http2.toLower(k), v)
-		dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf, false)
+		hf.SetBytes(http2.ToLower(k), v)
+		dst.AppendHeaderField(hp, hf, false)
 	})
 }

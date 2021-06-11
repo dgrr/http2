@@ -6,6 +6,8 @@ import (
 	"io"
 	"strconv"
 	"sync"
+
+	"github.com/dgrr/http2/http2utils"
 )
 
 const (
@@ -166,17 +168,17 @@ func (fr *Frame) DelFlag(f FrameFlags) {
 }
 
 func (fr *Frame) parseValues(header []byte) {
-	fr.length = bytesToUint24(header[:3])               // & (1<<24 - 1)    // 3
-	fr.kind = FrameType(header[3])                      // 1
-	fr.flags = FrameFlags(header[4])                    // 1
-	fr.stream = bytesToUint32(header[5:]) & (1<<31 - 1) // 4
+	fr.length = http2utils.BytesToUint24(header[:3])               // & (1<<24 - 1)    // 3
+	fr.kind = FrameType(header[3])                                 // 1
+	fr.flags = FrameFlags(header[4])                               // 1
+	fr.stream = http2utils.BytesToUint32(header[5:]) & (1<<31 - 1) // 4
 }
 
 func (fr *Frame) parseHeader(header []byte) {
-	uint24ToBytes(header[:3], fr.length) // 2
-	header[3] = byte(fr.kind)            // 1
-	header[4] = byte(fr.flags)           // 1
-	uint32ToBytes(header[5:], fr.stream) // 4
+	http2utils.Uint24ToBytes(header[:3], fr.length) // 2
+	header[3] = byte(fr.kind)                       // 1
+	header[4] = byte(fr.flags)                      // 1
+	http2utils.Uint32ToBytes(header[5:], fr.stream) // 4
 }
 
 // ReadFrom reads frame from Reader.
@@ -199,6 +201,7 @@ func (fr *Frame) readFrom(br *bufio.Reader, max uint32) (int64, error) {
 	if err != nil {
 		return -1, err
 	}
+
 	br.Discard(defaultFrameSize)
 
 	rn := int64(defaultFrameSize)
@@ -216,7 +219,7 @@ func (fr *Frame) readFrom(br *bufio.Reader, max uint32) (int64, error) {
 		}
 
 		var n int
-		fr.payload = resize(fr.payload, nn)
+		fr.payload = http2utils.Resize(fr.payload, nn)
 
 		n, err = io.ReadFull(br, fr.payload)
 		if n > 0 {

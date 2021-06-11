@@ -2,6 +2,8 @@ package http2
 
 import (
 	"sync"
+
+	"github.com/dgrr/http2/http2utils"
 )
 
 const FramePushPromise FrameType = 0x5
@@ -50,11 +52,15 @@ func (pp *PushPromise) Write(b []byte) (int, error) {
 
 // ReadFrame ...
 func (pp *PushPromise) ReadFrame(fr *Frame) (err error) {
-	payload := cutPadding(fr)
+	payload := fr.Payload()
+	if fr.HasFlag(FlagPadded) {
+		payload = http2utils.CutPadding(payload, fr.Len())
+	}
+
 	if len(fr.payload) < 4 {
 		err = ErrMissingBytes
 	} else {
-		pp.stream = bytesToUint32(payload) & (1<<31 - 1)
+		pp.stream = http2utils.BytesToUint32(payload) & (1<<31 - 1)
 		pp.header = append(pp.header, payload[4:]...)
 		pp.ended = fr.HasFlag(FlagEndHeaders)
 	}

@@ -2,6 +2,8 @@ package http2
 
 import (
 	"sync"
+
+	"github.com/dgrr/http2/http2utils"
 )
 
 const FrameGoAway FrameType = 0x7
@@ -82,8 +84,8 @@ func (ga *GoAway) ReadFrame(fr *Frame) (err error) {
 	if len(fr.payload) < 8 { // 8 is the min number of bytes
 		err = ErrMissingBytes
 	} else {
-		ga.code = bytesToUint32(fr.payload)
-		ga.code = bytesToUint32(fr.payload[4:])
+		ga.code = http2utils.BytesToUint32(fr.payload)
+		ga.code = http2utils.BytesToUint32(fr.payload[4:])
 		if len(fr.payload[8:]) > 0 {
 			ga.data = append(ga.data[:0], fr.payload[8:]...)
 		}
@@ -93,8 +95,8 @@ func (ga *GoAway) ReadFrame(fr *Frame) (err error) {
 
 // WriteFrame ...
 func (ga *GoAway) WriteFrame(fr *Frame) (err error) {
-	fr.payload = appendUint32Bytes(fr.payload[:0], ga.stream)
-	fr.payload = appendUint32Bytes(fr.payload[:4], ga.code)
+	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:0], ga.stream)
+	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:4], ga.code)
 	_, err = fr.AppendPayload(ga.data)
 	return
 }

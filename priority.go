@@ -2,6 +2,8 @@ package http2
 
 import (
 	"sync"
+
+	"github.com/dgrr/http2/http2utils"
 )
 
 const FramePriority FrameType = 0x2
@@ -32,7 +34,7 @@ func ReleasePriority(pry *Priority) {
 	priorityPool.Put(pry)
 }
 
-// Resets resets priority fields.
+// Reset resets priority fields.
 func (pry *Priority) Reset() {
 	pry.stream = 0
 	pry.weight = 0
@@ -69,7 +71,7 @@ func (pry *Priority) ReadFrame(fr *Frame) (err error) {
 	if len(fr.payload) < 5 {
 		err = ErrMissingBytes
 	} else {
-		pry.stream = bytesToUint32(fr.payload) & (1<<31 - 1)
+		pry.stream = http2utils.BytesToUint32(fr.payload) & (1<<31 - 1)
 		pry.weight = fr.payload[4]
 	}
 	return
@@ -78,6 +80,6 @@ func (pry *Priority) ReadFrame(fr *Frame) (err error) {
 // WriteFrame writes pry to the Freame. The Frame payload is resetted.
 func (pry *Priority) WriteFrame(fr *Frame) {
 	fr.SetType(FramePriority)
-	fr.payload = appendUint32Bytes(fr.payload[:0], pry.stream)
+	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:0], pry.stream)
 	fr.payload = append(fr.payload, pry.weight)
 }

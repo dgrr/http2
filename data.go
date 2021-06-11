@@ -2,6 +2,8 @@ package http2
 
 import (
 	"sync"
+
+	"github.com/dgrr/http2/http2utils"
 )
 
 const FrameData FrameType = 0x0
@@ -100,7 +102,10 @@ func (data *Data) Write(b []byte) (int, error) {
 //
 // This function does not reset the Frame.
 func (data *Data) ReadFrame(fr *Frame) (err error) {
-	payload := cutPadding(fr)
+	payload := fr.Payload()
+	if fr.HasFlag(FlagPadded) {
+		payload = http2utils.CutPadding(payload, fr.Len())
+	}
 
 	data.endStream = fr.HasFlag(FlagEndStream)
 	data.b = append(data.b[:0], payload...)
@@ -121,7 +126,7 @@ func (data *Data) WriteFrame(fr *Frame) {
 
 	if data.hasPadding {
 		fr.AddFlag(FlagPadded)
-		data.b = addPadding(data.b)
+		data.b = http2utils.AddPadding(data.b)
 	}
 
 	fr.SetPayload(data.b)

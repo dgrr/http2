@@ -2,6 +2,8 @@ package http2
 
 import (
 	"sync"
+
+	"github.com/dgrr/http2/http2utils"
 )
 
 const FrameWindowUpdate FrameType = 0x8
@@ -58,7 +60,7 @@ func (wu *WindowUpdate) ReadFrame(fr *Frame) error {
 		return ErrMissingBytes
 	}
 
-	wu.increment = bytesToUint32(fr.payload) & (1<<31 - 1)
+	wu.increment = http2utils.BytesToUint32(fr.payload) & (1<<31 - 1)
 
 	return nil
 }
@@ -66,6 +68,6 @@ func (wu *WindowUpdate) ReadFrame(fr *Frame) error {
 // WriteFrame ...
 func (wu *WindowUpdate) WriteFrame(fr *Frame) {
 	fr.kind = FrameWindowUpdate
-	fr.payload = appendUint32Bytes(fr.payload[:0], wu.increment)
+	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:0], wu.increment)
 	fr.length = 4
 }

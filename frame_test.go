@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"io"
 	"testing"
+
+	"github.com/dgrr/http2/http2utils"
 )
 
 const (
@@ -38,7 +40,7 @@ func TestFrameRead(t *testing.T) {
 	bf := bytes.NewBuffer(nil)
 	br := bufio.NewReader(bf)
 
-	uint24ToBytes(h[:3], uint32(len(testStr)))
+	http2utils.uint24ToBytes(h[:3], uint32(len(testStr)))
 
 	n, err := bf.Write(h[:9])
 	if err != nil {

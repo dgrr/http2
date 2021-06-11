@@ -2,6 +2,8 @@ package http2
 
 import (
 	"sync"
+
+	"github.com/dgrr/http2/http2utils"
 )
 
 const FrameResetStream FrameType = 0x3
@@ -61,13 +63,14 @@ func (rst *RstStream) ReadFrame(fr *Frame) error {
 		return ErrMissingBytes
 	}
 
-	rst.code = ErrorCode(bytesToUint32(fr.payload))
+	rst.code = ErrorCode(http2utils.BytesToUint32(fr.payload))
+
 	return nil
 }
 
 // WriteFrame ...
 func (rst *RstStream) WriteFrame(fr *Frame) {
 	fr.SetType(FrameResetStream)
-	fr.payload = appendUint32Bytes(fr.payload[:0], uint32(rst.code))
+	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:0], uint32(rst.code))
 	fr.length = 4
 }

@@ -94,10 +94,10 @@ func check(t *testing.T, slice []*HeaderField, i int, k, v string) {
 		t.Fatalf("fields len exceeded. %d <> %d", len(slice), i)
 	}
 	hf := slice[i]
-	if b2s(hf.key) != k {
+	if string(hf.key) != k {
 		t.Fatalf("unexpected key: %s<>%s", hf.key, k)
 	}
-	if b2s(hf.value) != v {
+	if string(hf.value) != v {
 		t.Fatalf("unexpected value: %s<>%s", hf.value, v)
 	}
 }

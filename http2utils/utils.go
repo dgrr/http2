@@ -1,37 +1,29 @@
-package http2
+package http2utils
 
 import (
 	"crypto/rand"
 	"fmt"
 	"reflect"
-	"sync"
 	"unsafe"
 
 	"github.com/valyala/fastrand"
 )
 
-// TODO: Needed?
-var bytePool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, 128)
-	},
-}
-
-func uint24ToBytes(b []byte, n uint32) {
+func Uint24ToBytes(b []byte, n uint32) {
 	_ = b[2] // bound checking
 	b[0] = byte(n >> 16)
 	b[1] = byte(n >> 8)
 	b[2] = byte(n)
 }
 
-func bytesToUint24(b []byte) uint32 {
+func BytesToUint24(b []byte) uint32 {
 	_ = b[2] // bound checking
 	return uint32(b[0])<<16 |
 		uint32(b[1])<<8 |
 		uint32(b[2])
 }
 
-func appendUint32Bytes(dst []byte, n uint32) []byte {
+func AppendUint32Bytes(dst []byte, n uint32) []byte {
 	dst = append(dst, byte(n>>24))
 	dst = append(dst, byte(n>>16))
 	dst = append(dst, byte(n>>8))
@@ -39,7 +31,7 @@ func appendUint32Bytes(dst []byte, n uint32) []byte {
 	return dst
 }
 
-func uint32ToBytes(b []byte, n uint32) {
+func Uint32ToBytes(b []byte, n uint32) {
 	_ = b[3] // bound checking
 	b[0] = byte(n >> 24)
 	b[1] = byte(n >> 16)
@@ -47,7 +39,7 @@ func uint32ToBytes(b []byte, n uint32) {
 	b[3] = byte(n)
 }
 
-func bytesToUint32(b []byte) uint32 {
+func BytesToUint32(b []byte) uint32 {
 	_ = b[3] // bound checking
 	n := uint32(b[0])<<24 |
 		uint32(b[1])<<16 |
@@ -56,7 +48,7 @@ func bytesToUint32(b []byte) uint32 {
 	return n
 }
 
-func equalsFold(a, b []byte) bool {
+func EqualsFold(a, b []byte) bool {
 	n := len(a)
 	if n != len(b) {
 		return false
@@ -70,7 +62,7 @@ func equalsFold(a, b []byte) bool {
 }
 
 // resize resizes b if neededLen is granther than cap(b)
-func resize(b []byte, neededLen int64) []byte {
+func Resize(b []byte, neededLen int64) []byte {
 	b = b[:cap(b)]
 	if n := neededLen - int64(len(b)); n > 0 {
 		b = append(b, make([]byte, n)...)
@@ -78,53 +70,44 @@ func resize(b []byte, neededLen int64) []byte {
 	return b[:neededLen]
 }
 
-// cutPadding cuts the padding if the frame has FlagPadded
+// CutPadding cuts the padding if the frame has FlagPadded
 // from the payload and returns the new payload as byte slice.
-func cutPadding(fr *Frame) []byte {
-	payload := fr.payload
-	if fr.HasFlag(FlagPadded) {
-		pad := uint32(payload[0])
-		if uint32(len(payload)) < fr.length-pad-1 {
-			panic(fmt.Sprintf("out of range: %d < %d", uint32(len(payload)), fr.length-pad-1)) // TODO: Change this panic...
-		}
-		payload = payload[1 : fr.length-pad]
+func CutPadding(payload []byte, length uint32) []byte {
+	pad := uint32(payload[0])
+	if uint32(len(payload)) < length-pad-1 {
+		panic(fmt.Sprintf("out of range: %d < %d", uint32(len(payload)), length-pad-1)) // TODO: Change this panic...
 	}
+
+	payload = payload[1 : length-pad]
 
 	return payload
 }
 
-func addPadding(b []byte) []byte {
+func AddPadding(b []byte) []byte {
 	n := int(fastrand.Uint32n(256-9)) + 9
 	nn := len(b)
-	b = resize(b, int64(nn+n))
+
+	b = Resize(b, int64(nn+n))
 	b = append(b[:1], b...)
+
 	b[0] = uint8(n)
+
 	rand.Read(b[nn+1 : nn+n])
 
 	return b
 }
 
-// copied from https://github.com/valyala/fasthttp
-
-// b2s converts byte slice to a string without memory allocation.
-// See https://groups.google.com/forum/#!msg/Golang-Nuts/ENgbUzYvCuU/90yGx7GUAgAJ .
-//
-// Note it may break if string and/or slice header will change
-// in the future go versions.
-func b2s(b []byte) string {
+func FastBytesToString(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
 }
 
-// s2b converts string to a byte slice without memory allocation.
-//
-// Note it may break if string and/or slice header will change
-// in the future go versions.
-func s2b(s string) []byte {
+func FastStringToBytes(s string) []byte {
 	sh := (*reflect.StringHeader)(unsafe.Pointer(&s))
 	bh := reflect.SliceHeader{
 		Data: sh.Data,
 		Len:  sh.Len,
 		Cap:  sh.Len,
 	}
+
 	return *(*[]byte)(unsafe.Pointer(&bh))
 }
