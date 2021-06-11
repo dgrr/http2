@@ -6,7 +6,9 @@ import (
 
 const FrameContinuation FrameType = 0x9
 
-// Continuation ...
+// Continuation represents the Continuation frame.
+//
+// Continuation frame can carry raw headers and/or the EndHeaders flag.
 //
 // https://tools.ietf.org/html/rfc7540#section-6.10
 type Continuation struct {
@@ -62,12 +64,12 @@ func (c *Continuation) SetHeader(b []byte) {
 	c.rawHeaders = append(c.rawHeaders[:0], b...)
 }
 
-// AppendHeader ...
+// AppendHeader appends the contents of `b` into the header.
 func (c *Continuation) AppendHeader(b []byte) {
 	c.rawHeaders = append(c.rawHeaders, b...)
 }
 
-// Write ...
+// Write writes `b` into the header. Write is equivalent to AppendHeader.
 func (c *Continuation) Write(b []byte) (int, error) {
 	n := len(b)
 	c.AppendHeader(b)
@@ -81,7 +83,7 @@ func (c *Continuation) ReadFrame(fr *Frame) (err error) {
 	return
 }
 
-// WriteFrame ...
+// WriteFrame writes the continuation frame into `fr`.
 func (c *Continuation) WriteFrame(fr *Frame) error {
 	fr.SetType(FrameContinuation)
 	if c.endHeaders {

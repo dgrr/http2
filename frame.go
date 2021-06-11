@@ -50,6 +50,7 @@ func (ft FrameType) String() string {
 	case FrameContinuation:
 		return "FrameContinuation"
 	}
+
 	return strconv.Itoa(int(ft))
 }
 
@@ -111,6 +112,7 @@ func (fr *Frame) Type() FrameType {
 	return fr.kind
 }
 
+// Flags ...
 func (fr *Frame) Flags() FrameFlags {
 	return fr.flags
 }

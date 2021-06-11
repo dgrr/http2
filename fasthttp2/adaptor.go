@@ -1,17 +1,18 @@
-package http2
+package fasthttp2
 
 import (
 	"bytes"
 	"strconv"
 
+	"github.com/dgrr/http2"
 	"github.com/valyala/fasthttp"
 )
 
-func fasthttpRequestHeaders(hf *HeaderField, req *fasthttp.Request) {
+func fasthttpRequestHeaders(hf *http2.HeaderField, req *fasthttp.Request) {
 	k, v := hf.KeyBytes(), hf.ValueBytes()
 	if !hf.IsPseudo() &&
-		!(bytes.Equal(k, strUserAgent) ||
-			bytes.Equal(k, strContentType)) {
+		!(bytes.Equal(k, http2.StringUserAgent) ||
+			bytes.Equal(k, http2.StringContentType)) {
 		req.Header.AddBytesKV(k, v)
 		return
 	}
@@ -37,11 +38,11 @@ func fasthttpRequestHeaders(hf *HeaderField, req *fasthttp.Request) {
 	}
 }
 
-func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
-	hf := AcquireHeaderField()
-	defer ReleaseHeaderField(hf)
+func fasthttpResponseHeaders(dst *http2.Headers, hp *http2.HPACK, res *fasthttp.Response) {
+	hf := http2.AcquireHeaderField()
+	defer http2.ReleaseHeaderField(hf)
 
-	hf.SetKeyBytes(strStatus)
+	hf.SetKeyBytes(http2.StringStatus)
 	hf.SetValue(
 		strconv.FormatInt(
 			int64(res.Header.StatusCode()), 10,
@@ -51,7 +52,7 @@ func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
 
 	res.Header.SetContentLength(len(res.Body()))
 	res.Header.VisitAll(func(k, v []byte) {
-		hf.SetBytes(toLower(k), v)
+		hf.SetBytes(http2.toLower(k), v)
 		dst.rawHeaders = hp.AppendHeader(dst.rawHeaders, hf, false)
 	})
 }

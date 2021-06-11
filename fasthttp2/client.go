@@ -1,21 +1,25 @@
-package http2
+package fasthttp2
 
 import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
-	"reflect"
 	"strconv"
 	"sync"
 	"time"
-	"unsafe"
 
+	"github.com/dgrr/http2"
 	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
+)
+
+var (
+	ErrServerSupport = errors.New("server doesn't support HTTP/2")
 )
 
 type clientPool struct {
@@ -50,7 +54,7 @@ type ClientStream struct {
 	id    uint32
 	state StreamState
 
-	writer chan<- *Frame
+	writer chan<- *http2.Frame
 	reader chan *Frame
 	err    chan error
 }
@@ -96,7 +100,7 @@ type Client struct {
 
 	enableCompression bool
 
-	strms  sync.Map
+	strms sync.Map
 }
 
 func (c *Client) Reset(conn net.Conn) {
@@ -119,34 +123,12 @@ func NewClient() *Client {
 	}
 }
 
-func chanIsClosed(ch interface{}) bool {
-	if reflect.TypeOf(ch).Kind() != reflect.Chan {
-		panic("interface is not a channel")
-	}
-
-	cptr := *(*uintptr)(unsafe.Pointer(
-		unsafe.Pointer(uintptr(unsafe.Pointer(&ch)) + unsafe.Sizeof(uint(0))),
-	))
-
-	// from https://github.com/golang/go/blob/master/src/runtime/chan.go
-
-	cptr += unsafe.Sizeof(uint(0)) * 2
-	cptr += unsafe.Sizeof(unsafe.Pointer(uintptr(0)))
-	cptr += unsafe.Sizeof(uint16(0))
-
-	return *(*uint32)(unsafe.Pointer(cptr)) > 0
-}
-
 // TODO: Fix a leak that happens when a request still processing but the server is closing.
 func (c *Client) Close() error {
 	c.lck.Lock()
 	if c.c == nil {
 		c.lck.Unlock()
 		return nil
-	}
-
-	if !chanIsClosed(c.writer) {
-		close(c.writer)
 	}
 
 	err := c.c.Close()
@@ -217,7 +199,7 @@ func (c *Client) Dial(addr string, tlsConfig *tls.Config) error {
 
 	state := conn.ConnectionState()
 	if p := state.NegotiatedProtocol; p != "h2" {
-		return fmt.Errorf("server doesn't support HTTP/2. Proto %s <> h2", p)
+		return ErrServerSupport
 	}
 
 	c.Reset(conn)
@@ -230,8 +212,6 @@ func (c *Client) Dial(addr string, tlsConfig *tls.Config) error {
 
 	go c.readLoop()
 	go c.writeLoop()
-
-	c.writeWindowUpdate(c.st.MaxWindowSize())
 
 	return nil
 }
@@ -248,7 +228,7 @@ func (c *Client) Handshake() error {
 	fr := AcquireFrame()
 	defer ReleaseFrame(fr)
 
-	c.st.SetMaxWindowSize(1 << 22)
+	c.st.SetMaxWindowSize(1 << 16)
 	c.st.WriteFrame(fr)
 
 	_, err = fr.WriteTo(c.bw)

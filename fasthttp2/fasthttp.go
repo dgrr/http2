@@ -1,6 +1,4 @@
-// +build fasthttp
-
-package http2
+package fasthttp2
 
 import (
 	"github.com/valyala/fasthttp"
