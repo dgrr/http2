@@ -11,10 +11,9 @@ import (
 const (
 	// FrameHeader default size
 	// http://httpwg.org/specs/rfc7540.html#FrameHeader
-	defaultFrameSize = 9
+	DefaultFrameSize = 9
 	// https://httpwg.org/specs/rfc7540.html#SETTINGS_MAX_FRAME_SIZE
 	defaultMaxLen = 1 << 14
-	maxPayloadLen = 1<<24 - 1 // this value cannot be exceeded because of the length frame field.
 
 	// Frame Flag (described along the frame types)
 	// More flags have been ignored due to redundancy
@@ -50,7 +49,7 @@ type FrameHeader struct {
 
 	maxLen uint32
 
-	rawHeader [defaultFrameSize]byte
+	rawHeader [DefaultFrameSize]byte
 	payload   []byte
 
 	fr Frame
@@ -65,6 +64,7 @@ func AcquireFrameHeader() *FrameHeader {
 
 // ReleaseFrameHeader reset and puts fr to the pool.
 func ReleaseFrameHeader(fr *FrameHeader) {
+	ReleaseFrame(fr.Body())
 	frameHeaderPool.Put(fr)
 }
 
@@ -116,17 +116,17 @@ func (frh *FrameHeader) MaxLen() uint32 {
 }
 
 func (frh *FrameHeader) parseValues(header []byte) {
-	frh.length = http2utils.BytesToUint24(header[:3])               // & (1<<24 - 1)    // 3
+	frh.length = int(http2utils.BytesToUint24(header[:3]))          // & (1<<24 - 1)    // 3
 	frh.kind = FrameType(header[3])                                 // 1
 	frh.flags = FrameFlags(header[4])                               // 1
 	frh.stream = http2utils.BytesToUint32(header[5:]) & (1<<31 - 1) // 4
 }
 
 func (frh *FrameHeader) parseHeader(header []byte) {
-	http2utils.Uint24ToBytes(header[:3], frh.length) // 2
-	header[3] = byte(frh.kind)                       // 1
-	header[4] = byte(frh.flags)                      // 1
-	http2utils.Uint32ToBytes(header[5:], frh.stream) // 4
+	http2utils.Uint24ToBytes(header[:3], uint32(frh.length)) // 2
+	header[3] = byte(frh.kind)                               // 1
+	header[4] = byte(frh.flags)                              // 1
+	http2utils.Uint32ToBytes(header[5:], frh.stream)         // 4
 }
 
 // ReadFrameFrom ...
@@ -135,7 +135,12 @@ func ReadFrameFrom(br *bufio.Reader) (*FrameHeader, error) {
 
 	_, err := fr.ReadFrom(br)
 	if err != nil {
-		ReleaseFrameHeader(fr)
+		if fr.Body() != nil {
+			ReleaseFrameHeader(fr)
+		} else {
+			frameHeaderPool.Put(fr)
+		}
+
 		fr = nil
 	}
 
@@ -158,42 +163,36 @@ func (frh *FrameHeader) ReadFromLimitPayload(br *bufio.Reader, max uint32) (int6
 
 // TODO: Delete rb?
 func (frh *FrameHeader) readFrom(br *bufio.Reader, max uint32) (int64, error) {
-	header, err := br.Peek(defaultFrameSize)
+	header, err := br.Peek(DefaultFrameSize)
 	if err != nil {
 		return -1, err
 	}
 
-	br.Discard(defaultFrameSize)
+	br.Discard(DefaultFrameSize)
 
-	rn := int64(defaultFrameSize)
+	rn := int64(DefaultFrameSize)
 
 	// Parsing FrameHeader's Header field.
 	frh.parseValues(header)
+
+	frh.fr = AcquireFrame(frh.kind)
 
 	// if max > 0 && frh.length > max {
 	// TODO: Discard bytes and return an error
 	if frh.length > 0 {
 		// uint32 should be extended to int64.
-		n := int(frh.length)
+		n := frh.length
 		if n < 0 {
-			panic(fmt.Sprintf("length is lower than 0 (%d). Overflow? (%d)", n, frh.length))
+			panic(fmt.Sprintf("length is less than 0 (%d). Overflow? (%d)", n, frh.length))
 		}
 
-		data, errn := br.Peek(n)
-		if errn != nil {
-			return 0, errn
-		}
+		frh.payload = http2utils.Resize(frh.payload, n)
 
-		br.Discard(len(data))
-		n += len(data)
-
-		frh.payload = append(frh.payload[:0], data...)
-		frh.fr = AcquireFrame(frh.kind)
-
-		err = frh.fr.Deserialize(frh)
+		n, err = br.Read(frh.payload)
+		rn += int64(n)
 	}
 
-	return rn, err
+	return rn, frh.fr.Deserialize(frh)
 }
 
 // WriteTo writes frame to the Writer.
@@ -202,6 +201,7 @@ func (frh *FrameHeader) readFrom(br *bufio.Reader, max uint32) (int64, error) {
 func (frh *FrameHeader) WriteTo(w *bufio.Writer) (wb int64, err error) {
 	frh.fr.Serialize(frh)
 
+	frh.length = len(frh.payload)
 	frh.parseHeader(frh.rawHeader[:])
 
 	n, err := w.Write(frh.rawHeader[:])
@@ -225,7 +225,7 @@ func (frh *FrameHeader) SetBody(fr Frame) {
 		panic("Body cannot be nil")
 	}
 
-	frh.kind = frh.fr.Type()
+	frh.kind = fr.Type()
 	frh.fr = fr
 }
 

@@ -9,18 +9,18 @@ import (
 	"github.com/valyala/fastrand"
 )
 
-func Uint24ToBytes(b []byte, n int) {
+func Uint24ToBytes(b []byte, n uint32) {
 	_ = b[2] // bound checking
 	b[0] = byte(n >> 16)
 	b[1] = byte(n >> 8)
 	b[2] = byte(n)
 }
 
-func BytesToUint24(b []byte) int {
+func BytesToUint24(b []byte) uint32 {
 	_ = b[2] // bound checking
-	return int(b[0])<<16 |
-		int(b[1])<<8 |
-		int(b[2])
+	return uint32(b[0])<<16 |
+		uint32(b[1])<<8 |
+		uint32(b[2])
 }
 
 func AppendUint32Bytes(dst []byte, n uint32) []byte {
@@ -61,12 +61,13 @@ func EqualsFold(a, b []byte) bool {
 	return true
 }
 
-// resize resizes b if neededLen is granther than cap(b)
-func Resize(b []byte, neededLen int64) []byte {
+func Resize(b []byte, neededLen int) []byte {
 	b = b[:cap(b)]
-	if n := neededLen - int64(len(b)); n > 0 {
+
+	if n := neededLen - len(b); n > 0 {
 		b = append(b, make([]byte, n)...)
 	}
+
 	return b[:neededLen]
 }
 
@@ -88,7 +89,7 @@ func AddPadding(b []byte) []byte {
 	n := int(fastrand.Uint32n(256-9)) + 9
 	nn := len(b)
 
-	b = Resize(b, int64(nn+n))
+	b = Resize(b, nn+n)
 	b = append(b[:1], b...)
 
 	b[0] = uint8(n)

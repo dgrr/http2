@@ -27,6 +27,10 @@ const (
 	HTTP11Required       ErrorCode = 0xd
 )
 
+func (e ErrorCode) Error() string {
+	return errParser[e]
+}
+
 type Error struct {
 	err string
 	msg string

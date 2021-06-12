@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dgrr/http2"
+	"github.com/dgrr/http2/fasthttp2"
 	"github.com/valyala/fasthttp"
 )
 
@@ -16,7 +16,8 @@ func main() {
 		Addr:  "api.binance.com:443",
 		IsTLS: true,
 	}
-	if err := http2.ConfigureClient(c, http2.OptionEnableCompression); err != nil {
+
+	if err := fasthttp2.ConfigureClient(c); err != nil {
 		panic(err)
 	}
 
