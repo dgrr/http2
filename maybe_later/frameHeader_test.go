@@ -1,4 +1,4 @@
-package http2
+package maybe_later
 
 import (
 	"bufio"
@@ -6,6 +6,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/dgrr/http2"
 	"github.com/dgrr/http2/http2utils"
 )
 
@@ -14,8 +15,9 @@ const (
 )
 
 func TestFrameWrite(t *testing.T) {
-	fr := AcquireFrame()
-	defer ReleaseFrame(fr)
+	fr := http2.AcquireFrameHeader()
+	defer http2.ReleaseFrameHeader(fr)
+
 	n, err := io.WriteString(fr, testStr)
 	if err != nil {
 		t.Fatal(err)
@@ -58,8 +60,8 @@ func TestFrameRead(t *testing.T) {
 		t.Fatalf("unexpected written bytes %d<>%d", n, len(testStr))
 	}
 
-	fr := AcquireFrame()
-	defer ReleaseFrame(fr)
+	fr := http2.AcquireFrame()
+	defer http2.ReleaseFrame(fr)
 
 	nn, err := fr.ReadFrom(br)
 	if err != nil {

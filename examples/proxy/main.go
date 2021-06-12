@@ -116,7 +116,7 @@ func readFramesFrom(c, c2 net.Conn, primaryIsProxy bool) {
 	}
 }
 
-func debugFrame(c net.Conn, fr *fasthttp2.Frame, symbol byte) {
+func debugFrame(c net.Conn, fr *fasthttp2.FrameHeader, symbol byte) {
 	bf := bytes.NewBuffer(nil)
 
 	fmt.Fprintf(bf, "%c %d - %s\n", symbol, fr.Stream(), c.RemoteAddr())

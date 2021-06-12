@@ -1,12 +1,12 @@
 package http2
 
 import (
-	"sync"
-
 	"github.com/dgrr/http2/http2utils"
 )
 
 const FrameGoAway FrameType = 0x7
+
+var _ Frame = &GoAway{}
 
 // GoAway ...
 //
@@ -17,21 +17,8 @@ type GoAway struct {
 	data   []byte // additional data
 }
 
-var goawayPool = sync.Pool{
-	New: func() interface{} {
-		return &GoAway{}
-	},
-}
-
-// AcquireGoAway ...
-func AcquireGoAway() *GoAway {
-	return goawayPool.Get().(*GoAway)
-}
-
-// ReleaseGoAway ...
-func ReleaseGoAway(ga *GoAway) {
-	ga.Reset()
-	goawayPool.Put(ga)
+func (ga *GoAway) Type() FrameType {
+	return FrameGoAway
 }
 
 // Reset ...
@@ -80,23 +67,24 @@ func (ga *GoAway) SetData(b []byte) {
 }
 
 // ReadFrame ...
-func (ga *GoAway) ReadFrame(fr *Frame) (err error) {
+func (ga *GoAway) Deserialize(fr *FrameHeader) (err error) {
 	if len(fr.payload) < 8 { // 8 is the min number of bytes
 		err = ErrMissingBytes
 	} else {
 		ga.code = http2utils.BytesToUint32(fr.payload)
 		ga.code = http2utils.BytesToUint32(fr.payload[4:])
+
 		if len(fr.payload[8:]) > 0 {
 			ga.data = append(ga.data[:0], fr.payload[8:]...)
 		}
 	}
+
 	return
 }
 
-// WriteFrame ...
-func (ga *GoAway) WriteFrame(fr *Frame) (err error) {
+func (ga *GoAway) Serialize(fr *FrameHeader) {
 	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:0], ga.stream)
 	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:4], ga.code)
-	_, err = fr.AppendPayload(ga.data)
-	return
+
+	fr.payload = append(fr.payload, ga.data...)
 }

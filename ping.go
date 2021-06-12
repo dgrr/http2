@@ -1,10 +1,8 @@
 package http2
 
-import (
-	"sync"
-)
-
 const FramePing FrameType = 0x6
+
+var _ Frame = &Ping{}
 
 // Ping ...
 //
@@ -14,21 +12,8 @@ type Ping struct {
 	data [8]byte
 }
 
-var pingPool = sync.Pool{
-	New: func() interface{} {
-		return &Ping{}
-	},
-}
-
-// AcquirePing ...
-func AcquirePing() *Ping {
-	return pingPool.Get().(*Ping)
-}
-
-// ReleasePing ...
-func ReleasePing(pp *Ping) {
-	pp.Reset()
-	pingPool.Put(pp)
+func (ping *Ping) Type() FrameType {
+	return FramePing
 }
 
 // Reset ...
@@ -52,10 +37,10 @@ func (ping *Ping) SetData(b []byte) {
 	copy(ping.data[:], b)
 }
 
-// ReadFrame ...
-func (ping *Ping) ReadFrame(fr *Frame) error {
-	ping.ack = fr.HasFlag(FlagAck)
-	ping.SetData(fr.payload)
+// Deserialize ...
+func (ping *Ping) Deserialize(frh *FrameHeader) error {
+	ping.ack = frh.Flags().Has(FlagAck)
+	ping.SetData(frh.payload)
 	return nil
 }
 
@@ -63,13 +48,11 @@ func (ping *Ping) Data() []byte {
 	return ping.data[:]
 }
 
-// WriteFrame ...
-func (ping *Ping) WriteFrame(fr *Frame) error {
-	fr.SetType(FramePing)
+// Serialize ...
+func (ping *Ping) Serialize(fr *FrameHeader) {
 	if ping.ack {
-		fr.AddFlag(FlagAck)
+		fr.SetFlags(fr.Flags().Add(FlagAck))
 	}
-	fr.SetPayload(ping.data[:])
 
-	return nil
+	fr.setPayload(ping.data[:])
 }

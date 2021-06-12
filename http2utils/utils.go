@@ -9,18 +9,18 @@ import (
 	"github.com/valyala/fastrand"
 )
 
-func Uint24ToBytes(b []byte, n uint32) {
+func Uint24ToBytes(b []byte, n int) {
 	_ = b[2] // bound checking
 	b[0] = byte(n >> 16)
 	b[1] = byte(n >> 8)
 	b[2] = byte(n)
 }
 
-func BytesToUint24(b []byte) uint32 {
+func BytesToUint24(b []byte) int {
 	_ = b[2] // bound checking
-	return uint32(b[0])<<16 |
-		uint32(b[1])<<8 |
-		uint32(b[2])
+	return int(b[0])<<16 |
+		int(b[1])<<8 |
+		int(b[2])
 }
 
 func AppendUint32Bytes(dst []byte, n uint32) []byte {
@@ -72,9 +72,10 @@ func Resize(b []byte, neededLen int64) []byte {
 
 // CutPadding cuts the padding if the frame has FlagPadded
 // from the payload and returns the new payload as byte slice.
-func CutPadding(payload []byte, length uint32) []byte {
-	pad := uint32(payload[0])
-	if uint32(len(payload)) < length-pad-1 {
+func CutPadding(payload []byte, length int) []byte {
+	pad := int(payload[0])
+
+	if len(payload) < length-pad-1 {
 		panic(fmt.Sprintf("out of range: %d < %d", uint32(len(payload)), length-pad-1)) // TODO: Change this panic...
 	}
 

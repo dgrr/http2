@@ -1,10 +1,12 @@
 package http2
 
-import (
-	"sync"
-)
-
 const FrameContinuation FrameType = 0x9
+
+var _ Frame = &Continuation{}
+
+func (c *Continuation) Type() FrameType {
+	return FrameContinuation
+}
 
 // Continuation represents the Continuation frame.
 //
@@ -14,23 +16,6 @@ const FrameContinuation FrameType = 0x9
 type Continuation struct {
 	endHeaders bool
 	rawHeaders []byte
-}
-
-var continuationPool = sync.Pool{
-	New: func() interface{} {
-		return &Continuation{}
-	},
-}
-
-// AcquireContinuation ...
-func AcquireContinuation() *Continuation {
-	return continuationPool.Get().(*Continuation)
-}
-
-// ReleaseContinuation ...
-func ReleaseContinuation(c *Continuation) {
-	c.Reset()
-	continuationPool.Put(c)
 }
 
 // Reset ...
@@ -54,7 +39,6 @@ func (c *Continuation) SetEndHeaders(value bool) {
 	c.endHeaders = value
 }
 
-// HasEndHeaders ...
 func (c *Continuation) EndHeaders() bool {
 	return c.endHeaders
 }
@@ -76,18 +60,18 @@ func (c *Continuation) Write(b []byte) (int, error) {
 	return n, nil
 }
 
-// ReadFrame reads decodes fr payload into c.
-func (c *Continuation) ReadFrame(fr *Frame) (err error) {
-	c.endHeaders = fr.HasFlag(FlagEndHeaders)
+func (c *Continuation) Deserialize(fr *FrameHeader) error {
+	c.endHeaders = fr.Flags().Has(FlagEndHeaders)
 	c.SetHeader(fr.payload)
-	return
+
+	return nil
 }
 
-// WriteFrame writes the continuation frame into `fr`.
-func (c *Continuation) WriteFrame(fr *Frame) error {
-	fr.SetType(FrameContinuation)
+func (c *Continuation) Serialize(fr *FrameHeader) {
 	if c.endHeaders {
-		fr.AddFlag(FlagEndHeaders)
+		fr.SetFlags(
+			fr.Flags().Add(FlagEndHeaders))
 	}
-	return fr.SetPayload(c.rawHeaders)
+
+	fr.setPayload(c.rawHeaders)
 }

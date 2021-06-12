@@ -54,7 +54,7 @@ func (wu *WindowUpdate) SetIncrement(increment uint32) {
 }
 
 // ReadFrame ...
-func (wu *WindowUpdate) ReadFrame(fr *Frame) error {
+func (wu *WindowUpdate) ReadFrame(fr *FrameHeader) error {
 	if len(fr.payload) < 4 {
 		wu.increment = 0
 		return ErrMissingBytes
@@ -66,7 +66,7 @@ func (wu *WindowUpdate) ReadFrame(fr *Frame) error {
 }
 
 // WriteFrame ...
-func (wu *WindowUpdate) WriteFrame(fr *Frame) {
+func (wu *WindowUpdate) WriteFrame(fr *FrameHeader) {
 	fr.kind = FrameWindowUpdate
 	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:0], wu.increment)
 	fr.length = 4

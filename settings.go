@@ -1,10 +1,8 @@
 package http2
 
-import (
-	"sync"
-)
-
 const FrameSettings FrameType = 0x4
+
+var _ Frame = &Settings{}
 
 const (
 	// default Settings parameters
@@ -41,22 +39,8 @@ type Settings struct {
 	headerSize  uint32
 }
 
-var settingsPool = sync.Pool{
-	New: func() interface{} {
-		return &Settings{}
-	},
-}
-
-// AcquireSettings gets a Settings object from the pool with default values.
-func AcquireSettings() *Settings {
-	st := settingsPool.Get().(*Settings)
-	st.Reset()
-	return st
-}
-
-// ReleaseSettings puts st into settings pool to be reused in the future.
-func ReleaseSettings(st *Settings) {
-	settingsPool.Put(st)
+func (st *Settings) Type() FrameType {
+	return FrameSettings
 }
 
 // Reset resets settings to default values
@@ -194,7 +178,9 @@ func (st *Settings) Read(d []byte) { // TODO: return error?
 	var b []byte
 	var key uint16
 	var value uint32
+
 	last, i, n := 0, 6, len(d)
+
 	for i <= n {
 		b = d[last:i]
 		key = uint16(b[0])<<8 | uint16(b[1])
@@ -214,6 +200,7 @@ func (st *Settings) Read(d []byte) { // TODO: return error?
 		case MaxHeaderListSize:
 			st.headerSize = value
 		}
+
 		last = i
 		i += 6
 	}
@@ -222,6 +209,7 @@ func (st *Settings) Read(d []byte) { // TODO: return error?
 // Encode encodes settings to be sent through the wire
 func (st *Settings) Encode() {
 	st.rawSettings = st.rawSettings[:0]
+
 	if st.tableSize != 0 {
 		st.rawSettings = append(st.rawSettings,
 			byte(HeaderTableSize>>8), byte(HeaderTableSize),
@@ -229,12 +217,14 @@ func (st *Settings) Encode() {
 			byte(st.tableSize>>8), byte(st.tableSize),
 		)
 	}
+
 	if st.enablePush {
 		st.rawSettings = append(st.rawSettings,
 			byte(EnablePush>>8), byte(EnablePush),
 			0, 0, 0, 1,
 		)
 	}
+
 	if st.maxStreams != 0 {
 		st.rawSettings = append(st.rawSettings,
 			byte(MaxConcurrentStreams>>8), byte(MaxConcurrentStreams),
@@ -242,6 +232,7 @@ func (st *Settings) Encode() {
 			byte(st.maxStreams>>8), byte(st.maxStreams),
 		)
 	}
+
 	if st.windowSize != 0 {
 		st.rawSettings = append(st.rawSettings,
 			byte(MaxWindowSize>>8), byte(MaxWindowSize),
@@ -249,6 +240,7 @@ func (st *Settings) Encode() {
 			byte(st.windowSize>>8), byte(st.windowSize),
 		)
 	}
+
 	if st.frameSize != 0 {
 		st.rawSettings = append(st.rawSettings,
 			byte(MaxFrameSize>>8), byte(MaxFrameSize),
@@ -256,6 +248,7 @@ func (st *Settings) Encode() {
 			byte(st.frameSize>>8), byte(st.frameSize),
 		)
 	}
+
 	if st.headerSize != 0 {
 		st.rawSettings = append(st.rawSettings,
 			byte(MaxHeaderListSize>>8), byte(MaxHeaderListSize),
@@ -275,24 +268,22 @@ func (st *Settings) SetAck(ack bool) {
 	st.ack = ack
 }
 
-// ReadFrame reads and decodes frame payload into st values
-func (st *Settings) ReadFrame(fr *Frame) error {
-	st.ack = fr.HasFlag(FlagAck)
-	st.Read(fr.Payload()) // TODO: return error?
+func (st *Settings) Deserialize(fr *FrameHeader) error {
+	st.ack = fr.Flags().Has(FlagAck)
+	st.Read(fr.payload) // TODO: return error?
+
 	return nil
 }
 
-// WriteFrame writes the settings frame into the frame payload
-func (st *Settings) WriteFrame(fr *Frame) error {
-	fr.SetType(FrameSettings)
-
+func (st *Settings) Serialize(fr *FrameHeader) {
 	if st.ack { // ACK should be empty
-		fr.AddFlag(FlagAck)
-		fr.SetPayload(nil)
-		return nil
+		fr.SetFlags(
+			fr.Flags().Add(FlagAck))
+
+		fr.payload = fr.payload[:0]
+	} else {
+		st.Encode()
+
+		fr.setPayload(st.rawSettings)
 	}
-
-	st.Encode()
-
-	return fr.SetPayload(st.rawSettings)
 }

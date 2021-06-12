@@ -1,12 +1,12 @@
 package http2
 
 import (
-	"sync"
-
 	"github.com/dgrr/http2/http2utils"
 )
 
 const FrameResetStream FrameType = 0x3
+
+var _ Frame = &RstStream{}
 
 // RstStream ...
 //
@@ -15,21 +15,8 @@ type RstStream struct {
 	code ErrorCode
 }
 
-var rstStreamPool = sync.Pool{
-	New: func() interface{} {
-		return &RstStream{}
-	},
-}
-
-// AcquireRstStream ...
-func AcquireRstStream() *RstStream {
-	return rstStreamPool.Get().(*RstStream)
-}
-
-// ReleaseRstStream ...
-func ReleaseRstStream(rst *RstStream) {
-	rst.Reset()
-	rstStreamPool.Put(rst)
+func (rst *RstStream) Type() FrameType {
+	return FrameResetStream
 }
 
 // Code ...
@@ -58,7 +45,7 @@ func (rst *RstStream) Error() error {
 }
 
 // ReadFrame ...
-func (rst *RstStream) ReadFrame(fr *Frame) error {
+func (rst *RstStream) Deserialize(fr *FrameHeader) error {
 	if len(fr.payload) < 4 {
 		return ErrMissingBytes
 	}
@@ -69,8 +56,7 @@ func (rst *RstStream) ReadFrame(fr *Frame) error {
 }
 
 // WriteFrame ...
-func (rst *RstStream) WriteFrame(fr *Frame) {
-	fr.SetType(FrameResetStream)
+func (rst *RstStream) Serialize(fr *FrameHeader) {
 	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:0], uint32(rst.code))
 	fr.length = 4
 }
