@@ -13,14 +13,21 @@ var (
 	ErrServerSupport = errors.New("server doesn't support HTTP/2")
 )
 
+// Adaptor ...
 type Adaptor interface {
-	SerializeRequest(strm *Stream, enc *HPACK, writer chan<- *FrameHeader)
-	DeserializeResponse(fr *FrameHeader, dec *HPACK) error
+	// Write ...
+	Write(uint32, *HPACK, chan<- *FrameHeader)
+	// Read ...
+	Read(fr *FrameHeader, dec *HPACK) error
+	// AppendBody ...
 	AppendBody(body []byte)
+	// Error ...
 	Error(err error)
+	// Close ...
 	Close()
 }
 
+// Client ...
 type Client struct {
 	c net.Conn
 
@@ -85,7 +92,14 @@ func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
 		nextID: 1,
 	}
 
-	if err := cl.Handshake(); err != nil {
+	cl.maxWindow = 1 << 20
+	cl.currentWindow = cl.maxWindow
+
+	// TODO: Make an option
+	cl.st.SetMaxWindowSize(1 << 16) // 65536
+	cl.st.SetPush(false)            // do not support push promises
+
+	if err := Handshake(cl.bw, &cl.st, cl.maxWindow); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -94,38 +108,41 @@ func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
 	go cl.writeLoop()
 	go cl.handleStreams()
 
-	cl.maxWindow = 1 << 20
-	cl.currentWindow = cl.maxWindow
-	cl.updateWindow(0, int(cl.maxWindow))
+	updateWindow(0, int(cl.maxWindow), cl.writer)
 
 	return cl, nil
 }
 
-func (c *Client) Handshake() error {
-	err := WritePreface(c.bw)
+func Handshake(bw *bufio.Writer, st *Settings, maxWin int32) error {
+	err := WritePreface(bw)
 	if err == nil {
-		err = c.bw.Flush()
+		err = bw.Flush()
 	}
 
 	if err != nil {
 		return err
 	}
 
-	// TODO: Make an option
-	c.st.SetMaxWindowSize(1 << 16) // 65536
-	c.st.SetPush(false)            // do not support push promises
-
 	fr := AcquireFrameHeader()
 	defer ReleaseFrameHeader(fr)
 
-	fr.SetBody(&c.st)
+	fr.SetBody(st)
 
-	_, err = fr.WriteTo(c.bw)
+	_, err = fr.WriteTo(bw)
 	if err == nil {
-		err = c.bw.Flush()
+		fr = AcquireFrameHeader()
+		wu := AcquireFrame(FrameWindowUpdate).(*WindowUpdate)
+		wu.SetIncrement(int(maxWin))
+
+		fr.SetBody(wu)
+
+		_, err = fr.WriteTo(bw)
+		if err == nil {
+			err = bw.Flush()
+		}
 	}
 
-	return nil
+	return err
 }
 
 func (c *Client) Register(adaptr Adaptor) {
@@ -176,11 +193,14 @@ func (c *Client) readLoop() {
 	}
 }
 
-func (c *Client) handleState(fr *FrameHeader, strm *Stream) {
+func handleState(fr *FrameHeader, strm *Stream) {
 	switch strm.State() {
 	case StreamStateIdle:
 		if fr.Type() == FrameHeaders {
 			strm.SetState(StreamStateOpen)
+			if fr.Flags().Has(FlagEndStream) {
+				strm.SetState(StreamStateHalfClosed)
+			}
 		} // TODO: else push promise ...
 	case StreamStateReserved:
 		// TODO: ...
@@ -201,6 +221,8 @@ func (c *Client) handleState(fr *FrameHeader, strm *Stream) {
 func (c *Client) writeLoop() {
 	ticker := time.NewTicker(time.Second * 3)
 	defer ticker.Stop()
+
+	// TODO: implement window logic
 
 loop:
 	for {
@@ -249,7 +271,7 @@ func (c *Client) handleStreams() {
 
 			c.nextID += 2
 
-			adpt.SerializeRequest(strm, c.enc, c.writer)
+			adpt.Write(strm.ID(), c.enc, c.writer)
 
 			// https://datatracker.ietf.org/doc/html/rfc7540#section-8.1
 			// writing the headers and/or the data makes the stream to become half-closed
@@ -272,16 +294,16 @@ func (c *Client) handleStreams() {
 
 			switch fr.Type() {
 			case FrameHeaders, FrameContinuation:
-				err := adapt.DeserializeResponse(fr, c.dec)
+				err := adapt.Read(fr, c.dec)
 				if err != nil {
-					c.writeError(strm, err)
+					writeError(strm, err, c.writer)
 				}
 			case FrameData:
 				data := fr.Body().(*Data)
 				if data.Len() > 0 {
 					adapt.AppendBody(data.Data())
 
-					c.updateWindow(fr.Stream(), fr.Len())
+					updateWindow(fr.Stream(), fr.Len(), c.writer)
 				}
 
 				myWin := atomic.LoadInt32(&c.currentWindow)
@@ -290,13 +312,13 @@ func (c *Client) handleStreams() {
 
 					atomic.StoreInt32(&c.currentWindow, c.maxWindow)
 
-					c.updateWindow(0, int(nValue))
+					updateWindow(0, int(nValue), c.writer)
 				}
 			case FrameResetStream:
 				adapt.Error(fr.Body().(*RstStream).Error())
 			}
 
-			c.handleState(fr, strm)
+			handleState(fr, strm)
 
 			if strm.State() == StreamStateClosed {
 				adapt.Close()
@@ -308,7 +330,7 @@ func (c *Client) handleStreams() {
 	}
 }
 
-func (c *Client) updateWindow(streamID uint32, n int) {
+func updateWindow(streamID uint32, n int, writer chan<- *FrameHeader) {
 	fr := AcquireFrameHeader()
 	fr.SetStream(streamID)
 
@@ -317,7 +339,7 @@ func (c *Client) updateWindow(streamID uint32, n int) {
 
 	fr.SetBody(wu)
 
-	c.writer <- fr
+	writer <- fr
 }
 
 func (c *Client) sendPing() {
@@ -355,7 +377,7 @@ func (c *Client) handlePing(p *Ping) {
 	}
 }
 
-func (c *Client) writeError(strm *Stream, err error) {
+func writeError(strm *Stream, err error, writer chan<- *FrameHeader) {
 	r := AcquireFrame(FrameResetStream).(*RstStream)
 
 	fr := AcquireFrameHeader()
@@ -368,5 +390,7 @@ func (c *Client) writeError(strm *Stream, err error) {
 		r.SetCode(InternalError)
 	}
 
-	c.writer <- fr
+	strm.SetState(StreamStateClosed)
+
+	writer <- fr
 }
