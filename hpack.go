@@ -2,7 +2,6 @@ package http2
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"sync"
 )
@@ -183,7 +182,9 @@ var bytePool = sync.Pool{
 	},
 }
 
-var ErrFieldNotFound = errors.New("field not found in neither table")
+var ErrFieldNotFound = NewError(
+	FlowControlError,
+	"field not found in neither table")
 
 // Next reads and process the content of `b`. If buf contains a valid HTTP/2 header
 // the content will be parsed into `hf`.
@@ -208,6 +209,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		if hf2 == nil {
 			return b, ErrFieldNotFound
 		}
+
 		hf2.CopyTo(hf)
 
 	// Literal Header Field with Incremental Indexing.

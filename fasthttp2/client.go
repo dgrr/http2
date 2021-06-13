@@ -255,7 +255,8 @@ func (c *Client) handleStreams() {
 		select {
 		case rr := <-c.reqResCh: // request from the user
 			strm := http2.NewStream(
-				c.nextID, int(c.serverS.MaxWindowSize()), rr)
+				c.nextID, int(c.serverS.MaxWindowSize()))
+			strm.SetData(rr)
 
 			c.nextID += 2
 
@@ -280,15 +281,12 @@ func (c *Client) handleStreams() {
 
 			atomic.AddInt32(&c.currentWindow, -int32(fr.Len()))
 
-			var (
-				err error
-			)
-
-			// println("-", fr.Stream(), fr.Type().String(), fr.Len())
-
 			switch fr.Type() {
 			case http2.FrameHeaders, http2.FrameContinuation:
-				err = c.readHeaders(fr, rr)
+				err := c.readHeaders(fr, rr)
+				if err != nil {
+					c.writeError(strm, err)
+				}
 			case http2.FrameData:
 				data := fr.Body().(*http2.Data)
 				if data.Len() > 0 {
@@ -310,10 +308,6 @@ func (c *Client) handleStreams() {
 			}
 
 			c.handleState(fr, strm)
-
-			if err != nil {
-				panic(err)
-			}
 
 			if strm.State() == http2.StreamStateClosed {
 				close(rr.ch)
@@ -465,4 +459,20 @@ func (c *Client) readHeaders(fr *http2.FrameHeader, rr *reqRes) error {
 	}
 
 	return nil
+}
+
+func (c *Client) writeError(strm *http2.Stream, err error) {
+	r := http2.AcquireFrame(http2.FrameResetStream).(*http2.RstStream)
+
+	fr := http2.AcquireFrameHeader()
+	fr.SetStream(strm.ID())
+	fr.SetBody(r)
+
+	if errors.Is(err, http2.Error{}) {
+		r.SetCode(err.(http2.Error).Code())
+	} else {
+		r.SetCode(http2.InternalError)
+	}
+
+	c.writer <- fr
 }
