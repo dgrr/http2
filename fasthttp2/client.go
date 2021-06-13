@@ -162,9 +162,6 @@ func (c *Client) readLoop() {
 			panic(err)
 		}
 
-		println("-", fr.Stream(),
-			fr.Type().String(), fr.Len()+http2.DefaultFrameSize)
-
 		switch fr.Type() {
 		case http2.FrameHeaders, http2.FrameData, http2.FrameContinuation:
 			c.inData <- fr
@@ -280,19 +277,27 @@ func (c *Client) handleReqs() {
 				err error
 			)
 
+			println("-", fr.Stream(), fr.Type().String(), fr.Len())
+
 			switch fr.Type() {
 			case http2.FrameHeaders:
 				err = c.readHeaders(fr, rr)
 			case http2.FrameContinuation:
 			case http2.FrameData:
 				data := fr.Body().(*http2.Data)
-				rr.res.AppendBody(data.Data())
+				if data.Len() > 0 {
+					rr.res.AppendBody(data.Data())
 
-				c.updateWindow(fr.Stream(), fr.Len())
+					c.updateWindow(fr.Stream(), fr.Len())
+				}
 
 				myWin := atomic.LoadInt32(&c.currentWindow)
 				if myWin < c.maxWindow/2 {
-					c.updateWindow(0, int(c.maxWindow-myWin))
+					nValue := c.maxWindow - myWin
+
+					atomic.StoreInt32(&c.currentWindow, c.maxWindow)
+
+					c.updateWindow(0, int(nValue))
 				}
 			}
 
@@ -364,6 +369,8 @@ func (c *Client) writeRequest(rr *reqRes) {
 
 	// TODO: continue
 	fr := http2.AcquireFrameHeader()
+	fr.SetStream(rr.streamID)
+
 	h := http2.AcquireFrame(http2.FrameHeaders).(*http2.Headers)
 	fr.SetBody(h)
 
@@ -397,20 +404,17 @@ func (c *Client) writeRequest(rr *reqRes) {
 	h.SetEndStream(!hasBody)
 	h.SetEndHeaders(true)
 
-	fr.SetStream(rr.streamID)
-
 	c.writer <- fr
 
 	if hasBody { // has body
 		fr = http2.AcquireFrameHeader()
+		fr.SetStream(rr.streamID)
 
 		data := http2.AcquireFrame(http2.FrameData).(*http2.Data)
 
 		// TODO: max length
 		data.SetEndStream(true)
 		data.SetData(req.Body())
-
-		fr.SetStream(rr.streamID)
 
 		c.writer <- fr
 	}

@@ -77,6 +77,7 @@ func (frh *FrameHeader) Reset() {
 	frh.length = 0
 	frh.maxLen = defaultMaxLen
 	frh.fr = nil
+	frh.payload = frh.payload[:0]
 }
 
 // Type returns the frame type (https://httpwg.org/specs/rfc7540.html#Frame_types)

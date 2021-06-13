@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -23,7 +24,7 @@ func main() {
 
 	count := int32(0)
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 1; i++ {
 		for atomic.LoadInt32(&count) >= 4 {
 			time.Sleep(time.Millisecond * 100)
 		}
@@ -36,6 +37,8 @@ func main() {
 
 			req := fasthttp.AcquireRequest()
 			res := fasthttp.AcquireResponse()
+
+			res.Reset()
 
 			req.Header.SetMethod("GET")
 			// TODO: Use SetRequestURI
@@ -52,6 +55,11 @@ func main() {
 			res.Header.VisitAll(func(k, v []byte) {
 				fmt.Printf("%s: %s\n", k, v)
 			})
+
+			a := make(map[string]interface{})
+			err = json.Unmarshal(body, &a)
+			fmt.Println(err)
+
 			fmt.Println("------------------------")
 		}()
 	}
