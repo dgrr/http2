@@ -99,7 +99,7 @@ func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
 	cl.st.SetMaxWindowSize(1 << 16) // 65536
 	cl.st.SetPush(false)            // do not support push promises
 
-	if err := Handshake(cl.bw, &cl.st, cl.maxWindow); err != nil {
+	if err := Handshake(true, cl.bw, &cl.st, cl.maxWindow); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -113,22 +113,27 @@ func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
 	return cl, nil
 }
 
-func Handshake(bw *bufio.Writer, st *Settings, maxWin int32) error {
-	err := WritePreface(bw)
-	if err == nil {
-		err = bw.Flush()
-	}
+func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error {
+	if preface {
+		err := WritePreface(bw)
+		if err == nil {
+			err = bw.Flush()
+		}
 
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 
 	fr := AcquireFrameHeader()
 	defer ReleaseFrameHeader(fr)
 
-	fr.SetBody(st)
+	st2 := &Settings{}
+	st.CopyTo(st2)
 
-	_, err = fr.WriteTo(bw)
+	fr.SetBody(st2)
+
+	_, err := fr.WriteTo(bw)
 	if err == nil {
 		fr = AcquireFrameHeader()
 		wu := AcquireFrame(FrameWindowUpdate).(*WindowUpdate)

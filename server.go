@@ -70,7 +70,9 @@ func (s *Server) ServeConn(c net.Conn) error {
 	sc.currentWindow = sc.maxWindow
 
 	sc.st.SetMaxWindowSize(1 << 16)
-	if err := Handshake(sc.bw, &sc.st, sc.maxWindow); err != nil {
+	sc.st.SetMaxConcurrentStreams(1024)
+
+	if err := Handshake(false, sc.bw, &sc.st, sc.maxWindow); err != nil {
 		return err
 	}
 
@@ -113,7 +115,8 @@ func (s *Server) ServeConn(c net.Conn) error {
 		case FramePing:
 			// sc.handlePing(fr.Body().(*Ping))
 		case FrameGoAway:
-			err = fmt.Errorf("goaway: %s", fr.Body().(*GoAway).Code())
+			ga := fr.Body().(*GoAway)
+			err = fmt.Errorf("goaway: %s: %s", ga.Code(), ga.Data())
 		}
 
 		ReleaseFrameHeader(fr)
@@ -141,7 +144,6 @@ func (sc *serverConn) handleStreams() {
 			}
 
 			if err := sc.adpr.OnFrame(strm, fr, sc.dec); err != nil {
-				println("error")
 				writeError(strm, err, sc.writer)
 			}
 

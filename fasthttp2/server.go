@@ -76,6 +76,7 @@ func (sa *ServerAdaptor) OnRequestFinished(
 
 	h := http2.AcquireFrame(http2.FrameHeaders).(*http2.Headers)
 	h.SetEndHeaders(true)
+	h.SetEndStream(false)
 
 	fr.SetBody(h)
 
