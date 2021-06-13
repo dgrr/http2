@@ -1,10 +1,12 @@
 package http2
 
 import (
-	"sync"
+	"github.com/dgrr/http2/http2utils"
 )
 
 const FramePushPromise FrameType = 0x5
+
+var _ Frame = &PushPromise{}
 
 // PushPromise ...
 //
@@ -16,26 +18,16 @@ type PushPromise struct {
 	header []byte // header block fragment
 }
 
-var pushPromisePool = sync.Pool{
-	New: func() interface{} {
-		return &PushPromise{}
-	},
-}
-
-// AcquirePushPromise ...
-func AcquirePushPromise() *PushPromise {
-	return pushPromisePool.Get().(*PushPromise)
-}
-
-// ReleasePushPromise ...
-func ReleasePushPromise(pp *PushPromise) {
-	pp.Reset()
-	pushPromisePool.Put(pp)
+func (pp *PushPromise) Type() FrameType {
+	return FramePushPromise
 }
 
 // Reset ...
 func (pp *PushPromise) Reset() {
+	pp.pad = false
+	pp.ended = false
 	pp.stream = 0
+	pp.header = pp.header[:0]
 }
 
 func (pp *PushPromise) SetHeader(h []byte) {
@@ -48,28 +40,34 @@ func (pp *PushPromise) Write(b []byte) (int, error) {
 	return n, nil
 }
 
-// ReadFrame ...
-func (pp *PushPromise) ReadFrame(fr *Frame) (err error) {
-	payload := cutPadding(fr)
+func (pp *PushPromise) Deserialize(fr *FrameHeader) (err error) {
+	payload := fr.payload
+
+	if fr.Flags().Has(FlagPadded) {
+		payload = http2utils.CutPadding(payload, fr.Len())
+	}
+
 	if len(fr.payload) < 4 {
 		err = ErrMissingBytes
 	} else {
-		pp.stream = bytesToUint32(payload) & (1<<31 - 1)
+		pp.stream = http2utils.BytesToUint32(payload) & (1<<31 - 1)
 		pp.header = append(pp.header, payload[4:]...)
-		pp.ended = fr.HasFlag(FlagEndHeaders)
+		pp.ended = fr.Flags().Has(FlagEndHeaders)
 	}
+
 	return
 }
 
-// WriteFrame ...
-func (pp *PushPromise) WriteFrame(fr *Frame) (err error) {
-	fr.SetType(FramePushPromise)
+func (pp *PushPromise) Serialize(fr *FrameHeader) {
 	fr.payload = fr.payload[:0]
+
 	if pp.pad {
-		fr.AddFlag(FlagPadded)
+		fr.Flags().Add(FlagPadded)
 		// TODO: Write padding flag
 	}
-	_, err = fr.Write(pp.header)
+
+	fr.payload = append(fr.payload, pp.header...)
 	// TODO: write padding
+
 	return
 }

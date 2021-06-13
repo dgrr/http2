@@ -1,10 +1,19 @@
 package http2
 
 import (
-	"sync"
+	"github.com/dgrr/http2/http2utils"
 )
 
 const FrameHeaders FrameType = 0x1
+
+var (
+	_ Frame            = &Headers{}
+	_ FrameWithHeaders = &Headers{}
+)
+
+type FrameWithHeaders interface {
+	Headers() []byte
+}
 
 // Headers defines a FrameHeaders
 //
@@ -16,24 +25,6 @@ type Headers struct {
 	endStream  bool
 	endHeaders bool
 	rawHeaders []byte // this field is used to store uncompleted headers.
-}
-
-var headersPool = sync.Pool{
-	New: func() interface{} {
-		return &Headers{}
-	},
-}
-
-// AcquireHeaders ...
-func AcquireHeaders() *Headers {
-	h := headersPool.Get().(*Headers)
-	h.Reset()
-	return h
-}
-
-// ReleaaseHeaders ...
-func ReleaseHeaders(h *Headers) {
-	headersPool.Put(h)
 }
 
 // Reset ...
@@ -56,7 +47,11 @@ func (h *Headers) CopyTo(h2 *Headers) {
 	h2.rawHeaders = append(h2.rawHeaders[:0], h.rawHeaders...)
 }
 
-// RawHeaders ...
+func (h *Headers) Type() FrameType {
+	return FrameHeaders
+}
+
+// Headers ...
 func (h *Headers) Headers() []byte {
 	return h.rawHeaders
 }
@@ -71,12 +66,16 @@ func (h *Headers) AppendRawHeaders(b []byte) {
 	h.rawHeaders = append(h.rawHeaders, b...)
 }
 
+func (h *Headers) AppendHeaderField(hp *HPACK, hf *HeaderField, store bool) {
+	h.rawHeaders = hp.AppendHeader(h.rawHeaders, hf, store)
+}
+
 // EndStream ...
 func (h *Headers) EndStream() bool {
 	return h.endStream
 }
 
-// SetEndHeaders ...
+// SetEndStream ...
 func (h *Headers) SetEndStream(value bool) {
 	h.endStream = value
 }
@@ -116,56 +115,62 @@ func (h *Headers) Padding() bool {
 	return h.hasPadding
 }
 
-// SetPadding sets hasPaddingding value ...
+// SetPadding ...
 func (h *Headers) SetPadding(value bool) {
 	h.hasPadding = value
 }
 
-// ReadFrame reads header data from fr.
-//
-// This function appends over rawHeaders .....
-func (h *Headers) ReadFrame(fr *Frame) (err error) {
-	payload := cutPadding(fr)
-	if fr.HasFlag(FlagPriority) {
-		if len(fr.payload) < 5 { // 4 (stream) + 1 (weight) = 5
+func (h *Headers) Deserialize(frh *FrameHeader) (err error) {
+	flags := frh.Flags()
+	payload := frh.payload
+
+	if flags.Has(FlagPadded) {
+		payload = http2utils.CutPadding(payload, len(payload))
+	}
+
+	if flags.Has(FlagPriority) {
+		if len(payload) < 5 { // 4 (stream) + 1 (weight) = 5
 			err = ErrMissingBytes
 		} else {
-			h.stream = bytesToUint32(payload) & (1<<31 - 1)
+			h.stream = http2utils.BytesToUint32(payload) & (1<<31 - 1)
 			h.weight = payload[4]
 			payload = payload[5:]
 		}
 	}
+
 	if err == nil {
-		h.endStream = fr.HasFlag(FlagEndStream)
-		h.endHeaders = fr.HasFlag(FlagEndHeaders)
+		h.endStream = flags.Has(FlagEndStream)
+		h.endHeaders = flags.Has(FlagEndHeaders)
 		h.rawHeaders = append(h.rawHeaders, payload...)
 	}
 
 	return
 }
 
-func (h *Headers) WriteFrame(fr *Frame) error {
-	fr.SetType(FrameHeaders)
-
+func (h *Headers) Serialize(frh *FrameHeader) {
 	if h.endStream {
-		fr.AddFlag(FlagEndStream)
+		frh.SetFlags(
+			frh.Flags().Add(FlagEndStream))
 	}
 
 	if h.endHeaders {
-		fr.AddFlag(FlagEndHeaders)
+		frh.SetFlags(
+			frh.Flags().Add(FlagEndHeaders))
 	}
 
 	if h.stream > 0 && h.weight > 0 {
-		fr.AddFlag(FlagPriority)
+		frh.SetFlags(
+			frh.Flags().Add(FlagPriority))
 
-		uint32ToBytes(h.rawHeaders[1:5], fr.stream)
+		http2utils.Uint32ToBytes(h.rawHeaders[1:5], frh.stream)
 		h.rawHeaders[5] = h.weight
 	}
 
 	if h.hasPadding {
-		fr.AddFlag(FlagPadded)
-		h.rawHeaders = addPadding(h.rawHeaders)
+		frh.SetFlags(
+			frh.Flags().Add(FlagPadded))
+		h.rawHeaders = http2utils.AddPadding(h.rawHeaders)
 	}
 
-	return fr.SetPayload(h.rawHeaders)
+	frh.payload = append(frh.payload[:0], h.rawHeaders...)
 }

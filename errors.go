@@ -1,44 +1,55 @@
 package http2
 
 import (
-	"errors"
 	"fmt"
 )
 
+// ErrorCode defines the HTTP/2 error codes:
+//
+// Error codes are defined here http://httpwg.org/specs/rfc7540.html#ErrorCodes
+//
+// Errors must be uint32 because of FrameReset
 type ErrorCode uint32
 
 const (
-	// Error codes (http://httpwg.org/specs/rfc7540.html#ErrorCodes)
-	//
-	// Errors must be uint32 because of FrameReset
 	NoError              ErrorCode = 0x0
-	ProtocolError        ErrorCode = 0x1
-	InternalError        ErrorCode = 0x2
-	FlowControlError     ErrorCode = 0x3
-	SettingsTimeoutError ErrorCode = 0x4
-	StreamClosedError    ErrorCode = 0x5
-	FrameSizeError       ErrorCode = 0x6
-	RefusedStreamError   ErrorCode = 0x7
-	CancelError          ErrorCode = 0x8
-	CompressionError     ErrorCode = 0x9
-	ConnectionError      ErrorCode = 0xa
-	EnhanceYourCalm      ErrorCode = 0xb
-	InadequateSecurity   ErrorCode = 0xc
-	HTTP11Required       ErrorCode = 0xd
+	ProtocolError                  = 0x1
+	InternalError                  = 0x2
+	FlowControlError               = 0x3
+	SettingsTimeoutError           = 0x4
+	StreamClosedError              = 0x5
+	FrameSizeError                 = 0x6
+	RefusedStreamError             = 0x7
+	CancelError                    = 0x8
+	CompressionError               = 0x9
+	ConnectionError                = 0xa
+	EnhanceYourCalm                = 0xb
+	InadequateSecurity             = 0xc
+	HTTP11Required                 = 0xd
 )
 
+func (e ErrorCode) Error() string {
+	return errParser[e]
+}
+
 type Error struct {
-	err string
-	msg string
+	code  ErrorCode
+	debug string
 }
 
-func (e *Error) Error() string {
-	return fmt.Sprintf("%s: %s", e.err, e.msg)
+func (e Error) Code() ErrorCode {
+	return e.code
 }
 
-// NewError returns error of uint32 declared error codes.
-func NewError(code ErrorCode, msg string) error {
-	return &Error{err: errParser[code], msg: msg}
+func NewError(e ErrorCode, debug string) Error {
+	return Error{
+		code:  e,
+		debug: debug,
+	}
+}
+
+func (e Error) Error() string {
+	return fmt.Sprintf("%s: %s", e.code, e.debug)
 }
 
 var (
@@ -49,7 +60,7 @@ var (
 		FlowControlError:     "Flow control error",
 		SettingsTimeoutError: "Settings timeout",
 		StreamClosedError:    "Stream have been closed",
-		FrameSizeError:       "Frame size error",
+		FrameSizeError:       "FrameHeader size error",
 		RefusedStreamError:   "Refused Stream",
 		CancelError:          "Canceled",
 		CompressionError:     "Compression error",
@@ -60,15 +71,10 @@ var (
 	}
 
 	// This error codes must be used with FrameGoAway
-	ErrUnknowFrameType = errors.New("unknown frame type")
-	ErrZeroPayload     = errors.New("frame Payload len = 0")
-	ErrMissingBytes    = errors.New("missing payload bytes. Need more")
-	ErrTooManyBytes    = errors.New("too many bytes")
-	ErrBadPreface      = errors.New("wrong preface")
-	ErrFrameMismatch   = errors.New("frame type mismatch from called function")
-	ErrNilWriter       = errors.New("Writer cannot be nil")
-	ErrNilReader       = errors.New("Reader cannot be nil")
-	ErrUnknown         = errors.New("Unknown error")
-	ErrBitOverflow     = errors.New("Bit overflow")
-	ErrPayloadExceeds  = errors.New("Frame payload exceeds the negotiated maximum size")
+	ErrUnknowFrameType = NewError(
+		ProtocolError, "unknown frame type")
+	ErrMissingBytes = NewError(
+		ProtocolError, "missing payload bytes. Need more")
+	ErrPayloadExceeds = NewError(
+		ProtocolError, "FrameHeader payload exceeds the negotiated maximum size")
 )

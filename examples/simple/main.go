@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/dgrr/http2"
+	"github.com/dgrr/http2/fasthttp2"
 	"github.com/valyala/fasthttp"
 )
 
@@ -23,7 +23,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	http2.ConfigureServer(s)
+	fasthttp2.ConfigureServer(s)
 
 	err = s.ListenAndServeTLS(":8443", "", "")
 	if err != nil {

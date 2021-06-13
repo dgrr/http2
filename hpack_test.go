@@ -65,6 +65,7 @@ func TestHPACKWriteTwoStrings(t *testing.T) {
 	var dstA []byte
 	var dstB []byte
 	var err error
+
 	strA := []byte(":status")
 	strB := []byte("200")
 
@@ -84,6 +85,7 @@ func TestHPACKWriteTwoStrings(t *testing.T) {
 	if !bytes.Equal(strA, dstA) {
 		t.Fatalf("%s<>%s", dstA, strA)
 	}
+
 	if !bytes.Equal(strB, dstB) {
 		t.Fatalf("%s<>%s", dstB, strB)
 	}
@@ -93,11 +95,13 @@ func check(t *testing.T, slice []*HeaderField, i int, k, v string) {
 	if len(slice) <= i {
 		t.Fatalf("fields len exceeded. %d <> %d", len(slice), i)
 	}
+
 	hf := slice[i]
-	if b2s(hf.key) != k {
+	if string(hf.key) != k {
 		t.Fatalf("unexpected key: %s<>%s", hf.key, k)
 	}
-	if b2s(hf.value) != v {
+
+	if string(hf.value) != v {
 		t.Fatalf("unexpected value: %s<>%s", hf.value, v)
 	}
 }

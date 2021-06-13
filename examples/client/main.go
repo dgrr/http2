@@ -1,13 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/dgrr/http2"
+	"github.com/dgrr/http2/fasthttp2"
 	"github.com/valyala/fasthttp"
 )
 
@@ -16,13 +17,14 @@ func main() {
 		Addr:  "api.binance.com:443",
 		IsTLS: true,
 	}
-	if err := http2.ConfigureClient(c, http2.OptionEnableCompression); err != nil {
+
+	if err := fasthttp2.ConfigureClient(c); err != nil {
 		panic(err)
 	}
 
 	count := int32(0)
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 1; i++ {
 		for atomic.LoadInt32(&count) >= 4 {
 			time.Sleep(time.Millisecond * 100)
 		}
@@ -35,6 +37,8 @@ func main() {
 
 			req := fasthttp.AcquireRequest()
 			res := fasthttp.AcquireResponse()
+
+			res.Reset()
 
 			req.Header.SetMethod("GET")
 			// TODO: Use SetRequestURI
@@ -51,6 +55,12 @@ func main() {
 			res.Header.VisitAll(func(k, v []byte) {
 				fmt.Printf("%s: %s\n", k, v)
 			})
+
+			a := make(map[string]interface{})
+			if err = json.Unmarshal(body, &a); err != nil {
+				panic(err)
+			}
+
 			fmt.Println("------------------------")
 		}()
 	}

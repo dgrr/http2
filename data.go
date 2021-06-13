@@ -1,10 +1,12 @@
 package http2
 
 import (
-	"sync"
+	"github.com/dgrr/http2/http2utils"
 )
 
 const FrameData FrameType = 0x0
+
+var _ Frame = &Data{}
 
 // Data defines a FrameData
 //
@@ -19,22 +21,8 @@ type Data struct {
 	b          []byte // data bytes
 }
 
-var dataPool = sync.Pool{
-	New: func() interface{} {
-		return &Data{}
-	},
-}
-
-// AcquireData ...
-func AcquireData() (data *Data) {
-	data = dataPool.Get().(*Data)
-	data.Reset()
-	return
-}
-
-// ReleaseData ...
-func ReleaseData(data *Data) {
-	dataPool.Put(data)
+func (data *Data) Type() FrameType {
+	return FrameData
 }
 
 // Reset ...
@@ -85,44 +73,43 @@ func (data *Data) Append(b []byte) {
 	data.b = append(data.b, b...)
 }
 
-func (data *Data) Len() uint32 {
-	return uint32(len(data.b))
+func (data *Data) Len() int {
+	return len(data.b)
 }
 
 // Write writes b to data
 func (data *Data) Write(b []byte) (int, error) {
 	n := len(b)
 	data.Append(b)
+
 	return n, nil
 }
 
-// ReadFrame reads data from fr.
-//
-// This function does not reset the Frame.
-func (data *Data) ReadFrame(fr *Frame) (err error) {
-	payload := cutPadding(fr)
+func (data *Data) Deserialize(fr *FrameHeader) (err error) {
+	payload := fr.payload
 
-	data.endStream = fr.HasFlag(FlagEndStream)
+	if fr.Flags().Has(FlagPadded) {
+		payload = http2utils.CutPadding(payload, fr.Len())
+	}
+
+	data.endStream = fr.Flags().Has(FlagEndStream)
 	data.b = append(data.b[:0], payload...)
 
 	return
 }
 
-// WriteFrame writes the data to the frame payload setting FlagPadded.
-//
-// This function only resets the frame payload.
-func (data *Data) WriteFrame(fr *Frame) {
+func (data *Data) Serialize(fr *FrameHeader) {
 	// TODO: generate hasPadding and set to the frame payload
-	fr.SetType(FrameData)
-
 	if data.endStream {
-		fr.AddFlag(FlagEndStream)
+		fr.SetFlags(
+			fr.Flags().Add(FlagEndStream))
 	}
 
 	if data.hasPadding {
-		fr.AddFlag(FlagPadded)
-		data.b = addPadding(data.b)
+		fr.SetFlags(
+			fr.Flags().Add(FlagPadded))
+		data.b = http2utils.AddPadding(data.b)
 	}
 
-	fr.SetPayload(data.b)
+	fr.setPayload(data.b)
 }

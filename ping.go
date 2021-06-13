@@ -1,10 +1,13 @@
 package http2
 
 import (
-	"sync"
+	"encoding/binary"
+	"time"
 )
 
 const FramePing FrameType = 0x6
+
+var _ Frame = &Ping{}
 
 // Ping ...
 //
@@ -14,62 +17,62 @@ type Ping struct {
 	data [8]byte
 }
 
-var pingPool = sync.Pool{
-	New: func() interface{} {
-		return &Ping{}
-	},
+func (p *Ping) IsAck() bool {
+	return p.ack
 }
 
-// AcquirePing ...
-func AcquirePing() *Ping {
-	return pingPool.Get().(*Ping)
-}
-
-// ReleasePing ...
-func ReleasePing(pp *Ping) {
-	pp.Reset()
-	pingPool.Put(pp)
+func (p *Ping) Type() FrameType {
+	return FramePing
 }
 
 // Reset ...
-func (ping *Ping) Reset() {
-	ping.ack = false
+func (p *Ping) Reset() {
+	p.ack = false
 }
 
 // CopyTo ...
-func (ping *Ping) CopyTo(p *Ping) {
-	p.ack = ping.ack
+func (p *Ping) CopyTo(other *Ping) {
+	p.ack = other.ack
 }
 
 // Write ...
-func (ping *Ping) Write(b []byte) (n int, err error) {
-	copy(ping.data[:], b)
+func (p *Ping) Write(b []byte) (n int, err error) {
+	copy(p.data[:], b)
 	return
 }
 
 // SetData ...
-func (ping *Ping) SetData(b []byte) {
-	copy(ping.data[:], b)
+func (p *Ping) SetData(b []byte) {
+	copy(p.data[:], b)
 }
 
-// ReadFrame ...
-func (ping *Ping) ReadFrame(fr *Frame) error {
-	ping.ack = fr.HasFlag(FlagAck)
-	ping.SetData(fr.payload)
+func (p *Ping) SetCurrentTime() {
+	ts := time.Now().UnixNano()
+	binary.BigEndian.PutUint64(p.data[:], uint64(ts))
+}
+
+func (p *Ping) DataAsTime() time.Time {
+	return time.Unix(
+		0, int64(binary.BigEndian.Uint64(p.data[:])),
+	)
+}
+
+// Deserialize ...
+func (p *Ping) Deserialize(frh *FrameHeader) error {
+	p.ack = frh.Flags().Has(FlagAck)
+	p.SetData(frh.payload)
 	return nil
 }
 
-func (ping *Ping) Data() []byte {
-	return ping.data[:]
+func (p *Ping) Data() []byte {
+	return p.data[:]
 }
 
-// WriteFrame ...
-func (ping *Ping) WriteFrame(fr *Frame) error {
-	fr.SetType(FramePing)
-	if ping.ack {
-		fr.AddFlag(FlagAck)
+// Serialize ...
+func (p *Ping) Serialize(fr *FrameHeader) {
+	if p.ack {
+		fr.SetFlags(fr.Flags().Add(FlagAck))
 	}
-	fr.SetPayload(ping.data[:])
 
-	return nil
+	fr.setPayload(p.data[:])
 }

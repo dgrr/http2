@@ -2,7 +2,6 @@ package http2
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"sync"
 )
@@ -177,7 +176,15 @@ const (
 	noIndexByte = 240 // 11110000
 )
 
-var ErrFieldNotFound = errors.New("field not found in neither table")
+var bytePool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 128)
+	},
+}
+
+var ErrFieldNotFound = NewError(
+	FlowControlError,
+	"field not found in neither table")
 
 // Next reads and process the content of `b`. If buf contains a valid HTTP/2 header
 // the content will be parsed into `hf`.
@@ -202,6 +209,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		if hf2 == nil {
 			return b, ErrFieldNotFound
 		}
+
 		hf2.CopyTo(hf)
 
 	// Literal Header Field with Incremental Indexing.
@@ -211,6 +219,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		// Reading key
 		if c != 64 { // Read key as index
 			b, n = readInt(6, b)
+
 			hf2 := hpack.peek(n)
 			if hf2 == nil {
 				return b, ErrFieldNotFound
@@ -220,10 +229,12 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		} else { // Read key literal string
 			b = b[1:]
 			dst := bytePool.Get().([]byte)
+
 			b, dst, err = readString(dst[:0], b)
 			if err == nil {
 				hf.SetKeyBytes(dst)
 			}
+
 			bytePool.Put(dst)
 		}
 
@@ -232,6 +243,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 			if b[0] == c {
 				b = b[1:]
 			}
+
 			dst := bytePool.Get().([]byte)
 
 			b, dst, err = readString(dst[:0], b)
@@ -266,10 +278,12 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		} else { // Reading key as string literal
 			b = b[1:]
 			dst := bytePool.Get().([]byte)
+
 			b, dst, err = readString(dst[:0], b)
 			if err == nil {
 				hf.SetKeyBytes(dst)
 			}
+
 			bytePool.Put(dst)
 		}
 
@@ -278,11 +292,14 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 			if b[0] == c {
 				b = b[1:]
 			}
+
 			dst := bytePool.Get().([]byte)
+
 			b, dst, err = readString(dst[:0], b)
 			if err == nil {
 				hf.SetValueBytes(dst)
 			}
+
 			bytePool.Put(dst)
 		}
 
@@ -343,6 +360,7 @@ func appendInt(dst []byte, bits uint8, index uint64) []byte {
 		dst = append(dst, 128|byte(index&127))
 		index >>= 7
 	}
+
 	dst[len(dst)-1] &= 127
 
 	return dst
@@ -401,6 +419,11 @@ func appendString(dst, src []byte, encode bool) []byte {
 	}
 
 	return dst
+}
+
+// TODO: Change naming
+func (hpack *HPACK) AppendHeaderField(h *Headers, hf *HeaderField, store bool) {
+	h.rawHeaders = hpack.AppendHeader(h.rawHeaders, hf, store)
 }
 
 // AppendHeader appends the content of an encoded HeaderField to dst.

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dgrr/http2"
+	"github.com/dgrr/http2/fasthttp2"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
@@ -27,7 +27,8 @@ func main() {
 		Handler: requestHandler,
 		Name:    "http2 test",
 	}
-	http2.ConfigureServer(s)
+
+	fasthttp2.ConfigureServer(s)
 
 	log.Println("fasthttp", s.ListenAndServeTLSEmbed(":443", cert, priv))
 }
