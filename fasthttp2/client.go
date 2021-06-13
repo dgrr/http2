@@ -190,6 +190,28 @@ func (c *Client) readLoop() {
 	}
 }
 
+func (c *Client) handleState(fr *http2.FrameHeader, strm *http2.Stream) {
+	switch strm.State() {
+	case http2.StreamStateIdle:
+		if fr.Type() == http2.FrameHeaders {
+			strm.SetState(http2.StreamStateOpen)
+		} // TODO: else push promise ...
+	case http2.StreamStateReserved:
+		// TODO: ...
+	case http2.StreamStateOpen:
+		if fr.Flags().Has(http2.FlagEndStream) {
+			strm.SetState(http2.StreamStateHalfClosed)
+		}
+	case http2.StreamStateHalfClosed:
+		if fr.Flags().Has(http2.FlagEndStream) {
+			strm.SetState(http2.StreamStateClosed)
+		} else if fr.Type() == http2.FrameResetStream {
+			strm.SetState(http2.StreamStateClosed)
+		}
+	case http2.StreamStateClosed:
+	}
+}
+
 func (c *Client) writeLoop() {
 	ticker := time.NewTicker(time.Second * 3)
 	defer ticker.Stop()
@@ -258,6 +280,10 @@ func (c *Client) handleStreams() {
 
 			c.writeRequest(rr)
 
+			// https://datatracker.ietf.org/doc/html/rfc7540#section-8.1
+			// writing the headers and/or the data makes the stream to become half-closed
+			strm.SetState(http2.StreamStateHalfClosed)
+
 			rrs = append(rrs, rr)
 			strms.Insert(strm)
 		case fr, ok := <-c.inData: // response from the server
@@ -269,6 +295,8 @@ func (c *Client) handleStreams() {
 			if rr == nil {
 				panic("not found")
 			}
+
+			strm := rr.s
 
 			atomic.AddInt32(&c.currentWindow, -int32(fr.Len()))
 
@@ -297,13 +325,17 @@ func (c *Client) handleStreams() {
 
 					c.updateWindow(0, int(nValue))
 				}
+			case http2.FrameResetStream:
+				rr.ch <- fr.Body().(*http2.RstStream).Error()
 			}
+
+			c.handleState(fr, strm)
 
 			if err != nil {
 				panic(err)
 			}
 
-			if fr.Flags().Has(http2.FlagEndStream) {
+			if strm.State() == http2.StreamStateClosed {
 				close(rr.ch)
 				delReqRes(rr.s.ID())
 				strms.Del(rr.s.ID())

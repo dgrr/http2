@@ -29,16 +29,16 @@ func (ss StreamState) String() string {
 }
 
 type Stream struct {
-	id    uint32
+	id     uint32
 	window int
-	state StreamState
+	state  StreamState
 }
 
 func NewStream(id uint32, win int) *Stream {
 	return &Stream{
-		id:    id,
+		id:     id,
 		window: win,
-		state: StreamStateIdle,
+		state:  StreamStateIdle,
 	}
 }
 
