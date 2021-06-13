@@ -6,12 +6,14 @@ import (
 	"io"
 	"math/rand"
 	"testing"
+
+	"github.com/dgrr/http2"
 )
 
 func TestClientWriteOrder(t *testing.T) {
 	bf := bytes.NewBuffer(nil)
 
-	c := &Client{}
+	c := &http2.Client{}
 	c.writer = make(chan *Frame, 1)
 	c.bw = bufio.NewWriter(bf)
 
