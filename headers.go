@@ -6,7 +6,14 @@ import (
 
 const FrameHeaders FrameType = 0x1
 
-var _ Frame = &Headers{}
+var (
+	_ Frame            = &Headers{}
+	_ FrameWithHeaders = &Headers{}
+)
+
+type FrameWithHeaders interface {
+	Headers() []byte
+}
 
 // Headers defines a FrameHeaders
 //

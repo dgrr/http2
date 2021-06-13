@@ -2,7 +2,10 @@ package http2
 
 const FrameContinuation FrameType = 0x9
 
-var _ Frame = &Continuation{}
+var (
+	_ Frame            = &Continuation{}
+	_ FrameWithHeaders = &Continuation{}
+)
 
 func (c *Continuation) Type() FrameType {
 	return FrameContinuation
@@ -29,8 +32,8 @@ func (c *Continuation) CopyTo(cc *Continuation) {
 	cc.rawHeaders = append(cc.rawHeaders[:0], c.rawHeaders...)
 }
 
-// Header returns Header bytes.
-func (c *Continuation) Header() []byte {
+// Headers returns Header bytes.
+func (c *Continuation) Headers() []byte {
 	return c.rawHeaders
 }
 

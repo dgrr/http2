@@ -280,9 +280,8 @@ func (c *Client) handleReqs() {
 			println("-", fr.Stream(), fr.Type().String(), fr.Len())
 
 			switch fr.Type() {
-			case http2.FrameHeaders:
+			case http2.FrameHeaders, http2.FrameContinuation:
 				err = c.readHeaders(fr, rr)
-			case http2.FrameContinuation:
 			case http2.FrameData:
 				data := fr.Body().(*http2.Data)
 				if data.Len() > 0 {
@@ -426,14 +425,13 @@ func (c *Client) writeRequest(rr *reqRes) {
 
 func (c *Client) readHeaders(fr *http2.FrameHeader, rr *reqRes) error {
 	var err error
+	res := rr.res
+
+	h := fr.Body().(http2.FrameWithHeaders)
+	b := h.Headers()
 
 	hf := http2.AcquireHeaderField()
 	defer http2.ReleaseHeaderField(hf)
-
-	res := rr.res
-
-	h := fr.Body().(*http2.Headers)
-	b := h.Headers()
 
 	for len(b) > 0 {
 		b, err = c.dec.Next(hf, b)

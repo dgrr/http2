@@ -57,8 +57,9 @@ func main() {
 			})
 
 			a := make(map[string]interface{})
-			err = json.Unmarshal(body, &a)
-			fmt.Println(err)
+			if err = json.Unmarshal(body, &a); err != nil {
+				panic(err)
+			}
 
 			fmt.Println("------------------------")
 		}()
