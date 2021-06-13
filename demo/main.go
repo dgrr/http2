@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"github.com/fasthttp/router"
 	"image"
 	"image/jpeg"
 	"io"
@@ -12,7 +11,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/dgrr/http2"
+	"github.com/dgrr/http2/fasthttp2"
+	"github.com/fasthttp/router"
+
 	"github.com/valyala/fasthttp"
 )
 
@@ -57,6 +58,7 @@ func newBTCTiles() fasthttp.RequestHandler {
 		}
 		tile = append(tile, row)
 	}
+
 	return func(ctx *fasthttp.RequestCtx) {
 		ms, _ := strconv.Atoi(string(ctx.FormValue("latency")))
 		const nanosPerMilli = 1e6
@@ -118,14 +120,26 @@ func main() {
 	r.GET("/tiles", newBTCTiles())
 
 	s := &fasthttp.Server{
-		Handler: r.Handler,
-		Name:    "HTTP2 Demo",
+		Handler: func(ctx *fasthttp.RequestCtx) {
+			println(ctx.Request.String())
+			r.Handler(ctx)
+		},
+		Name: "HTTP2 Demo",
 	}
-	http2.ConfigureServer(s)
 
-	go fasthttp.ListenAndServe(":8080", r.Handler)
+	cert, priv, err := GenerateTestCertificate("localhost:8443")
+	if err != nil {
+		log.Fatalln(err)
+	}
 
-	err := s.ListenAndServeTLS(":8443", *certArg, *keyArg)
+	err = s.AppendCertEmbed(cert, priv)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	fasthttp2.ConfigureServer(s)
+
+	err = s.ListenAndServeTLS(":8443", "", "")
 	if err != nil {
 		log.Fatalln(err)
 	}

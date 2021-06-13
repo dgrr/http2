@@ -1,6 +1,6 @@
 module github.com/dgrr/http2
 
-go 1.15
+go 1.13
 
 require (
 	github.com/fasthttp/router v1.3.14

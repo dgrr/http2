@@ -79,6 +79,8 @@ func (sa *ServerAdaptor) OnRequestFinished(
 		ctx.Request.URI().PathOriginal())
 	ctx.Request.Header.SetProtocolBytes(http2.StringHTTP2)
 
+	// it must be safe to do this
+	//go func() {
 	sa.s.Handler(ctx)
 
 	fr := http2.AcquireFrameHeader()
@@ -95,6 +97,7 @@ func (sa *ServerAdaptor) OnRequestFinished(
 	writer <- fr
 
 	writeData(strm, ctx.Response.Body(), writer)
+	//}()
 }
 
 func writeData(
