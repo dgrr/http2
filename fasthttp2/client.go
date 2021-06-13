@@ -45,10 +45,10 @@ type Client struct {
 }
 
 type reqRes struct {
-	streamID uint32
-	req      *fasthttp.Request
-	res      *fasthttp.Response
-	ch       chan error
+	s   *http2.Stream
+	req *fasthttp.Request
+	res *fasthttp.Response
+	ch  chan error
 }
 
 func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
@@ -96,7 +96,7 @@ func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
 
 	go cl.readLoop()
 	go cl.writeLoop()
-	go cl.handleReqs()
+	go cl.handleStreams()
 
 	cl.maxWindow = 1 << 20
 	cl.currentWindow = cl.maxWindow
@@ -162,36 +162,31 @@ func (c *Client) readLoop() {
 			panic(err)
 		}
 
-		switch fr.Type() {
-		case http2.FrameHeaders, http2.FrameData, http2.FrameContinuation:
+		if fr.Stream() != 0 {
 			c.inData <- fr
+			continue
+		}
+
+		switch fr.Type() {
 		case http2.FrameSettings:
 			st := fr.Body().(*http2.Settings)
 			if !st.IsAck() { // if has ack, just ignore
 				c.handleSettings(st)
 			}
-
-			http2.ReleaseFrameHeader(fr)
 		case http2.FrameWindowUpdate:
 			win := int32(fr.Body().(*http2.WindowUpdate).Increment())
 
-			if fr.Stream() == 0 {
-				if !atomic.CompareAndSwapInt32(&c.serverWindow, 0, win) {
-					atomic.AddInt32(&c.serverWindow, win)
-				}
-			} else {
-				// TODO: need to increment stream ...
+			if !atomic.CompareAndSwapInt32(&c.serverWindow, 0, win) {
+				atomic.AddInt32(&c.serverWindow, win)
 			}
-
-			http2.ReleaseFrameHeader(fr)
 		case http2.FramePing:
 			c.handlePing(fr.Body().(*http2.Ping))
-			http2.ReleaseFrameHeader(fr)
 		case http2.FrameGoAway:
 			println(
 				fr.Body().(*http2.GoAway).Code().Error())
-			http2.ReleaseFrameHeader(fr)
 		}
+
+		http2.ReleaseFrameHeader(fr)
 	}
 }
 
@@ -224,7 +219,8 @@ loop:
 	}
 }
 
-func (c *Client) handleReqs() {
+func (c *Client) handleStreams() {
+	var strms http2.Streams
 	rrs := make([]*reqRes, 0, 8) // requests awaiting
 
 	defer func() {
@@ -235,7 +231,7 @@ func (c *Client) handleReqs() {
 
 	getReqRes := func(id uint32) *reqRes {
 		for _, rr := range rrs {
-			if rr.streamID == id {
+			if rr.s.ID() == id {
 				return rr
 			}
 		}
@@ -245,7 +241,7 @@ func (c *Client) handleReqs() {
 
 	delReqRes := func(id uint32) {
 		for i, rr := range rrs {
-			if rr.streamID == id {
+			if rr.s.ID() == id {
 				rrs = append(rrs[:i], rrs[i+1:]...)
 				break
 			}
@@ -255,12 +251,15 @@ func (c *Client) handleReqs() {
 	for {
 		select {
 		case rr := <-c.reqResCh: // request from the user
-			rr.streamID = c.nextID
+			strm := http2.NewStream(c.nextID, int(c.serverS.MaxWindowSize()))
+			rr.s = strm
+
 			c.nextID += 2
 
 			c.writeRequest(rr)
 
 			rrs = append(rrs, rr)
+			strms.Insert(strm)
 		case fr, ok := <-c.inData: // response from the server
 			if !ok {
 				return
@@ -306,7 +305,8 @@ func (c *Client) handleReqs() {
 
 			if fr.Flags().Has(http2.FlagEndStream) {
 				close(rr.ch)
-				delReqRes(rr.streamID)
+				delReqRes(rr.s.ID())
+				strms.Del(rr.s.ID())
 			}
 
 			http2.ReleaseFrameHeader(fr)
@@ -368,7 +368,7 @@ func (c *Client) writeRequest(rr *reqRes) {
 
 	// TODO: continue
 	fr := http2.AcquireFrameHeader()
-	fr.SetStream(rr.streamID)
+	fr.SetStream(rr.s.ID())
 
 	h := http2.AcquireFrame(http2.FrameHeaders).(*http2.Headers)
 	fr.SetBody(h)
@@ -407,7 +407,7 @@ func (c *Client) writeRequest(rr *reqRes) {
 
 	if hasBody { // has body
 		fr = http2.AcquireFrameHeader()
-		fr.SetStream(rr.streamID)
+		fr.SetStream(rr.s.ID())
 
 		data := http2.AcquireFrame(http2.FrameData).(*http2.Data)
 
