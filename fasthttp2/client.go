@@ -45,7 +45,6 @@ type Client struct {
 }
 
 type reqRes struct {
-	s   *http2.Stream
 	req *fasthttp.Request
 	res *fasthttp.Response
 	ch  chan error
@@ -184,6 +183,8 @@ func (c *Client) readLoop() {
 		case http2.FrameGoAway:
 			println(
 				fr.Body().(*http2.GoAway).Code().Error())
+			c.c.Close()
+			return
 		}
 
 		http2.ReleaseFrameHeader(fr)
@@ -243,60 +244,39 @@ loop:
 
 func (c *Client) handleStreams() {
 	var strms http2.Streams
-	rrs := make([]*reqRes, 0, 8) // requests awaiting
 
 	defer func() {
-		for _, rr := range rrs {
-			close(rr.ch)
+		for _, strm := range strms.All() {
+			close(strm.Data().(*reqRes).ch)
 		}
 	}()
-
-	getReqRes := func(id uint32) *reqRes {
-		for _, rr := range rrs {
-			if rr.s.ID() == id {
-				return rr
-			}
-		}
-
-		return nil
-	}
-
-	delReqRes := func(id uint32) {
-		for i, rr := range rrs {
-			if rr.s.ID() == id {
-				rrs = append(rrs[:i], rrs[i+1:]...)
-				break
-			}
-		}
-	}
 
 	for {
 		select {
 		case rr := <-c.reqResCh: // request from the user
-			strm := http2.NewStream(c.nextID, int(c.serverS.MaxWindowSize()))
-			rr.s = strm
+			strm := http2.NewStream(
+				c.nextID, int(c.serverS.MaxWindowSize()), rr)
 
 			c.nextID += 2
 
-			c.writeRequest(rr)
+			c.writeRequest(strm, rr.req)
 
 			// https://datatracker.ietf.org/doc/html/rfc7540#section-8.1
 			// writing the headers and/or the data makes the stream to become half-closed
 			strm.SetState(http2.StreamStateHalfClosed)
 
-			rrs = append(rrs, rr)
 			strms.Insert(strm)
 		case fr, ok := <-c.inData: // response from the server
 			if !ok {
 				return
 			}
 
-			rr := getReqRes(fr.Stream())
-			if rr == nil {
+			strm := strms.Get(fr.Stream())
+			if strm == nil {
 				panic("not found")
 			}
 
-			strm := rr.s
+			rr := strm.Data().(*reqRes)
 
 			atomic.AddInt32(&c.currentWindow, -int32(fr.Len()))
 
@@ -304,7 +284,7 @@ func (c *Client) handleStreams() {
 				err error
 			)
 
-			println("-", fr.Stream(), fr.Type().String(), fr.Len())
+			// println("-", fr.Stream(), fr.Type().String(), fr.Len())
 
 			switch fr.Type() {
 			case http2.FrameHeaders, http2.FrameContinuation:
@@ -337,8 +317,7 @@ func (c *Client) handleStreams() {
 
 			if strm.State() == http2.StreamStateClosed {
 				close(rr.ch)
-				delReqRes(rr.s.ID())
-				strms.Del(rr.s.ID())
+				strms.Del(strm.ID())
 			}
 
 			http2.ReleaseFrameHeader(fr)
@@ -393,14 +372,12 @@ func (c *Client) handlePing(p *http2.Ping) {
 	}
 }
 
-func (c *Client) writeRequest(rr *reqRes) {
-	req := rr.req
-
+func (c *Client) writeRequest(strm *http2.Stream, req *fasthttp.Request) {
 	hasBody := len(req.Body()) != 0
 
 	// TODO: continue
 	fr := http2.AcquireFrameHeader()
-	fr.SetStream(rr.s.ID())
+	fr.SetStream(strm.ID())
 
 	h := http2.AcquireFrame(http2.FrameHeaders).(*http2.Headers)
 	fr.SetBody(h)
@@ -439,7 +416,7 @@ func (c *Client) writeRequest(rr *reqRes) {
 
 	if hasBody { // has body
 		fr = http2.AcquireFrameHeader()
-		fr.SetStream(rr.s.ID())
+		fr.SetStream(strm.ID())
 
 		data := http2.AcquireFrame(http2.FrameData).(*http2.Data)
 
@@ -449,10 +426,6 @@ func (c *Client) writeRequest(rr *reqRes) {
 
 		c.writer <- fr
 	}
-
-	// sending a frame headers sets the stream to the `open` state
-	// then setting the END_STREAM sets the connection to half-closed state.
-	// strm.state = StateHalfClosed
 }
 
 func (c *Client) readHeaders(fr *http2.FrameHeader, rr *reqRes) error {

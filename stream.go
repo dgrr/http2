@@ -32,13 +32,15 @@ type Stream struct {
 	id     uint32
 	window int
 	state  StreamState
+	data   interface{}
 }
 
-func NewStream(id uint32, win int) *Stream {
+func NewStream(id uint32, win int, data interface{}) *Stream {
 	return &Stream{
 		id:     id,
 		window: win,
 		state:  StreamStateIdle,
+		data:   data,
 	}
 }
 
@@ -68,4 +70,8 @@ func (s *Stream) SetWindow(win int) {
 
 func (s *Stream) IncrWindow(win int) {
 	s.window += win
+}
+
+func (s *Stream) Data() interface{} {
+	return s.data
 }

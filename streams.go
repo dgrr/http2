@@ -8,6 +8,10 @@ type Streams struct {
 	list []*Stream
 }
 
+func (strms *Streams) All() []*Stream {
+	return strms.list
+}
+
 func (strms *Streams) Insert(s *Stream) {
 	i := sort.Search(len(strms.list), func(i int) bool {
 		return strms.list[i].id >= s.id
