@@ -34,7 +34,13 @@ func NewServerAdaptor(s *fasthttp.Server) *ServerAdaptor {
 }
 
 func (sa *ServerAdaptor) OnNewStream(strm *http2.Stream) {
-	strm.SetData(&fasthttp.RequestCtx{})
+	ctx := &fasthttp.RequestCtx{}
+
+	// ctx.Request.Header.SetProtocol("HTTP/2")
+	// ctx.Request.Header.DisableNormalizing()
+	// ctx.Request.URI().DisablePathNormalizing = true
+
+	strm.SetData(ctx)
 }
 
 func (sa *ServerAdaptor) OnFrame(
@@ -69,6 +75,10 @@ func (sa *ServerAdaptor) OnRequestFinished(
 ) {
 	ctx := strm.Data().(*fasthttp.RequestCtx)
 
+	ctx.Request.SetRequestURIBytes(
+		ctx.Request.URI().PathOriginal())
+	ctx.Request.Header.SetProtocolBytes(http2.StringHTTP2)
+
 	sa.s.Handler(ctx)
 
 	fr := http2.AcquireFrameHeader()
@@ -91,7 +101,7 @@ func writeData(
 	strm *http2.Stream, body []byte,
 	writer chan<- *http2.FrameHeader,
 ) {
-	step := strm.Window()
+	step := 8192
 
 	for i := 0; i < len(body); i += step {
 		if i+step >= len(body) {
