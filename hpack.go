@@ -419,6 +419,11 @@ func appendString(dst, src []byte, encode bool) []byte {
 	return dst
 }
 
+// TODO: Change naming
+func (hpack *HPACK) AppendHeaderField(h *Headers, hf *HeaderField, store bool) {
+	h.rawHeaders = hpack.AppendHeader(h.rawHeaders, hf, store)
+}
+
 // AppendHeader appends the content of an encoded HeaderField to dst.
 func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte {
 	var (

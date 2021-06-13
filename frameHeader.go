@@ -3,6 +3,7 @@ package http2
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/dgrr/http2/http2utils"
@@ -180,7 +181,6 @@ func (frh *FrameHeader) readFrom(br *bufio.Reader, max uint32) (int64, error) {
 	// if max > 0 && frh.length > max {
 	// TODO: Discard bytes and return an error
 	if frh.length > 0 {
-		// uint32 should be extended to int64.
 		n := frh.length
 		if n < 0 {
 			panic(fmt.Sprintf("length is less than 0 (%d). Overflow? (%d)", n, frh.length))
@@ -188,7 +188,7 @@ func (frh *FrameHeader) readFrom(br *bufio.Reader, max uint32) (int64, error) {
 
 		frh.payload = http2utils.Resize(frh.payload, n)
 
-		n, err = br.Read(frh.payload)
+		n, err = io.ReadFull(br, frh.payload[:n])
 		rn += int64(n)
 	}
 

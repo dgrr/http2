@@ -23,7 +23,7 @@ func main() {
 
 	count := int32(0)
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 2; i++ {
 		for atomic.LoadInt32(&count) >= 4 {
 			time.Sleep(time.Millisecond * 100)
 		}
