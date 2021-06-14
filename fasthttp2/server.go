@@ -3,6 +3,7 @@ package fasthttp2
 import (
 	"bytes"
 	"strconv"
+	"sync"
 
 	"github.com/dgrr/http2"
 	"github.com/valyala/fasthttp"
@@ -33,8 +34,16 @@ func NewServerAdaptor(s *fasthttp.Server) *ServerAdaptor {
 	}
 }
 
+var ctxPool = sync.Pool{
+	New: func() interface{} {
+		return &fasthttp.RequestCtx{}
+	},
+}
+
 func (sa *ServerAdaptor) OnNewStream(strm *http2.Stream) {
-	ctx := &fasthttp.RequestCtx{}
+	ctx := ctxPool.Get().(*fasthttp.RequestCtx)
+	ctx.Request.Reset()
+	ctx.Response.Reset()
 
 	// ctx.Request.Header.SetProtocol("HTTP/2")
 	// ctx.Request.Header.DisableNormalizing()
@@ -129,7 +138,7 @@ func writeData(
 }
 
 func (sa *ServerAdaptor) OnStreamEnd(strm *http2.Stream) {
-	// TODO: release...
+	ctxPool.Put(strm.Data())
 }
 
 func fasthttpRequestHeaders(hf *http2.HeaderField, req *fasthttp.Request) {

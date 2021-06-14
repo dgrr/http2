@@ -33,7 +33,6 @@ type serverConn struct {
 	enc *HPACK
 	dec *HPACK
 
-	nextID uint32
 	lastID uint32
 
 	clientWindow       int32
@@ -60,7 +59,6 @@ func (s *Server) ServeConn(c net.Conn) error {
 		bw:     bufio.NewWriterSize(c, 1<<14*10),
 		enc:    AcquireHPACK(),
 		dec:    AcquireHPACK(),
-		nextID: 2,
 		lastID: 0,
 		writer: make(chan *FrameHeader, 128),
 		reader: make(chan *FrameHeader, 128),
@@ -97,7 +95,12 @@ func (s *Server) ServeConn(c net.Conn) error {
 		}
 
 		if fr.Stream() != 0 {
-			sc.reader <- fr
+			if fr.Stream() < sc.lastID || fr.Stream()&1 == 0 {
+				writeReset(fr.Stream(), NewError(ProtocolError, ""), sc.writer)
+			} else {
+				sc.reader <- fr
+			}
+
 			continue
 		}
 
