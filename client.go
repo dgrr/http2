@@ -116,10 +116,6 @@ func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
 func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error {
 	if preface {
 		err := WritePreface(bw)
-		if err == nil {
-			err = bw.Flush()
-		}
-
 		if err != nil {
 			return err
 		}
