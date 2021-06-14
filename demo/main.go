@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/dgrr/http2/fasthttp2"
-	"github.com/fasthttp/router"
-
 	"github.com/valyala/fasthttp"
 )
 
@@ -107,8 +105,9 @@ function showtimes() {
 }
 
 var (
-	certArg = flag.String("cert", "", "idk")
-	keyArg  = flag.String("key", "", "idk")
+	certArg   = flag.String("cert", "", "idk")
+	keyArg    = flag.String("key", "", "idk")
+	listenArg = flag.String("addr", ":8443", "idk")
 )
 
 func init() {
@@ -116,27 +115,14 @@ func init() {
 }
 
 func main() {
-	r := router.New()
-	r.GET("/tiles", newBTCTiles())
-
 	s := &fasthttp.Server{
-		Handler: r.Handler,
+		Handler: newBTCTiles(),
 		Name:    "HTTP2 Demo",
-	}
-
-	cert, priv, err := GenerateTestCertificate("localhost:8443")
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	err = s.AppendCertEmbed(cert, priv)
-	if err != nil {
-		log.Fatalln(err)
 	}
 
 	fasthttp2.ConfigureServer(s)
 
-	err = s.ListenAndServeTLS(":8443", "", "")
+	err := s.ListenAndServeTLS(*listenArg, *certArg, *keyArg)
 	if err != nil {
 		log.Fatalln(err)
 	}
