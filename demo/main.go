@@ -120,10 +120,7 @@ func main() {
 	r.GET("/tiles", newBTCTiles())
 
 	s := &fasthttp.Server{
-		Handler: func(ctx *fasthttp.RequestCtx) {
-			println(ctx.Request.String())
-			r.Handler(ctx)
-		},
+		Handler: r.Handler,
 		Name: "HTTP2 Demo",
 	}
 

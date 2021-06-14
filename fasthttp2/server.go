@@ -104,7 +104,7 @@ func writeData(
 	strm *http2.Stream, body []byte,
 	writer chan<- *http2.FrameHeader,
 ) {
-	step := 8192
+	step := 1<<14 // max frame size 16384
 
 	for i := 0; i < len(body); i += step {
 		if i+step >= len(body) {

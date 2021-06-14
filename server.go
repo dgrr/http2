@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync/atomic"
 	"time"
@@ -56,7 +57,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 		adpr:   s.Adaptor,
 		c:      c,
 		br:     bufio.NewReader(c),
-		bw:     bufio.NewWriter(c),
+		bw:     bufio.NewWriterSize(c, 1<<14 * 10),
 		enc:    AcquireHPACK(),
 		dec:    AcquireHPACK(),
 		nextID: 2,
@@ -66,10 +67,10 @@ func (s *Server) ServeConn(c net.Conn) error {
 	}
 	defer sc.c.Close()
 
-	sc.maxWindow = 1 << 20
+	sc.maxWindow = 1 << 22
 	sc.currentWindow = sc.maxWindow
 
-	sc.st.SetMaxWindowSize(1 << 16)
+	sc.st.SetMaxWindowSize(uint32(sc.maxWindow))
 	sc.st.SetMaxConcurrentStreams(1024)
 
 	if err := Handshake(false, sc.bw, &sc.st, sc.maxWindow); err != nil {
@@ -116,10 +117,18 @@ func (s *Server) ServeConn(c net.Conn) error {
 			// sc.handlePing(fr.Body().(*Ping))
 		case FrameGoAway:
 			ga := fr.Body().(*GoAway)
-			err = fmt.Errorf("goaway: %s: %s", ga.Code(), ga.Data())
+			if ga.Code() == NoError {
+				err = io.EOF
+			} else {
+				err = fmt.Errorf("goaway: %s: %s", ga.Code(), ga.Data())
+			}
 		}
 
 		ReleaseFrameHeader(fr)
+	}
+
+	if err == io.EOF {
+		err = nil
 	}
 
 	return err
@@ -156,6 +165,7 @@ func (sc *serverConn) handleStreams() {
 			case StreamStateClosed:
 				sc.adpr.OnStreamEnd(strm)
 				strms.Del(strm.ID())
+				streamPool.Put(strm)
 			}
 		}
 	}
@@ -174,7 +184,7 @@ loop:
 			}
 
 			_, err := fr.WriteTo(sc.bw)
-			if err == nil {
+			if err == nil && len(sc.writer) == 0 {
 				err = sc.bw.Flush()
 			}
 

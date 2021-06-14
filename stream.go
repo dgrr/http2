@@ -1,5 +1,9 @@
 package http2
 
+import (
+	"sync"
+)
+
 // StreamState ...
 type StreamState int8
 
@@ -35,12 +39,20 @@ type Stream struct {
 	data   interface{}
 }
 
+var streamPool = sync.Pool{
+	New: func() interface{} {
+		return &Stream{}
+	},
+}
+
 func NewStream(id uint32, win int) *Stream {
-	return &Stream{
-		id:     id,
-		window: win,
-		state:  StreamStateIdle,
-	}
+	strm := streamPool.Get().(*Stream)
+	strm.id = id
+	strm.window = win
+	strm.state = StreamStateIdle
+	strm.data = nil
+
+	return strm
 }
 
 func (s *Stream) ID() uint32 {
