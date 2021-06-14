@@ -149,7 +149,7 @@ func (sc *serverConn) handleStreams() {
 
 			strm := strms.Get(fr.Stream())
 			if strm == nil { // then create it
-				strm = NewStream(fr.Stream(), int(sc.clientStreamWindow))
+				strm = NewStream(fr.Stream(), sc.clientStreamWindow)
 				strms.Insert(strm)
 
 				sc.adpr.OnNewStream(strm)

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/dgrr/http2/fasthttp2"
 	"github.com/valyala/fasthttp"
@@ -22,18 +20,12 @@ func main() {
 		panic(err)
 	}
 
-	count := int32(0)
 	var wg sync.WaitGroup
-	for i := 0; i < 1; i++ {
-		for atomic.LoadInt32(&count) >= 4 {
-			time.Sleep(time.Millisecond * 100)
-		}
-
+	for i := 0; i < 5; i++ {
 		wg.Add(1)
-		atomic.AddInt32(&count, 1)
+
 		go func() {
 			defer wg.Done()
-			defer atomic.AddInt32(&count, -1)
 
 			req := fasthttp.AcquireRequest()
 			res := fasthttp.AcquireResponse()

@@ -39,10 +39,12 @@ type Client struct {
 
 	nextID uint32
 
+	// server's window
 	serverWindow       int32
 	serverStreamWindow int32
-	maxWindow          int32
-	currentWindow      int32
+	// my window
+	maxWindow     int32
+	currentWindow int32
 
 	adptCh chan ClientAdaptor
 
@@ -96,10 +98,10 @@ func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
 	cl.currentWindow = cl.maxWindow
 
 	// TODO: Make an option
-	cl.st.SetMaxWindowSize(1 << 16) // 65536
+	cl.st.SetMaxWindowSize(1 << 20) // 1MB
 	cl.st.SetPush(false)            // do not support push promises
 
-	if err := Handshake(true, cl.bw, &cl.st, cl.maxWindow); err != nil {
+	if err := Handshake(true, cl.bw, &cl.st, cl.maxWindow-65536); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -107,8 +109,6 @@ func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
 	go cl.readLoop()
 	go cl.writeLoop()
 	go cl.handleStreams()
-
-	updateWindow(0, int(cl.maxWindow), cl.writer)
 
 	return cl, nil
 }
@@ -222,8 +222,6 @@ func (c *Client) writeLoop() {
 	ticker := time.NewTicker(time.Second * 3)
 	defer ticker.Stop()
 
-	// TODO: implement window logic
-
 loop:
 	for {
 		select {
@@ -272,7 +270,7 @@ loop:
 		select {
 		case adpt := <-c.adptCh: // request from the user
 			strm := NewStream(
-				c.nextID, int(c.serverS.MaxWindowSize()))
+				c.nextID, int32(c.serverS.MaxWindowSize()))
 			strm.SetData(adpt)
 
 			c.nextID += 2
@@ -296,12 +294,12 @@ loop:
 
 			strm := strms.Get(fr.Stream())
 			if strm == nil {
-				panic("not found")
+				writeReset(
+					fr.Stream(), NewError(ProtocolError, ""), c.writer)
+				continue
 			}
 
 			adapt := strm.Data().(ClientAdaptor)
-
-			atomic.AddInt32(&c.currentWindow, -int32(fr.Len()))
 
 			switch fr.Type() {
 			case FrameHeaders, FrameContinuation:
@@ -310,18 +308,25 @@ loop:
 					writeError(strm, err, c.writer)
 				}
 			case FrameData:
+				// it's safe to modify the win here
+				c.currentWindow -= int32(fr.Len())
+				currentWin := c.currentWindow
+
+				atomic.AddInt32(&c.serverWindow, -int32(fr.Len()))
+				// TODO: per stream
+
 				data := fr.Body().(*Data)
 				if data.Len() > 0 {
 					adapt.AppendBody(data.Data())
 
+					// let's imm send the window update
 					updateWindow(fr.Stream(), fr.Len(), c.writer)
 				}
 
-				myWin := atomic.LoadInt32(&c.currentWindow)
-				if myWin < c.maxWindow/2 {
-					nValue := c.maxWindow - myWin
+				if currentWin < c.maxWindow/2 {
+					nValue := c.maxWindow - currentWin
 
-					atomic.StoreInt32(&c.currentWindow, c.maxWindow)
+					c.currentWindow = c.maxWindow
 
 					updateWindow(0, int(nValue), c.writer)
 				}

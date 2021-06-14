@@ -34,7 +34,7 @@ func (ss StreamState) String() string {
 
 type Stream struct {
 	id     uint32
-	window int
+	window int32
 	state  StreamState
 	data   interface{}
 }
@@ -45,7 +45,7 @@ var streamPool = sync.Pool{
 	},
 }
 
-func NewStream(id uint32, win int) *Stream {
+func NewStream(id uint32, win int32) *Stream {
 	strm := streamPool.Get().(*Stream)
 	strm.id = id
 	strm.window = win
@@ -71,15 +71,15 @@ func (s *Stream) SetState(state StreamState) {
 	s.state = state
 }
 
-func (s *Stream) Window() int {
+func (s *Stream) Window() int32 {
 	return s.window
 }
 
-func (s *Stream) SetWindow(win int) {
+func (s *Stream) SetWindow(win int32) {
 	s.window = win
 }
 
-func (s *Stream) IncrWindow(win int) {
+func (s *Stream) IncrWindow(win int32) {
 	s.window += win
 }
 
