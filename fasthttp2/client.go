@@ -8,21 +8,21 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-type Adaptor struct {
+type ClientAdaptor struct {
 	req *fasthttp.Request
 	res *fasthttp.Response
 	ch  chan error
 }
 
-func (adpr *Adaptor) Error(err error) {
+func (adpr *ClientAdaptor) Error(err error) {
 	adpr.ch <- err
 }
 
-func (adpr *Adaptor) Close() {
+func (adpr *ClientAdaptor) Close() {
 	close(adpr.ch)
 }
 
-func (adpr *Adaptor) Write(id uint32, enc *http2.HPACK, writer chan<- *http2.FrameHeader) {
+func (adpr *ClientAdaptor) Write(id uint32, enc *http2.HPACK, writer chan<- *http2.FrameHeader) {
 	req := adpr.req
 
 	hasBody := len(req.Body()) != 0
@@ -70,6 +70,7 @@ func (adpr *Adaptor) Write(id uint32, enc *http2.HPACK, writer chan<- *http2.Fra
 		fr.SetStream(id)
 
 		data := http2.AcquireFrame(http2.FrameData).(*http2.Data)
+		fr.SetBody(data)
 
 		// TODO: max length
 		data.SetEndStream(true)
@@ -79,7 +80,7 @@ func (adpr *Adaptor) Write(id uint32, enc *http2.HPACK, writer chan<- *http2.Fra
 	}
 }
 
-func (adpr *Adaptor) Read(fr *http2.FrameHeader, dec *http2.HPACK) error {
+func (adpr *ClientAdaptor) Read(fr *http2.FrameHeader, dec *http2.HPACK) error {
 	var err error
 	res := adpr.res
 
@@ -118,6 +119,6 @@ func (adpr *Adaptor) Read(fr *http2.FrameHeader, dec *http2.HPACK) error {
 	return nil
 }
 
-func (adpr *Adaptor) AppendBody(body []byte) {
+func (adpr *ClientAdaptor) AppendBody(body []byte) {
 	adpr.res.AppendBody(body)
 }

@@ -53,7 +53,7 @@ func ConfigureClient(c *fasthttp.HostClient) error {
 func Do(c *http2.Client) fasthttp.TransportFunc {
 	return func(req *fasthttp.Request, res *fasthttp.Response) error {
 		ch := make(chan error, 1)
-		c.Register(&Adaptor{
+		c.Register(&ClientAdaptor{
 			req: req,
 			res: res,
 			ch:  ch,
