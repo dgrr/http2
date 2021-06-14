@@ -83,12 +83,14 @@ func (sa *ServerAdaptor) OnRequestFinished(
 	//go func() {
 	sa.s.Handler(ctx)
 
+	hasBody := len(ctx.Response.Body()) != 0
+
 	fr := http2.AcquireFrameHeader()
 	fr.SetStream(strm.ID())
 
 	h := http2.AcquireFrame(http2.FrameHeaders).(*http2.Headers)
 	h.SetEndHeaders(true)
-	h.SetEndStream(false)
+	h.SetEndStream(!hasBody)
 
 	fr.SetBody(h)
 
@@ -96,7 +98,9 @@ func (sa *ServerAdaptor) OnRequestFinished(
 
 	writer <- fr
 
-	writeData(strm, ctx.Response.Body(), writer)
+	if hasBody {
+		writeData(strm, ctx.Response.Body(), writer)
+	}
 	//}()
 }
 
@@ -104,7 +108,7 @@ func writeData(
 	strm *http2.Stream, body []byte,
 	writer chan<- *http2.FrameHeader,
 ) {
-	step := 1<<14 // max frame size 16384
+	step := 1 << 14 // max frame size 16384
 
 	for i := 0; i < len(body); i += step {
 		if i+step >= len(body) {

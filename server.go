@@ -57,7 +57,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 		adpr:   s.Adaptor,
 		c:      c,
 		br:     bufio.NewReader(c),
-		bw:     bufio.NewWriterSize(c, 1<<14 * 10),
+		bw:     bufio.NewWriterSize(c, 1<<14*10),
 		enc:    AcquireHPACK(),
 		dec:    AcquireHPACK(),
 		nextID: 2,

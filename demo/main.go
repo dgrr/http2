@@ -121,7 +121,7 @@ func main() {
 
 	s := &fasthttp.Server{
 		Handler: r.Handler,
-		Name: "HTTP2 Demo",
+		Name:    "HTTP2 Demo",
 	}
 
 	cert, priv, err := GenerateTestCertificate("localhost:8443")
