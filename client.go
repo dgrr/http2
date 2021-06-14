@@ -233,7 +233,7 @@ loop:
 			}
 
 			_, err := fr.WriteTo(c.bw)
-			if err == nil {
+			if err == nil || len(c.writer) == 0 {
 				err = c.bw.Flush()
 			}
 
@@ -386,11 +386,11 @@ func (c *Client) handlePing(p *Ping) {
 	}
 }
 
-func writeError(strm *Stream, err error, writer chan<- *FrameHeader) {
+func writeReset(strm uint32, err error, writer chan<- *FrameHeader) {
 	r := AcquireFrame(FrameResetStream).(*RstStream)
 
 	fr := AcquireFrameHeader()
-	fr.SetStream(strm.ID())
+	fr.SetStream(strm)
 	fr.SetBody(r)
 
 	if errors.Is(err, Error{}) {
@@ -399,7 +399,10 @@ func writeError(strm *Stream, err error, writer chan<- *FrameHeader) {
 		r.SetCode(InternalError)
 	}
 
-	strm.SetState(StreamStateClosed)
-
 	writer <- fr
+}
+
+func writeError(strm *Stream, err error, writer chan<- *FrameHeader) {
+	writeReset(strm.ID(), err, writer)
+	strm.SetState(StreamStateClosed)
 }
