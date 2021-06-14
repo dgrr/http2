@@ -13,8 +13,8 @@ var (
 	ErrServerSupport = errors.New("server doesn't support HTTP/2")
 )
 
-// Adaptor ...
-type Adaptor interface {
+// ClientAdaptor ...
+type ClientAdaptor interface {
 	// Write ...
 	Write(uint32, *HPACK, chan<- *FrameHeader)
 	// Read ...
@@ -44,7 +44,7 @@ type Client struct {
 	maxWindow          int32
 	currentWindow      int32
 
-	adptCh chan Adaptor
+	adptCh chan ClientAdaptor
 
 	writer chan *FrameHeader
 
@@ -85,7 +85,7 @@ func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
 		br:     bufio.NewReader(tlsConn),
 		bw:     bufio.NewWriter(tlsConn),
 		writer: make(chan *FrameHeader, 128),
-		adptCh: make(chan Adaptor, 128),
+		adptCh: make(chan ClientAdaptor, 128),
 		inData: make(chan *FrameHeader, 128),
 		enc:    AcquireHPACK(),
 		dec:    AcquireHPACK(),
@@ -146,7 +146,7 @@ func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error
 	return err
 }
 
-func (c *Client) Register(adaptr Adaptor) {
+func (c *Client) Register(adaptr ClientAdaptor) {
 	c.adptCh <- adaptr
 }
 
@@ -184,8 +184,7 @@ func (c *Client) readLoop() {
 		case FramePing:
 			c.handlePing(fr.Body().(*Ping))
 		case FrameGoAway:
-			println(
-				fr.Body().(*GoAway).Code().Error())
+			c.inData <- fr
 			c.c.Close()
 			return
 		}
@@ -254,15 +253,21 @@ func (c *Client) handleStreams() {
 	var strms Streams
 
 	defer func() {
-		for _, strm := range strms.All() {
-			strm.Data().(Adaptor).Close()
-		}
-	}()
-
-	defer func() {
 		close(c.adptCh)
 	}()
 
+	var lastErr error
+
+	defer func() {
+		for _, strm := range strms.All() {
+			if lastErr != nil {
+				strm.Data().(ClientAdaptor).Error(lastErr)
+			}
+			strm.Data().(ClientAdaptor).Close()
+		}
+	}()
+
+loop:
 	for {
 		select {
 		case adpt := <-c.adptCh: // request from the user
@@ -284,12 +289,17 @@ func (c *Client) handleStreams() {
 				return
 			}
 
+			if fr.Type() == FrameGoAway {
+				lastErr = fr.Body().(*GoAway).Code()
+				break loop
+			}
+
 			strm := strms.Get(fr.Stream())
 			if strm == nil {
 				panic("not found")
 			}
 
-			adapt := strm.Data().(Adaptor)
+			adapt := strm.Data().(ClientAdaptor)
 
 			atomic.AddInt32(&c.currentWindow, -int32(fr.Len()))
 
@@ -371,8 +381,6 @@ func (c *Client) handleSettings(st *Settings) {
 
 func (c *Client) handlePing(p *Ping) {
 	if p.IsAck() {
-		println(
-			time.Now().Sub(p.DataAsTime()).String())
 	} else {
 		// TODO: reply back
 	}
