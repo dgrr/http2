@@ -48,6 +48,8 @@ type serverConn struct {
 }
 
 func (s *Server) ServeConn(c net.Conn) error {
+	defer c.Close()
+
 	if !ReadPreface(c) {
 		return errors.New("wrong preface")
 	}
@@ -63,7 +65,6 @@ func (s *Server) ServeConn(c net.Conn) error {
 		writer: make(chan *FrameHeader, 128),
 		reader: make(chan *FrameHeader, 128),
 	}
-	defer sc.c.Close()
 
 	sc.maxWindow = 1 << 22
 	sc.currentWindow = sc.maxWindow
@@ -178,6 +179,8 @@ func (sc *serverConn) writeLoop() {
 	ticker := time.NewTicker(time.Second * 10)
 	defer ticker.Stop()
 
+	buffered := 0
+
 loop:
 	for {
 		select {
@@ -187,8 +190,10 @@ loop:
 			}
 
 			_, err := fr.WriteTo(sc.bw)
-			if err == nil && len(sc.writer) == 0 {
+			if err == nil && (len(sc.writer) == 0 || buffered > 10) {
 				err = sc.bw.Flush()
+			} else {
+				buffered++
 			}
 
 			ReleaseFrameHeader(fr)
