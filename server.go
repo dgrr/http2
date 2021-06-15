@@ -193,7 +193,7 @@ loop:
 			if err == nil && (len(sc.writer) == 0 || buffered > 10) {
 				err = sc.bw.Flush()
 				buffered = 0
-			} else {
+			} else if err == nil {
 				buffered++
 			}
 
