@@ -2,48 +2,34 @@
 
 http2 is a implementation of HTTP/2 protocol for [fasthttp](https://github.com/valyala/fasthttp).
 
-# Example
+# Client example
 
 ```go
 package main
 
 import (
-	"fmt"
-	"log"
+        "fmt"
+        "log"
 
-	"github.com/dgrr/http2"
-	"github.com/valyala/fasthttp"
+        "github.com/dgrr/http2/fasthttp2"
+        "github.com/valyala/fasthttp"
 )
 
 func main() {
-	cert, priv, err := GenerateTestCertificate("localhost:8080")
-	if err != nil {
-		log.Fatalln(err)
-	}
+        hc := &fasthttp.HostClient{
+                Addr:  "api.binance.com:443",
+                IsTLS: true,
+        }
 
-	s := &fasthttp.Server{
-		Handler: requestHandler,
-		Name:    "http2 test",
-	}
-	err = s.AppendCertEmbed(cert, priv)
-	if err != nil {
-		log.Fatalln(err)
-	}
+        if err := fasthttp2.ConfigureClient(hc); err != nil {
+                log.Printf("%s doesn't support http/2\n", hc.Addr)
+        }
 
-	http2.ConfigureServer(s)
+        statusCode, body, err := hc.Get(nil, "https://api.binance.com/api/v3/time")
+        if err != nil {
+                log.Fatalln(err)
+        }
 
-	err = s.ListenAndServeTLS(":8443", "", "")
-	if err != nil {
-		log.Fatalln(err)
-	}
-}
-
-func requestHandler(ctx *fasthttp.RequestCtx) {
-	fmt.Printf("%s\n", ctx.Request.Header.Header())
-	if ctx.Request.Header.IsPost() {
-		fmt.Fprintf(ctx, "%s\n", ctx.Request.Body())
-	} else {
-		fmt.Fprintf(ctx, "Hello 21th century!\n")
-	}
+        fmt.Printf("%d: %s\n", statusCode, body)
 }
 ```
