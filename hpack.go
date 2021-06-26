@@ -126,17 +126,19 @@ func (hpack *HPACK) peek(n uint64) *HeaderField {
 		index int
 		table []*HeaderField
 	)
+
 	if n < maxIndex {
 		index, table = int(n-1), staticTable
 	} else { // search in dynamic table
 		nn := len(hpack.dynamic) - int(n-maxIndex) - 1
-		if nn < 0 {
-			return nil
-		}
 		// dynamic_len = 11
 		// n = 64
 		// nn = 11 - 64 - 62 - 1 = 8
 		index, table = nn, hpack.dynamic
+	}
+
+	if index < 0 {
+		return nil
 	}
 
 	return table[index]

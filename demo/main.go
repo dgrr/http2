@@ -78,8 +78,8 @@ func newBTCTiles() fasthttp.RequestHandler {
 		for _, ms := range []int{0, 30, 200, 1000} {
 			d := time.Duration(ms) * nanosPerMilli
 			fmt.Fprintf(ctx, "[<a href='https://%s/tiles?latency=%d'>HTTP/2, %v latency</a>] [<a href='http://%s/tiles?latency=%d'>HTTP/1, %v latency</a>]<br>\n",
-				"localhost:8443", ms, d,
-				"localhost:8080", ms, d,
+				"http2.gofiber.io", ms, d,
+				"not_found.hehe", ms, d,
 			)
 		}
 		io.WriteString(ctx, "<p>\n")
