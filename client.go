@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"sync/atomic"
 	"time"
@@ -51,6 +52,8 @@ type Client struct {
 	writer chan *FrameHeader
 
 	inData chan *FrameHeader
+
+	openStreams int32
 
 	st      Settings
 	serverS Settings
@@ -106,8 +109,20 @@ func Dial(addr string, tlsConfig *tls.Config) (*Client, error) {
 		return nil, err
 	}
 
-	go cl.readLoop()
+	fr, err := ReadFrameFrom(cl.br)
+	if fr.Type() != FrameSettings {
+		c.Close()
+		return nil, fmt.Errorf("unexpected frame, expected settings, got %s", fr.Type())
+	}
+
 	go cl.writeLoop()
+
+	st := fr.Body().(*Settings)
+	if !st.IsAck() { // if has ack, just ignore
+		cl.handleSettings(st)
+	}
+
+	go cl.readLoop()
 	go cl.handleStreams()
 
 	return cl, nil
@@ -124,6 +139,7 @@ func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error
 	fr := AcquireFrameHeader()
 	defer ReleaseFrameHeader(fr)
 
+	// write the settings
 	st2 := &Settings{}
 	st.CopyTo(st2)
 
@@ -131,6 +147,7 @@ func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error
 
 	_, err := fr.WriteTo(bw)
 	if err == nil {
+		// then send a window update
 		fr = AcquireFrameHeader()
 		wu := AcquireFrame(FrameWindowUpdate).(*WindowUpdate)
 		wu.SetIncrement(int(maxWin))
@@ -148,6 +165,10 @@ func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error
 
 func (c *Client) Register(adaptr ClientAdaptor) {
 	c.adptCh <- adaptr
+}
+
+func (c *Client) CanOpenStream() bool {
+	return atomic.LoadInt32(&c.openStreams) < int32(c.serverS.maxStreams)
 }
 
 func (c *Client) readLoop() {
@@ -269,6 +290,8 @@ loop:
 	for {
 		select {
 		case adpt := <-c.adptCh: // request from the user
+			atomic.AddInt32(&c.openStreams, 1)
+
 			strm := NewStream(
 				c.nextID, int32(c.serverS.MaxWindowSize()))
 			strm.SetData(adpt)
@@ -339,6 +362,7 @@ loop:
 			if strm.State() == StreamStateClosed {
 				adapt.Close()
 				strms.Del(strm.ID())
+				atomic.AddInt32(&c.openStreams, -1)
 			}
 
 			ReleaseFrameHeader(fr)

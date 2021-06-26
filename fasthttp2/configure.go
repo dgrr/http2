@@ -2,6 +2,7 @@ package fasthttp2
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
 
 	"github.com/dgrr/http2"
@@ -50,8 +51,14 @@ func ConfigureClient(c *fasthttp.HostClient) error {
 	return nil
 }
 
+var ErrNotAvailableStreams = errors.New("ran out of available streams")
+
 func Do(c *http2.Client) fasthttp.TransportFunc {
 	return func(req *fasthttp.Request, res *fasthttp.Response) error {
+		if !c.CanOpenStream() {
+			return ErrNotAvailableStreams
+		}
+
 		ch := make(chan error, 1)
 		c.Register(&ClientAdaptor{
 			req: req,
