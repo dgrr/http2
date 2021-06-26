@@ -69,6 +69,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 	sc.maxWindow = 1 << 22
 	sc.currentWindow = sc.maxWindow
 
+	sc.st.Reset()
 	sc.st.SetMaxWindowSize(uint32(sc.maxWindow))
 	sc.st.SetMaxConcurrentStreams(1024)
 
@@ -96,8 +97,8 @@ func (s *Server) ServeConn(c net.Conn) error {
 		}
 
 		if fr.Stream() != 0 {
-			if fr.Stream() < sc.lastID || fr.Stream()&1 == 0 {
-				writeReset(fr.Stream(), NewError(ProtocolError, ""), sc.writer)
+			if fr.Stream() < atomic.LoadUint32(&sc.lastID) || fr.Stream()&1 == 0 {
+				writeReset(fr.Stream(), ProtocolError, sc.writer)
 			} else {
 				sc.reader <- fr
 			}
@@ -139,7 +140,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 }
 
 func (sc *serverConn) handleStreams() {
-	var strms Streams
+	var strms = make(map[uint32]*Stream)
 
 	for {
 		select {
@@ -148,10 +149,17 @@ func (sc *serverConn) handleStreams() {
 				return
 			}
 
-			strm := strms.Get(fr.Stream())
-			if strm == nil { // then create it
+			strm, ok := strms[fr.Stream()]
+			if !ok { // then create it
+				if len(strms) > int(sc.st.maxStreams) {
+					writeReset(fr.Stream(), RefusedStreamError, sc.writer)
+					continue
+				}
+
 				strm = NewStream(fr.Stream(), sc.clientStreamWindow)
-				strms.Insert(strm)
+				strms[fr.Stream()] = strm
+
+				atomic.StoreUint32(&sc.lastID, strm.ID())
 
 				sc.adpr.OnNewStream(strm)
 			}
@@ -168,7 +176,7 @@ func (sc *serverConn) handleStreams() {
 				fallthrough
 			case StreamStateClosed:
 				sc.adpr.OnStreamEnd(strm)
-				strms.Del(strm.ID())
+				delete(strms, strm.ID())
 				streamPool.Put(strm)
 			}
 		}

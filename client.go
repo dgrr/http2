@@ -269,7 +269,7 @@ loop:
 }
 
 func (c *Client) handleStreams() {
-	var strms Streams
+	var strms = make(map[uint32]*Stream)
 
 	defer func() {
 		close(c.adptCh)
@@ -278,7 +278,7 @@ func (c *Client) handleStreams() {
 	var lastErr error
 
 	defer func() {
-		for _, strm := range strms.All() {
+		for _, strm := range strms {
 			if lastErr != nil {
 				strm.Data().(ClientAdaptor).Error(lastErr)
 			}
@@ -304,7 +304,7 @@ loop:
 			// writing the headers and/or the data makes the stream to become half-closed
 			strm.SetState(StreamStateHalfClosed)
 
-			strms.Insert(strm)
+			strms[strm.ID()] = strm
 		case fr, ok := <-c.inData: // response from the server
 			if !ok {
 				return
@@ -315,10 +315,10 @@ loop:
 				break loop
 			}
 
-			strm := strms.Get(fr.Stream())
-			if strm == nil {
+			strm, ok := strms[fr.Stream()]
+			if !ok {
 				writeReset(
-					fr.Stream(), NewError(ProtocolError, ""), c.writer)
+					fr.Stream(), ProtocolError, c.writer)
 				continue
 			}
 
@@ -361,7 +361,7 @@ loop:
 
 			if strm.State() == StreamStateClosed {
 				adapt.Close()
-				strms.Del(strm.ID())
+				delete(strms, strm.ID())
 				atomic.AddInt32(&c.openStreams, -1)
 			}
 
@@ -415,23 +415,24 @@ func (c *Client) handlePing(p *Ping) {
 	}
 }
 
-func writeReset(strm uint32, err error, writer chan<- *FrameHeader) {
+func writeReset(strm uint32, code ErrorCode, writer chan<- *FrameHeader) {
 	r := AcquireFrame(FrameResetStream).(*RstStream)
 
 	fr := AcquireFrameHeader()
 	fr.SetStream(strm)
 	fr.SetBody(r)
 
-	if errors.Is(err, Error{}) {
-		r.SetCode(err.(Error).Code())
-	} else {
-		r.SetCode(InternalError)
-	}
+	r.SetCode(code)
 
 	writer <- fr
 }
 
 func writeError(strm *Stream, err error, writer chan<- *FrameHeader) {
-	writeReset(strm.ID(), err, writer)
+	code := ErrorCode(InternalError)
+	if errors.Is(err, Error{}) {
+		code = err.(Error).Code()
+	}
+
+	writeReset(strm.ID(), code, writer)
 	strm.SetState(StreamStateClosed)
 }

@@ -45,7 +45,6 @@ func (sa *ServerAdaptor) OnNewStream(strm *http2.Stream) {
 	ctx.Request.Reset()
 	ctx.Response.Reset()
 
-	// ctx.Request.Header.SetProtocol("HTTP/2")
 	// ctx.Request.Header.DisableNormalizing()
 	// ctx.Request.URI().DisablePathNormalizing = true
 
@@ -88,8 +87,6 @@ func (sa *ServerAdaptor) OnRequestFinished(
 		ctx.Request.URI().PathOriginal())
 	ctx.Request.Header.SetProtocolBytes(http2.StringHTTP2)
 
-	// it must be safe to do this
-	//go func() {
 	sa.s.Handler(ctx)
 
 	hasBody := len(ctx.Response.Body()) != 0
@@ -110,7 +107,6 @@ func (sa *ServerAdaptor) OnRequestFinished(
 	if hasBody {
 		writeData(strm, ctx.Response.Body(), writer)
 	}
-	//}()
 }
 
 func writeData(
