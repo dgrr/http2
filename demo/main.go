@@ -12,6 +12,7 @@ import (
 	"log"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dgrr/http2/fasthttp2"
@@ -121,6 +122,7 @@ ws.onclose = function(e){
 }
 
 type WebSocketService struct {
+	connCount int64
 	conns sync.Map
 	once sync.Once
 }
@@ -128,7 +130,8 @@ type WebSocketService struct {
 func (ws *WebSocketService) OnOpen(c *websocket.Conn) {
 	ws.conns.Store(c.ID(), c)
 
-	log.Printf("New connection %s\n", c.RemoteAddr())
+	log.Printf("New connection %s. Total connections %d\n",
+		c.RemoteAddr(), atomic.AddInt64(&ws.connCount, 1))
 
 	ws.once.Do(ws.Run)
 }
@@ -139,6 +142,8 @@ func (ws *WebSocketService) OnClose(c *websocket.Conn, err error) {
 	} else {
 		log.Printf("Closing %s\n", c.RemoteAddr())
 	}
+
+	log.Printf("Connections left %d\n", atomic.AddInt64(&ws.connCount, -1))
 }
 
 type rttMessage struct {
@@ -164,7 +169,7 @@ func (ws *WebSocketService) OnPong(c *websocket.Conn, data []byte) {
 }
 
 func (ws *WebSocketService) Run() {
-	time.AfterFunc(time.Second*2, func() {
+	time.AfterFunc(time.Millisecond * 500, func() {
 		var tsData [8]byte
 
 		binary.BigEndian.PutUint64(
