@@ -8,7 +8,32 @@ http2 is a implementation of HTTP/2 protocol for [fasthttp](https://github.com/v
 go get github.com/dgrr/http2@v0.0.3
 ```
 
-# Client example
+# How to use the server?
+
+The server can only be used if your server supports TLS.
+Then, you can call [ConfigureServer](https://pkg.go.dev/github.com/dgrr/http2@v0.0.3/fasthttp2#ConfigureServer).
+
+```go
+import (
+	"github.com/valyala/fasthttp"
+	"github.com/dgrr/http2/fasthttp2"
+)
+
+func main() {
+    s := &fasthttp.Server{
+        Handler: yourHandler,
+        Name:    "HTTP2 test",
+    }
+
+    fasthttp2.ConfigureServer(s)
+    
+    s.ListenAndServeTLS(...)
+}
+```
+
+# How to use the client?
+
+The HTTP/2 client only works with the HostClient.
 
 ```go
 package main
