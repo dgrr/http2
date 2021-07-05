@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"image"
@@ -9,14 +11,18 @@ import (
 	"io"
 	"log"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/dgrr/http2/fasthttp2"
+	"github.com/dgrr/websocket"
+	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
 )
 
 func newBTCTiles() fasthttp.RequestHandler {
 	const btcURL = "https://www.phneep.com/wp-content/uploads/2019/09/1-Strong-Hands-Bitcoin-web.jpg"
+
 	statusCode, slurp, err := fasthttp.Get(nil, btcURL)
 	if err != nil {
 		log.Fatal(err)
@@ -91,7 +97,7 @@ func newBTCTiles() fasthttp.RequestHandler {
 			}
 			io.WriteString(ctx, "<br/>\n")
 		}
-		io.WriteString(ctx, `<p><div id='loadtimes'></div></p>
+		io.WriteString(ctx, `<p><div id='loadtimes'></div></p><br><div id="rtt"></div>
 <script>
 function showtimes() {
 	var times = 'Times from connection start:<br>'
@@ -99,9 +105,81 @@ function showtimes() {
 	times += 'DOM complete (images loaded): ' + (window.performance.timing.domComplete - window.performance.timing.connectStart) + 'ms<br>'
 	document.getElementById('loadtimes').innerHTML = times
 }
+
+var ws = new WebSocket("wss://http2.gofiber.io/ws");
+ws.onmessage = function(e) {
+    var data = JSON.parse(e.data)
+	document.getElementById("rtt").innerHTML = 'RTT: ' + data.rtt_in_ms;
+}
+
+ws.onclose = function(e){
+	document.getElementById("rtt").innerHTML = "CLOSED";
+}
 </script>
 <hr><a href='/'>&lt;&lt Back to Go HTTP/2 demo server</a></body></html>`)
 	}
+}
+
+type WebSocketService struct {
+	conns sync.Map
+	once sync.Once
+}
+
+func (ws *WebSocketService) OnOpen(c *websocket.Conn) {
+	ws.conns.Store(c.ID(), c)
+
+	log.Printf("New connection %s\n", c.RemoteAddr())
+
+	ws.once.Do(ws.Run)
+}
+
+func (ws *WebSocketService) OnClose(c *websocket.Conn, err error) {
+	if err != nil {
+		log.Printf("Closing %s with error %s\n", c.RemoteAddr(), err)
+	} else {
+		log.Printf("Closing %s\n", c.RemoteAddr())
+	}
+}
+
+type rttMessage struct {
+	RTTInMs int64 `json:"rtt_in_ms"`
+}
+
+func (ws *WebSocketService) OnPong(c *websocket.Conn, data []byte) {
+	if len(data) != 8 {
+		return
+	}
+
+	ts := time.Now().Sub(
+		time.Unix(0, int64(
+			binary.BigEndian.Uint64(data))),
+			)
+
+	data, _ = json.Marshal(
+		rttMessage{
+			RTTInMs: ts.Milliseconds(),
+		})
+
+	c.Write(data)
+}
+
+func (ws *WebSocketService) Run() {
+	time.AfterFunc(time.Second*2, func() {
+		var tsData [8]byte
+
+		binary.BigEndian.PutUint64(
+			tsData[:], uint64(time.Now().UnixNano()))
+
+		ws.conns.Range(func(_, v interface{}) bool {
+			c := v.(*websocket.Conn)
+
+			c.Ping(tsData[:])
+
+			return true
+		})
+
+		ws.Run()
+	})
 }
 
 var (
@@ -115,8 +193,21 @@ func init() {
 }
 
 func main() {
+	service := &WebSocketService{}
+
+	ws := websocket.Server{}
+
+	ws.HandleOpen(service.OnOpen)
+	ws.HandlePong(service.OnPong)
+	ws.HandleClose(service.OnClose)
+
+	r := router.New()
+	r.GET("/ws", ws.Upgrade)
+
+	r.NotFound = newBTCTiles()
+
 	s := &fasthttp.Server{
-		Handler: newBTCTiles(),
+		Handler: r.Handler,
 		Name:    "HTTP2 Demo",
 	}
 
