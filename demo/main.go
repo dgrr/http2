@@ -123,8 +123,8 @@ ws.onclose = function(e){
 
 type WebSocketService struct {
 	connCount int64
-	conns sync.Map
-	once sync.Once
+	conns     sync.Map
+	once      sync.Once
 }
 
 func (ws *WebSocketService) OnOpen(c *websocket.Conn) {
@@ -144,6 +144,8 @@ func (ws *WebSocketService) OnClose(c *websocket.Conn, err error) {
 	}
 
 	log.Printf("Connections left %d\n", atomic.AddInt64(&ws.connCount, -1))
+
+	ws.conns.Delete(c.ID())
 }
 
 type rttMessage struct {
@@ -158,7 +160,7 @@ func (ws *WebSocketService) OnPong(c *websocket.Conn, data []byte) {
 	ts := time.Now().Sub(
 		time.Unix(0, int64(
 			binary.BigEndian.Uint64(data))),
-			)
+	)
 
 	data, _ = json.Marshal(
 		rttMessage{
@@ -169,7 +171,7 @@ func (ws *WebSocketService) OnPong(c *websocket.Conn, data []byte) {
 }
 
 func (ws *WebSocketService) Run() {
-	time.AfterFunc(time.Millisecond * 500, func() {
+	time.AfterFunc(time.Millisecond*500, func() {
 		var tsData [8]byte
 
 		binary.BigEndian.PutUint64(
@@ -179,6 +181,8 @@ func (ws *WebSocketService) Run() {
 			c := v.(*websocket.Conn)
 
 			c.Ping(tsData[:])
+
+			log.Printf("Sending ping to %d: %s\n", c.ID(), c.RemoteAddr())
 
 			return true
 		})
