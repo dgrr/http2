@@ -2,6 +2,7 @@ package fasthttp2
 
 import (
 	"bytes"
+	"crypto/tls"
 	"strconv"
 	"sync"
 
@@ -9,7 +10,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// ConfigureServer configures the fasthttp's server to handle
+// ConfigureServer configures the fasthttp server to handle
 // HTTP/2 connections. The HTTP/2 connection can be only
 // established if the fasthttp server is using TLS.
 //
@@ -20,6 +21,19 @@ func ConfigureServer(s *fasthttp.Server) *http2.Server {
 	}
 
 	s.NextProto(http2.H2TLSProto, s2.ServeConn)
+
+	return s2
+}
+
+// ConfigureServerAndConfig configures the fasthttp server to handle HTTP/2 connections
+// and your own tlsConfig file. If you are NOT using your own tls config, you may want to use ConfigureServer.
+func ConfigureServerAndConfig(s *fasthttp.Server, tlsConfig *tls.Config) *http2.Server {
+	s2 := &http2.Server{
+		Adaptor: NewServerAdaptor(s),
+	}
+
+	s.NextProto(http2.H2TLSProto, s2.ServeConn)
+	tlsConfig.NextProtos = append(tlsConfig.NextProtos, http2.H2TLSProto)
 
 	return s2
 }

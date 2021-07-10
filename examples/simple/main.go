@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	cert, priv, err := GenerateTestCertificate("localhost:8080")
+	cert, priv, err := GenerateTestCertificate("localhost:8443")
 	if err != nil {
 		log.Fatalln(err)
 	}
