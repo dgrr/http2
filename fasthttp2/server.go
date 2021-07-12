@@ -82,6 +82,8 @@ func (sa *ServerAdaptor) OnFrame(
 	case http2.FrameHeaders, http2.FrameContinuation:
 		b := fr.Body().(http2.FrameWithHeaders).Headers()
 		hf := http2.AcquireHeaderField()
+		scheme := []byte("https")
+		req := &ctx.Request
 
 		for len(b) > 0 {
 			b, err = dec.Next(hf, b)
@@ -89,8 +91,36 @@ func (sa *ServerAdaptor) OnFrame(
 				break
 			}
 
-			fasthttpRequestHeaders(hf, &ctx.Request)
+			k, v := hf.KeyBytes(), hf.ValueBytes()
+			if !hf.IsPseudo() &&
+				!(bytes.Equal(k, http2.StringUserAgent) ||
+					bytes.Equal(k, http2.StringContentType)) {
+				req.Header.AddBytesKV(k, v)
+				continue
+			}
+
+			if hf.IsPseudo() {
+				k = k[1:]
+			}
+
+			switch k[0] {
+			case 'm': // method
+				req.Header.SetMethodBytes(v)
+			case 'p': // path
+				req.Header.SetRequestURIBytes(v)
+			case 's': // scheme
+				scheme = append(scheme[:0], v...)
+			case 'a': // authority
+				req.Header.SetHostBytes(v)
+				req.Header.AddBytesV("Host", v)
+			case 'u': // user-agent
+				req.Header.SetUserAgentBytes(v)
+			case 'c': // content-type
+				req.Header.SetContentTypeBytes(v)
+			}
 		}
+
+		req.URI().SetSchemeBytes(scheme)
 	case http2.FrameData:
 		ctx.Request.AppendBody(
 			fr.Body().(*http2.Data).Data())
@@ -153,36 +183,6 @@ func writeData(
 
 func (sa *ServerAdaptor) OnStreamEnd(strm *http2.Stream) {
 	ctxPool.Put(strm.Data())
-}
-
-func fasthttpRequestHeaders(hf *http2.HeaderField, req *fasthttp.Request) {
-	k, v := hf.KeyBytes(), hf.ValueBytes()
-	if !hf.IsPseudo() &&
-		!(bytes.Equal(k, http2.StringUserAgent) ||
-			bytes.Equal(k, http2.StringContentType)) {
-		req.Header.AddBytesKV(k, v)
-		return
-	}
-
-	if hf.IsPseudo() {
-		k = k[1:]
-	}
-
-	switch k[0] {
-	case 'm': // method
-		req.Header.SetMethodBytes(v)
-	case 'p': // path
-		req.URI().SetPathBytes(v)
-	case 's': // scheme
-		req.URI().SetSchemeBytes(v)
-	case 'a': // authority
-		req.URI().SetHostBytes(v)
-		req.Header.AddBytesV("Host", v)
-	case 'u': // user-agent
-		req.Header.SetUserAgentBytes(v)
-	case 'c': // content-type
-		req.Header.SetContentTypeBytes(v)
-	}
 }
 
 func fasthttpResponseHeaders(dst *http2.Headers, hp *http2.HPACK, res *fasthttp.Response) {
