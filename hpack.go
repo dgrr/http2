@@ -200,6 +200,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		err error
 	)
 
+loop:
 	c = b[0]
 	switch {
 	// Indexed Header Field.
@@ -312,6 +313,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 		b, n = readInt(5, b)
 		hpack.maxTableSize = int(n)
 		hpack.shrink()
+		goto loop
 	}
 
 	return b, err

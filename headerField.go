@@ -29,6 +29,11 @@ func ReleaseHeaderField(hf *HeaderField) {
 	headerPool.Put(hf)
 }
 
+// Empty returns true if `hf` doesn't contain any key nor value.
+func (hf *HeaderField) Empty() bool {
+	return len(hf.key) == 0 && len(hf.value) == 0
+}
+
 // Reset resets header field values.
 func (hf *HeaderField) Reset() {
 	hf.key = hf.key[:0]
