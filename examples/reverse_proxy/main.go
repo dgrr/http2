@@ -47,5 +47,5 @@ func requestHandler(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	res.CopyTo(res)
+	res.CopyTo(&ctx.Response)
 }
