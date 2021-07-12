@@ -3,6 +3,9 @@ package fasthttp2
 import (
 	"bytes"
 	"crypto/tls"
+	"log"
+	"net"
+	"os"
 	"strconv"
 	"sync"
 
@@ -54,10 +57,14 @@ var ctxPool = sync.Pool{
 	},
 }
 
-func (sa *ServerAdaptor) OnNewStream(strm *http2.Stream) {
+var logger = log.New(os.Stdout, "", log.LstdFlags)
+
+func (sa *ServerAdaptor) OnNewStream(c net.Conn, strm *http2.Stream) {
 	ctx := ctxPool.Get().(*fasthttp.RequestCtx)
 	ctx.Request.Reset()
 	ctx.Response.Reset()
+
+	ctx.Init2(c, logger, false)
 
 	// ctx.Request.Header.DisableNormalizing()
 	// ctx.Request.URI().DisablePathNormalizing = true
@@ -96,9 +103,6 @@ func (sa *ServerAdaptor) OnRequestFinished(
 	strm *http2.Stream, enc *http2.HPACK, writer chan<- *http2.FrameHeader,
 ) {
 	ctx := strm.Data().(*fasthttp.RequestCtx)
-
-	ctx.Request.SetRequestURIBytes(
-		ctx.Request.URI().PathOriginal())
 	ctx.Request.Header.SetProtocolBytes(http2.StringHTTP2)
 
 	sa.s.Handler(ctx)

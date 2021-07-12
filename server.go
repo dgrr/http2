@@ -11,7 +11,7 @@ import (
 )
 
 type ServerAdaptor interface {
-	OnNewStream(*Stream)
+	OnNewStream(net.Conn, *Stream)
 	OnFrame(*Stream, *FrameHeader, *HPACK) error
 	OnRequestFinished(*Stream, *HPACK, chan<- *FrameHeader)
 	OnStreamEnd(*Stream)
@@ -161,7 +161,7 @@ func (sc *serverConn) handleStreams() {
 
 				atomic.StoreUint32(&sc.lastID, strm.ID())
 
-				sc.adpr.OnNewStream(strm)
+				sc.adpr.OnNewStream(sc.c, strm)
 			}
 
 			if err := sc.adpr.OnFrame(strm, fr, sc.dec); err != nil {
