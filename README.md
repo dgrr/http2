@@ -8,6 +8,10 @@ http2 is a implementation of HTTP/2 protocol for [fasthttp](https://github.com/v
 go get github.com/dgrr/http2@v0.0.4
 ```
 
+# Help
+
+If you need any help setting up, contributing or understanding this repo, you can contact me on [gofiber's Discord](https://gofiber.io/discord).
+
 # How to use the server?
 
 The server can only be used if your server supports TLS.
