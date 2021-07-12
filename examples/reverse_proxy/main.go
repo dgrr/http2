@@ -38,7 +38,6 @@ func requestHandler(ctx *fasthttp.RequestCtx) {
 	defer fasthttp.ReleaseResponse(res)
 
 	ctx.Request.CopyTo(req)
-	ctx.Response.CopyTo(res)
 
 	req.Header.SetProtocol("HTTP/1.1")
 	req.SetRequestURI("http://localhost:8080" + string(ctx.RequestURI()))
