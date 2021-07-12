@@ -120,6 +120,7 @@ func (sa *ServerAdaptor) OnFrame(
 			}
 		}
 
+		// calling req.URI() triggers a URL parsing, so because of that we need to delay the URL parsing.
 		req.URI().SetSchemeBytes(scheme)
 	case http2.FrameData:
 		ctx.Request.AppendBody(
