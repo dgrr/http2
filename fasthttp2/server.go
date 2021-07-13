@@ -200,6 +200,9 @@ func fasthttpResponseHeaders(dst *http2.Headers, hp *http2.HPACK, res *fasthttp.
 	dst.AppendHeaderField(hp, hf, true)
 
 	res.Header.SetContentLength(len(res.Body()))
+	// Remove the Connection field
+	res.Header.Del("Connection")
+
 	res.Header.VisitAll(func(k, v []byte) {
 		hf.SetBytes(http2.ToLower(k), v)
 		dst.AppendHeaderField(hp, hf, false)
