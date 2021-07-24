@@ -43,6 +43,7 @@ var hpackPool = sync.Pool{
 
 // AcquireHPACK gets HPACK from pool
 func AcquireHPACK() *HPACK {
+	// TODO: Change the name
 	hpack := hpackPool.Get().(*HPACK)
 	hpack.Reset()
 	return hpack

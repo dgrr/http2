@@ -21,6 +21,10 @@ func (p *Ping) IsAck() bool {
 	return p.ack
 }
 
+func (p *Ping) SetAck(ack bool) {
+	p.ack = ack
+}
+
 func (p *Ping) Type() FrameType {
 	return FramePing
 }

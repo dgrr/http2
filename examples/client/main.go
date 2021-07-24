@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/dgrr/http2"
 	"log"
 	"sync"
 
@@ -16,48 +17,40 @@ func main() {
 		IsTLS: true,
 	}
 
-	if err := fasthttp2.ConfigureClient(c); err != nil {
+	if err := http2.ConfigureClient(c); err != nil {
 		panic(err)
 	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
-		wg.Add(1)
+		req := fasthttp.AcquireRequest()
+		res := fasthttp.AcquireResponse()
 
-		go func() {
-			defer wg.Done()
+		res.Reset()
 
-			req := fasthttp.AcquireRequest()
-			res := fasthttp.AcquireResponse()
+		req.Header.SetMethod("GET")
+		// TODO: Use SetRequestURI
+		req.URI().Update("https://api.binance.com/api/v3/exchangeInfo")
 
-			res.Reset()
+		err := c.Do(req, res)
+		if err != nil {
+			log.Fatalln(err)
+		}
 
-			req.Header.SetMethod("GET")
-			// TODO: Use SetRequestURI
-			req.URI().Update("https://api.binance.com/api/v3/exchangeInfo")
+		body := res.Body()
 
-			err := c.Do(req, res)
-			if err != nil {
-				log.Fatalln(err)
-			}
+		fmt.Printf("%d: %d\n", res.Header.StatusCode(), len(body))
+		res.Header.VisitAll(func(k, v []byte) {
+			fmt.Printf("%s: %s\n", k, v)
+		})
 
-			body := res.Body()
+		a := make(map[string]interface{})
+		if err = json.Unmarshal(body, &a); err != nil {
+			panic(err)
+		}
 
-			fmt.Printf("%d: %d\n", res.Header.StatusCode(), len(body))
-			res.Header.VisitAll(func(k, v []byte) {
-				fmt.Printf("%s: %s\n", k, v)
-			})
-
-			a := make(map[string]interface{})
-			if err = json.Unmarshal(body, &a); err != nil {
-				panic(err)
-			}
-
-			fmt.Println("------------------------")
-		}()
+		fmt.Println("------------------------")
 	}
-
-	wg.Wait()
 
 	// fmt.Printf("%s\n", body)
 }

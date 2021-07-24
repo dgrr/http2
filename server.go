@@ -98,7 +98,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 
 		if fr.Stream() != 0 {
 			if fr.Stream() < atomic.LoadUint32(&sc.lastID) || fr.Stream()&1 == 0 {
-				writeReset(fr.Stream(), ProtocolError, sc.writer)
+				// writeReset(fr.Stream(), ProtocolError, sc.writer)
 			} else {
 				sc.reader <- fr
 			}
@@ -152,7 +152,7 @@ func (sc *serverConn) handleStreams() {
 			strm, ok := strms[fr.Stream()]
 			if !ok { // then create it
 				if len(strms) > int(sc.st.maxStreams) {
-					writeReset(fr.Stream(), RefusedStreamError, sc.writer)
+					// writeReset(fr.Stream(), RefusedStreamError, sc.writer)
 					continue
 				}
 
@@ -165,10 +165,10 @@ func (sc *serverConn) handleStreams() {
 			}
 
 			if err := sc.adpr.OnFrame(strm, fr, sc.dec); err != nil {
-				writeError(strm, err, sc.writer)
+				// writeError(strm, err, sc.writer)
 			}
 
-			handleState(fr, strm)
+			// handleState(fr, strm)
 
 			switch strm.State() {
 			case StreamStateHalfClosed:
