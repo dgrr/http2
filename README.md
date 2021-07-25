@@ -20,7 +20,7 @@ Then, you can call [ConfigureServer](https://pkg.go.dev/github.com/dgrr/http2@v0
 ```go
 import (
 	"github.com/valyala/fasthttp"
-	"github.com/dgrr/http2/fasthttp2"
+	"github.com/dgrr/http2"
 )
 
 func main() {
@@ -29,7 +29,7 @@ func main() {
         Name:    "HTTP2 test",
     }
 
-    fasthttp2.ConfigureServer(s)
+    http2.ConfigureServer(s)
     
     s.ListenAndServeTLS(...)
 }
