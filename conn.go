@@ -202,6 +202,10 @@ func (d *Dialer) Dial() (*Conn, error) {
 	return nc, err
 }
 
+func (c *Conn) CanOpenStream() bool {
+	return atomic.LoadInt32(&c.openStreams) < int32(c.serverS.maxStreams)
+}
+
 // Closed indicates whether the connection is closed or not.
 func (c *Conn) Closed() bool {
 	return atomic.LoadUint64(&c.closed) == 1
@@ -320,7 +324,7 @@ func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
 		return 0, io.EOF
 	}
 
-	if c.openStreams == int32(c.serverS.maxStreams) {
+	if !c.CanOpenStream() {
 		return 0, ErrNotAvailableStreams
 	}
 

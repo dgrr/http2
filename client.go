@@ -38,28 +38,34 @@ func createClient(d *Dialer) *Client {
 func (cl *Client) Do(req *fasthttp.Request, res *fasthttp.Response) (err error) {
 	var c *Conn
 
-getConn:
 	cl.lck.Lock()
 
-	e := cl.conns.Front()
-	if e != nil {
-		c = e.Value.(*Conn)
-	} else {
-		var err error
+	var next *list.Element
 
-		if c, err = cl.d.Dial(); err != nil {
-			cl.lck.Unlock()
-			return err
+	for e := cl.conns.Front(); c == nil; e = next {
+		if e != nil {
+			c = e.Value.(*Conn)
+		} else {
+			var err error
+
+			if c, err = cl.d.Dial(); err != nil {
+				cl.lck.Unlock()
+				return err
+			}
+
+			e = cl.conns.PushFront(c)
 		}
 
-		e = cl.conns.PushFront(c)
-	}
+		if !c.CanOpenStream() {
+			c = nil
+			next = e.Next()
+		}
 
-	if c.Closed() {
-		cl.conns.Remove(e)
-		cl.lck.Unlock()
-
-		goto getConn
+		if c != nil && c.Closed() {
+			next = e.Next()
+			cl.conns.Remove(e)
+			c = nil
+		}
 	}
 
 	cl.lck.Unlock()
