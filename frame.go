@@ -59,55 +59,55 @@ type Frame interface {
 	Deserialize(*FrameHeader) error
 }
 
-var framePools = func() [FrameContinuation + 1]sync.Pool {
-	var pools [FrameContinuation + 1]sync.Pool
+var framePools = func() [FrameContinuation + 1]*sync.Pool {
+	var pools [FrameContinuation + 1]*sync.Pool
 
-	pools[FrameData] = sync.Pool{
+	pools[FrameData] = &sync.Pool{
 		New: func() interface{} {
 			return &Data{}
 		},
 	}
-	pools[FrameHeaders] = sync.Pool{
+	pools[FrameHeaders] = &sync.Pool{
 		New: func() interface{} {
 			return &Headers{}
 		},
 	}
-	pools[FramePriority] = sync.Pool{
+	pools[FramePriority] = &sync.Pool{
 		New: func() interface{} {
 			return &Priority{}
 		},
 	}
-	pools[FrameResetStream] = sync.Pool{
+	pools[FrameResetStream] = &sync.Pool{
 		New: func() interface{} {
 			return &RstStream{}
 		},
 	}
-	pools[FrameSettings] = sync.Pool{
+	pools[FrameSettings] = &sync.Pool{
 		New: func() interface{} {
 			return &Settings{}
 		},
 	}
-	pools[FramePushPromise] = sync.Pool{
+	pools[FramePushPromise] = &sync.Pool{
 		New: func() interface{} {
 			return &PushPromise{}
 		},
 	}
-	pools[FramePing] = sync.Pool{
+	pools[FramePing] = &sync.Pool{
 		New: func() interface{} {
 			return &Ping{}
 		},
 	}
-	pools[FrameGoAway] = sync.Pool{
+	pools[FrameGoAway] = &sync.Pool{
 		New: func() interface{} {
 			return &GoAway{}
 		},
 	}
-	pools[FrameWindowUpdate] = sync.Pool{
+	pools[FrameWindowUpdate] = &sync.Pool{
 		New: func() interface{} {
 			return &WindowUpdate{}
 		},
 	}
-	pools[FrameContinuation] = sync.Pool{
+	pools[FrameContinuation] = &sync.Pool{
 		New: func() interface{} {
 			return &Continuation{}
 		},

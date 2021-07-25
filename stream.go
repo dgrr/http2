@@ -1,6 +1,7 @@
 package http2
 
 import (
+	"github.com/valyala/fasthttp"
 	"sync"
 )
 
@@ -36,7 +37,7 @@ type Stream struct {
 	id     uint32
 	window int32
 	state  StreamState
-	data   interface{}
+	ctx    *fasthttp.RequestCtx
 }
 
 var streamPool = sync.Pool{
@@ -50,7 +51,7 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.id = id
 	strm.window = win
 	strm.state = StreamStateIdle
-	strm.data = nil
+	strm.ctx = nil
 
 	return strm
 }
@@ -83,10 +84,10 @@ func (s *Stream) IncrWindow(win int32) {
 	s.window += win
 }
 
-func (s *Stream) Data() interface{} {
-	return s.data
+func (s *Stream) Ctx() *fasthttp.RequestCtx {
+	return s.ctx
 }
 
-func (s *Stream) SetData(data interface{}) {
-	s.data = data
+func (s *Stream) SetData(ctx *fasthttp.RequestCtx) {
+	s.ctx = ctx
 }

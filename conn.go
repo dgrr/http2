@@ -375,6 +375,9 @@ func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
 
 	_, err := fr.WriteTo(c.bw)
 	if err == nil && hasBody {
+		// release headers bc it's going to get replaced by the data frame
+		ReleaseFrame(h)
+
 		err = writeData(c.bw, fr, req.Body())
 	}
 
@@ -405,8 +408,6 @@ func writeData(bw *bufio.Writer, fh *FrameHeader, body []byte) (err error) {
 
 		_, err = fh.WriteTo(bw)
 	}
-
-	ReleaseFrame(data)
 
 	return err
 }

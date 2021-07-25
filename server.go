@@ -2,30 +2,28 @@ package http2
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
+	"os"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/valyala/fasthttp"
 )
 
-type ServerAdaptor interface {
-	OnNewStream(net.Conn, *Stream)
-	OnFrame(*Stream, *FrameHeader, *HPACK) error
-	OnRequestFinished(*Stream, *HPACK, chan<- *FrameHeader)
-	OnStreamEnd(*Stream)
-}
-
 type Server struct {
-	ln net.Listener
-
-	Adaptor ServerAdaptor
+	s *fasthttp.Server
 }
 
 type serverConn struct {
-	adpr ServerAdaptor
-	c    net.Conn
+	c net.Conn
+	s *Server
 
 	br *bufio.Reader
 	bw *bufio.Writer
@@ -55,8 +53,8 @@ func (s *Server) ServeConn(c net.Conn) error {
 	}
 
 	sc := &serverConn{
-		adpr:   s.Adaptor,
 		c:      c,
+		s:      s,
 		br:     bufio.NewReader(c),
 		bw:     bufio.NewWriterSize(c, 1<<14*10),
 		enc:    AcquireHPACK(),
@@ -119,7 +117,10 @@ func (s *Server) ServeConn(c net.Conn) error {
 				atomic.AddInt32(&sc.clientWindow, win)
 			}
 		case FramePing:
-			// sc.handlePing(fr.Body().(*Ping))
+			ping := fr.Body().(*Ping)
+			if !ping.IsAck() {
+				sc.handlePing(ping)
+			}
 		case FrameGoAway:
 			ga := fr.Body().(*GoAway)
 			if ga.Code() == NoError {
@@ -137,6 +138,13 @@ func (s *Server) ServeConn(c net.Conn) error {
 	}
 
 	return err
+}
+
+func (sc *serverConn) handlePing(ping *Ping) {
+	fr := AcquireFrameHeader()
+	fr.SetBody(ping)
+
+	sc.writer <- fr
 }
 
 func (sc *serverConn) handleStreams() {
@@ -161,25 +169,175 @@ func (sc *serverConn) handleStreams() {
 
 				atomic.StoreUint32(&sc.lastID, strm.ID())
 
-				sc.adpr.OnNewStream(sc.c, strm)
+				println("new stream")
+
+				sc.createStream(sc.c, strm)
 			}
 
-			if err := sc.adpr.OnFrame(strm, fr, sc.dec); err != nil {
+			if err := sc.handleFrame(strm, fr); err != nil {
 				// writeError(strm, err, sc.writer)
 			}
 
-			// handleState(fr, strm)
+			handleState(fr, strm)
 
 			switch strm.State() {
 			case StreamStateHalfClosed:
-				sc.adpr.OnRequestFinished(strm, sc.enc, sc.writer)
+				sc.handleEndRequest(strm)
 				fallthrough
 			case StreamStateClosed:
-				sc.adpr.OnStreamEnd(strm)
+				ctxPool.Put(strm.ctx)
 				delete(strms, strm.ID())
 				streamPool.Put(strm)
 			}
 		}
+	}
+}
+
+func handleState(fr *FrameHeader, strm *Stream) {
+	switch strm.State() {
+	case StreamStateIdle:
+		if fr.Type() == FrameHeaders {
+			strm.SetState(StreamStateOpen)
+			if fr.Flags().Has(FlagEndStream) {
+				strm.SetState(StreamStateHalfClosed)
+			}
+		} // TODO: else push promise ...
+	case StreamStateReserved:
+		// TODO: ...
+	case StreamStateOpen:
+		if fr.Flags().Has(FlagEndStream) {
+			strm.SetState(StreamStateHalfClosed)
+		}
+	case StreamStateHalfClosed:
+		if fr.Flags().Has(FlagEndStream) {
+			strm.SetState(StreamStateClosed)
+		} else if fr.Type() == FrameResetStream {
+			strm.SetState(StreamStateClosed)
+		}
+	case StreamStateClosed:
+	}
+}
+
+var logger = log.New(os.Stdout, "", log.LstdFlags)
+
+var ctxPool = sync.Pool{
+	New: func() interface{} {
+		return &fasthttp.RequestCtx{}
+	},
+}
+
+func (sc *serverConn) createStream(c net.Conn, strm *Stream) {
+	ctx := ctxPool.Get().(*fasthttp.RequestCtx)
+	ctx.Request.Reset()
+	ctx.Response.Reset()
+
+	ctx.Init2(c, logger, false)
+
+	// ctx.Ctx.Header.DisableNormalizing()
+	// ctx.Ctx.URI().DisablePathNormalizing = true
+
+	strm.SetData(ctx)
+}
+
+func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
+	ctx := strm.ctx
+
+	switch fr.Type() {
+	case FrameHeaders, FrameContinuation:
+		b := fr.Body().(FrameWithHeaders).Headers()
+		hf := AcquireHeaderField()
+		scheme := []byte("https")
+		req := &ctx.Request
+
+		for len(b) > 0 {
+			b, err = sc.dec.Next(hf, b)
+			if err != nil {
+				break
+			}
+
+			k, v := hf.KeyBytes(), hf.ValueBytes()
+			if !hf.IsPseudo() &&
+				!(bytes.Equal(k, StringUserAgent) ||
+					bytes.Equal(k, StringContentType)) {
+				req.Header.AddBytesKV(k, v)
+				continue
+			}
+
+			if hf.IsPseudo() {
+				k = k[1:]
+			}
+
+			switch k[0] {
+			case 'm': // method
+				req.Header.SetMethodBytes(v)
+			case 'p': // path
+				req.Header.SetRequestURIBytes(v)
+			case 's': // scheme
+				scheme = append(scheme[:0], v...)
+			case 'a': // authority
+				req.Header.SetHostBytes(v)
+				req.Header.AddBytesV("Host", v)
+			case 'u': // user-agent
+				req.Header.SetUserAgentBytes(v)
+			case 'c': // content-type
+				req.Header.SetContentTypeBytes(v)
+			}
+		}
+
+		// calling req.URI() triggers a URL parsing, so because of that we need to delay the URL parsing.
+		req.URI().SetSchemeBytes(scheme)
+	case FrameData:
+		ctx.Request.AppendBody(
+			fr.Body().(*Data).Data())
+	}
+
+	return err
+}
+
+func (sc *serverConn) handleEndRequest(strm *Stream) {
+	ctx := strm.ctx
+	ctx.Request.Header.SetProtocolBytes(StringHTTP2)
+
+	sc.s.s.Handler(ctx)
+
+	hasBody := len(ctx.Response.Body()) != 0
+
+	fr := AcquireFrameHeader()
+	fr.SetStream(strm.ID())
+
+	h := AcquireFrame(FrameHeaders).(*Headers)
+	h.SetEndHeaders(true)
+	h.SetEndStream(!hasBody)
+
+	fr.SetBody(h)
+
+	fasthttpResponseHeaders(h, sc.enc, &ctx.Response)
+
+	sc.writer <- fr
+
+	if hasBody {
+		sc.writeData(strm, ctx.Response.Body())
+	}
+}
+
+func (sc *serverConn) writeData(strm *Stream, body []byte) {
+	step := 1 << 14 // max frame size 16384
+
+	for i := 0; i < len(body); i += step {
+		if i+step >= len(body) {
+			step = len(body) - i
+		}
+
+		fr := AcquireFrameHeader()
+		fr.SetStream(strm.ID())
+
+		data := AcquireFrame(FrameData).(*Data)
+		data.SetEndStream(i+step == len(body))
+		data.SetPadding(false)
+		data.SetData(body[i : step+i])
+
+		fr.SetBody(data)
+		sc.writer <- fr
 	}
 }
 
@@ -230,4 +388,27 @@ func (sc *serverConn) handleSettings(st *Settings) {
 	fr.SetBody(stRes)
 
 	sc.writer <- fr
+}
+
+func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
+	hf := AcquireHeaderField()
+	defer ReleaseHeaderField(hf)
+
+	hf.SetKeyBytes(StringStatus)
+	hf.SetValue(
+		strconv.FormatInt(
+			int64(res.Header.StatusCode()), 10,
+		),
+	)
+
+	dst.AppendHeaderField(hp, hf, true)
+
+	res.Header.SetContentLength(len(res.Body()))
+	// Remove the Connection field
+	res.Header.Del("Connection")
+
+	res.Header.VisitAll(func(k, v []byte) {
+		hf.SetBytes(ToLower(k), v)
+		dst.AppendHeaderField(hp, hf, false)
+	})
 }
