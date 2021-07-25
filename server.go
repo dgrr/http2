@@ -23,7 +23,7 @@ type Server struct {
 
 type serverConn struct {
 	c net.Conn
-	s *Server
+	h fasthttp.RequestHandler
 
 	br *bufio.Reader
 	bw *bufio.Writer
@@ -54,7 +54,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 
 	sc := &serverConn{
 		c:      c,
-		s:      s,
+		h:      s.s.Handler,
 		br:     bufio.NewReader(c),
 		bw:     bufio.NewWriterSize(c, 1<<14*10),
 		enc:    AcquireHPACK(),
@@ -95,8 +95,8 @@ func (s *Server) ServeConn(c net.Conn) error {
 		}
 
 		if fr.Stream() != 0 {
-			if fr.Stream() < atomic.LoadUint32(&sc.lastID) || fr.Stream()&1 == 0 {
-				// writeReset(fr.Stream(), ProtocolError, sc.writer)
+			if fr.Stream()&1 == 0 {
+				sc.writeReset(fr.Stream(), ProtocolError)
 			} else {
 				sc.reader <- fr
 			}
@@ -147,6 +147,17 @@ func (sc *serverConn) handlePing(ping *Ping) {
 	sc.writer <- fr
 }
 
+func (sc *serverConn) writePing() {
+	fr := AcquireFrameHeader()
+
+	ping := AcquireFrame(FramePing).(*Ping)
+	ping.SetCurrentTime()
+
+	fr.SetBody(ping)
+
+	sc.writer <- fr
+}
+
 func (sc *serverConn) handleStreams() {
 	var strms = make(map[uint32]*Stream)
 
@@ -160,22 +171,20 @@ func (sc *serverConn) handleStreams() {
 			strm, ok := strms[fr.Stream()]
 			if !ok { // then create it
 				if len(strms) > int(sc.st.maxStreams) {
-					// writeReset(fr.Stream(), RefusedStreamError, sc.writer)
+					sc.writeReset(fr.Stream(), RefusedStreamError)
 					continue
 				}
 
 				strm = NewStream(fr.Stream(), sc.clientStreamWindow)
 				strms[fr.Stream()] = strm
 
-				atomic.StoreUint32(&sc.lastID, strm.ID())
-
-				println("new stream")
+				// TODO: sc.lastID = strm.ID()
 
 				sc.createStream(sc.c, strm)
 			}
 
 			if err := sc.handleFrame(strm, fr); err != nil {
-				// writeError(strm, err, sc.writer)
+				sc.writeError(strm, err)
 			}
 
 			handleState(fr, strm)
@@ -191,6 +200,28 @@ func (sc *serverConn) handleStreams() {
 			}
 		}
 	}
+}
+
+func (sc *serverConn) writeReset(strm uint32, code ErrorCode) {
+	r := AcquireFrame(FrameResetStream).(*RstStream)
+
+	fr := AcquireFrameHeader()
+	fr.SetStream(strm)
+	fr.SetBody(r)
+
+	r.SetCode(code)
+
+	sc.writer <- fr
+}
+
+func (sc *serverConn) writeError(strm *Stream, err error) {
+	code := ErrorCode(InternalError)
+	if errors.Is(err, Error{}) {
+		code = err.(Error).Code()
+	}
+
+	sc.writeReset(strm.ID(), code)
+	strm.SetState(StreamStateClosed)
 }
 
 func handleState(fr *FrameHeader, strm *Stream) {
@@ -298,7 +329,7 @@ func (sc *serverConn) handleEndRequest(strm *Stream) {
 	ctx := strm.ctx
 	ctx.Request.Header.SetProtocolBytes(StringHTTP2)
 
-	sc.s.s.Handler(ctx)
+	sc.h(ctx)
 
 	hasBody := len(ctx.Response.Body()) != 0
 
