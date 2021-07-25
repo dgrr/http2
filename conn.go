@@ -395,6 +395,10 @@ func writeData(bw *bufio.Writer, fh *FrameHeader, body []byte) (err error) {
 	fh.SetBody(data)
 
 	for i := 0; err == nil && i < len(body); i += step {
+		if i+step >= len(body) {
+			step = len(body) - i
+		}
+
 		data.SetEndStream(i+step == len(body))
 		data.SetPadding(false)
 		data.SetData(body[i : step+i])
