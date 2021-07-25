@@ -5,7 +5,7 @@ http2 is a implementation of HTTP/2 protocol for [fasthttp](https://github.com/v
 # Download
 
 ```bash
-go get github.com/dgrr/http2@v0.0.8
+go get github.com/dgrr/http2@v0.0.9
 ```
 
 # Help
