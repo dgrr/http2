@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dgrr/http2/fasthttp2"
+	"github.com/dgrr/http2"
 	"github.com/dgrr/websocket"
 	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
@@ -220,7 +220,7 @@ func main() {
 		Name:    "HTTP2 Demo",
 	}
 
-	fasthttp2.ConfigureServer(s)
+	http2.ConfigureServer(s)
 
 	err := s.ListenAndServeTLS(*listenArg, *certArg, *keyArg)
 	if err != nil {
