@@ -2,15 +2,18 @@ package http2
 
 import (
 	"container/list"
-	"github.com/valyala/fasthttp"
 	"sync"
+
+	"github.com/valyala/fasthttp"
 )
 
-type request struct {
-	req *fasthttp.Request
-	res *fasthttp.Response
-
-	err chan error
+type Ctx struct {
+	// Request ...
+	Request *fasthttp.Request
+	// Response ...
+	Response *fasthttp.Response
+	// Err ...
+	Err chan error
 }
 
 // Client ...
@@ -29,107 +32,47 @@ func createClient(d *Dialer) *Client {
 	return cl
 }
 
-type clientConn struct {
-	c *Conn
-
-	reqQueued sync.Map
-
-	in chan *request
-}
-
 func (cl *Client) Do(req *fasthttp.Request, res *fasthttp.Response) (err error) {
-	var cc *clientConn
+	var c *Conn
 
 getConn:
 	cl.lck.Lock()
+
 	e := cl.conns.Front()
 	if e != nil {
-		cc = e.Value.(*clientConn)
+		c = e.Value.(*Conn)
 	} else {
-		c, err := cl.d.Dial()
+		var err error
+
+		c, err = cl.d.Dial()
 		if err != nil {
 			cl.lck.Unlock()
 			return err
 		}
 
-		cc = &clientConn{
-			c:  c,
-			in: make(chan *request, 128),
-		}
-
-		cl.conns.PushFront(cc)
-
-		go cc.writeLoop()
-		go cc.readLoop()
+		e = cl.conns.PushFront(c)
 	}
-	cl.lck.Unlock()
 
-	if cc.c.Closed() {
+	if c.Closed() {
 		cl.conns.Remove(e)
+		cl.lck.Unlock()
+
 		goto getConn
 	}
 
+	cl.lck.Unlock()
+
 	ch := make(chan error, 1)
 
-	cc.in <- &request{
-		req: req,
-		res: res,
-		err: ch,
-	}
+	c.Write(&Ctx{
+		Request:  req,
+		Response: res,
+		Err:      ch,
+	})
 
 	select {
 	case err = <-ch:
 	}
 
 	return err
-}
-
-func (cc *clientConn) writeLoop() {
-	c := cc.c
-	defer c.Close()
-
-	for r := range cc.in {
-		req := r.req
-
-		uid, err := c.Write(req)
-		if err != nil {
-			break
-		}
-
-		cc.reqQueued.Store(uid, r)
-	}
-}
-
-func (cc *clientConn) readLoop() {
-	c := cc.c
-	defer c.Close()
-
-	for {
-		fr, err := c.Next()
-		if err != nil {
-			break
-		}
-
-		// TODO: panic otherwise?
-		if ri, ok := cc.reqQueued.Load(fr.Stream()); ok {
-			r := ri.(*request)
-
-			err := c.readStream(fr, r.res)
-			if err == nil {
-				if fr.Flags().Has(FlagEndStream) {
-					cc.reqQueued.Delete(fr.Stream())
-
-					close(r.err)
-				}
-			} else {
-				cc.reqQueued.Delete(fr.Stream())
-
-				r.err <- err
-			}
-		}
-
-		ReleaseFrameHeader(fr)
-	}
-
-	close(cc.in)
 }

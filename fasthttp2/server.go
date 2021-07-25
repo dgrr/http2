@@ -66,8 +66,8 @@ func (sa *ServerAdaptor) OnNewStream(c net.Conn, strm *http2.Stream) {
 
 	ctx.Init2(c, logger, false)
 
-	// ctx.Request.Header.DisableNormalizing()
-	// ctx.Request.URI().DisablePathNormalizing = true
+	// ctx.Ctx.Header.DisableNormalizing()
+	// ctx.Ctx.URI().DisablePathNormalizing = true
 
 	strm.SetData(ctx)
 }

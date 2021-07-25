@@ -10,10 +10,14 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/valyala/fasthttp"
 )
 
+// Handshake performs an HTTP/2 handshake. That means, it will send
+// the preface if `preface` is true, send a settings frame and a
+// window update frame (for the connection's window).
 func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error {
 	if preface {
 		err := WritePreface(bw)
@@ -49,6 +53,7 @@ func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error
 	return err
 }
 
+// Conn represents a raw HTTP/2 connection over TLS + TCP.
 type Conn struct {
 	c net.Conn
 
@@ -71,14 +76,22 @@ type Conn struct {
 	current Settings
 	serverS Settings
 
-	openResps sync.Map
+	reqQueued sync.Map
+
+	in  chan *Ctx
+	out chan *FrameHeader
 
 	closed uint64
 }
 
+// Dialer allows to create HTTP/2 connections easily.
 type Dialer struct {
+	// Addr is the server's address in the form: `host:port`.
 	Addr string
 
+	// TLSConfig is the tls configuration.
+	//
+	// If TLSConfig is nil, a default one will be defined on the Dial call.
 	TLSConfig *tls.Config
 }
 
@@ -120,6 +133,9 @@ func (d *Dialer) tryDial() (net.Conn, error) {
 	return tlsConn, nil
 }
 
+// Dial creates an HTTP/2 connection or returns an error.
+//
+// An error that can be expected from this call is ErrServerSupport.
 func (d *Dialer) Dial() (*Conn, error) {
 	c, err := d.tryDial()
 	if err != nil {
@@ -135,6 +151,8 @@ func (d *Dialer) Dial() (*Conn, error) {
 		nextID:        1,
 		maxWindow:     1 << 20,
 		currentWindow: 1 << 20,
+		in:            make(chan *Ctx, 128),
+		out:           make(chan *FrameHeader, 128),
 	}
 
 	nc.current.SetMaxWindowSize(1 << 20)
@@ -152,7 +170,23 @@ func (d *Dialer) Dial() (*Conn, error) {
 	} else if err == nil {
 		st := fr.Body().(*Settings)
 		if !st.IsAck() {
-			err = nc.handleSettings(st)
+			st.CopyTo(&nc.serverS)
+
+			nc.serverStreamWindow += int32(nc.serverS.MaxWindowSize())
+
+			// reply back
+			fr := AcquireFrameHeader()
+
+			stRes := AcquireFrame(FrameSettings).(*Settings)
+			stRes.SetAck(true)
+
+			fr.SetBody(stRes)
+
+			if _, err = fr.WriteTo(nc.bw); err == nil {
+				err = nc.bw.Flush()
+			}
+
+			ReleaseFrameHeader(fr)
 		}
 	}
 
@@ -160,15 +194,21 @@ func (d *Dialer) Dial() (*Conn, error) {
 		c.Close()
 	} else {
 		ReleaseFrameHeader(fr)
+
+		go nc.writeLoop()
+		go nc.readLoop()
 	}
 
 	return nc, err
 }
 
+// Closed indicates whether the connection is closed or not.
 func (c *Conn) Closed() bool {
 	return atomic.LoadUint64(&c.closed) == 1
 }
 
+// Close closes the connection gracefully, sending a GoAway message
+// and then closing the underlying TCP connection.
 func (c *Conn) Close() error {
 	if !atomic.CompareAndSwapUint64(&c.closed, 0, 1) {
 		return io.EOF
@@ -193,7 +233,84 @@ func (c *Conn) Close() error {
 	return err
 }
 
-func (c *Conn) Write(req *fasthttp.Request) (uint32, error) {
+// Write queues the request to be sent to the server.
+func (c *Conn) Write(r *Ctx) {
+	c.in <- r
+}
+
+func (c *Conn) writeLoop() {
+	defer c.Close()
+
+	ticker := time.NewTicker(time.Second * 5)
+	defer ticker.Stop()
+
+loop:
+	for {
+		select {
+		case r, ok := <-c.in:
+			if !ok {
+				break loop
+			}
+
+			req := r.Request
+
+			uid, err := c.writeRequest(req)
+			if err != nil {
+				break loop
+			}
+
+			c.reqQueued.Store(uid, r)
+		case fr := <-c.out:
+			if _, err := fr.WriteTo(c.bw); err == nil {
+				if err = c.bw.Flush(); err != nil {
+					break loop
+				}
+			} else {
+				break loop
+			}
+
+			ReleaseFrameHeader(fr)
+		case <-ticker.C:
+			if err := c.writePing(); err != nil {
+				break loop
+			}
+		}
+	}
+}
+
+func (c *Conn) readLoop() {
+	for {
+		fr, err := c.readNext()
+		if err != nil {
+			break
+		}
+
+		// TODO: panic otherwise?
+		if ri, ok := c.reqQueued.Load(fr.Stream()); ok {
+			r := ri.(*Ctx)
+
+			err := c.readStream(fr, r.Response)
+			if err == nil {
+				if fr.Flags().Has(FlagEndStream) {
+					c.reqQueued.Delete(fr.Stream())
+
+					close(r.Err)
+				}
+			} else {
+				c.reqQueued.Delete(fr.Stream())
+
+				r.Err <- err
+			}
+		}
+
+		ReleaseFrameHeader(fr)
+	}
+
+	c.Close()
+	close(c.in)
+}
+
+func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
 	if atomic.LoadUint64(&c.closed) == 1 {
 		return 0, io.EOF
 	}
@@ -215,8 +332,6 @@ func (c *Conn) Write(req *fasthttp.Request) (uint32, error) {
 	fr.SetStream(id)
 
 	h := AcquireFrame(FrameHeaders).(*Headers)
-	defer ReleaseFrame(h)
-
 	fr.SetBody(h)
 
 	hf := AcquireHeaderField()
@@ -257,7 +372,6 @@ func (c *Conn) Write(req *fasthttp.Request) (uint32, error) {
 	if err == nil {
 		err = c.bw.Flush()
 		if err == nil {
-			c.openResps.Store(id, fasthttp.AcquireResponse())
 			c.openStreams++
 		}
 	}
@@ -284,7 +398,7 @@ func writeData(bw *bufio.Writer, fh *FrameHeader, body []byte) (err error) {
 	return err
 }
 
-func (c *Conn) Next() (fr *FrameHeader, err error) {
+func (c *Conn) readNext() (fr *FrameHeader, err error) {
 	for err == nil {
 		fr, err = ReadFrameFrom(c.br)
 		if err != nil {
@@ -303,21 +417,19 @@ func (c *Conn) Next() (fr *FrameHeader, err error) {
 		case FrameSettings:
 			st := fr.Body().(*Settings)
 			if !st.IsAck() { // if has ack, just ignore
-				err = c.handleSettings(st)
+				c.handleSettings(st)
 			}
 		case FrameWindowUpdate:
 			win := int32(fr.Body().(*WindowUpdate).Increment())
 
-			if !atomic.CompareAndSwapInt32(&c.serverWindow, 0, win) {
-				atomic.AddInt32(&c.serverWindow, win)
-			}
+			atomic.AddInt32(&c.serverWindow, win)
 		case FramePing:
 			ping := fr.Body().(*Ping)
 			if !ping.IsAck() {
-				err = c.handlePing(ping)
+				c.handlePing(ping)
 			}
 		case FrameGoAway:
-			c.c.Close()
+			c.Close()
 			err = io.EOF
 		}
 
@@ -327,41 +439,48 @@ func (c *Conn) Next() (fr *FrameHeader, err error) {
 	return
 }
 
-func (c *Conn) handleSettings(st *Settings) error {
+func (c *Conn) writePing() error {
+	fr := AcquireFrameHeader()
+	defer ReleaseFrameHeader(fr)
+
+	ping := AcquireFrame(FramePing).(*Ping)
+	ping.SetCurrentTime()
+
+	fr.SetBody(ping)
+
+	_, err := fr.WriteTo(c.bw)
+	if err == nil {
+		err = c.bw.Flush()
+	}
+
+	return err
+}
+
+func (c *Conn) handleSettings(st *Settings) {
 	st.CopyTo(&c.serverS)
 
 	c.serverStreamWindow += int32(c.serverS.MaxWindowSize())
 
 	// reply back
 	fr := AcquireFrameHeader()
-	defer ReleaseFrameHeader(fr)
 
 	stRes := AcquireFrame(FrameSettings).(*Settings)
 	stRes.SetAck(true)
 
 	fr.SetBody(stRes)
 
-	if _, err := fr.WriteTo(c.bw); err == nil {
-		return c.bw.Flush()
-	} else {
-		return err
-	}
+	c.out <- fr
 }
 
-func (c *Conn) handlePing(ping *Ping) error {
+func (c *Conn) handlePing(ping *Ping) {
 	// reply back
 	fr := AcquireFrameHeader()
-	defer ReleaseFrameHeader(fr)
 
 	ping.SetAck(true)
 
 	fr.SetBody(ping)
 
-	if _, err := fr.WriteTo(c.bw); err == nil {
-		return c.bw.Flush()
-	} else {
-		return err
-	}
+	c.out <- fr
 }
 
 func (c *Conn) readStream(fr *FrameHeader, res *fasthttp.Response) (err error) {
@@ -379,25 +498,24 @@ func (c *Conn) readStream(fr *FrameHeader, res *fasthttp.Response) (err error) {
 		if data.Len() != 0 {
 			res.AppendBody(data.Data())
 
-			// let's imm send the window update
-			err = c.updateWindow(fr.Stream(), fr.Len())
+			// let's send the window update
+			c.updateWindow(fr.Stream(), fr.Len())
 		}
 
-		if err == nil && currentWin < c.maxWindow/2 {
+		if currentWin < c.maxWindow/2 {
 			nValue := c.maxWindow - currentWin
 
 			c.currentWindow = c.maxWindow
 
-			err = c.updateWindow(0, int(nValue))
+			c.updateWindow(0, int(nValue))
 		}
 	}
 
 	return
 }
 
-func (c *Conn) updateWindow(streamID uint32, size int) error {
+func (c *Conn) updateWindow(streamID uint32, size int) {
 	fr := AcquireFrameHeader()
-	defer ReleaseFrameHeader(fr)
 
 	fr.SetStream(streamID)
 
@@ -406,12 +524,7 @@ func (c *Conn) updateWindow(streamID uint32, size int) error {
 
 	fr.SetBody(wu)
 
-	_, err := fr.WriteTo(c.bw)
-	if err == nil {
-		err = c.bw.Flush()
-	}
-
-	return err
+	c.out <- fr
 }
 
 func (c *Conn) readHeader(b []byte, res *fasthttp.Response) (err error) {

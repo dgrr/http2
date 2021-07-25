@@ -9,6 +9,7 @@ import (
 )
 
 var (
+	// ErrServerSupport indicates whether the server supports HTTP/2 or not.
 	ErrServerSupport = errors.New("server doesn't support HTTP/2")
 )
 
@@ -35,6 +36,7 @@ func configureDialer(d *Dialer) {
 	tlsConfig.NextProtos = append(tlsConfig.NextProtos, "h2")
 }
 
+// ConfigureClient configures the fasthttp.HostClient to run over HTTP/2.
 func ConfigureClient(c *fasthttp.HostClient) error {
 	emptyServerName := c.TLSConfig != nil && len(c.TLSConfig.ServerName) == 0
 

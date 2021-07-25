@@ -7,6 +7,8 @@ import (
 	"github.com/valyala/fasthttp"
 	"log"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 func main() {
@@ -20,42 +22,55 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
+
+	reqs := 0
+
+	max := int32(0)
+	for i := 0; i < 150; i++ {
 		wg.Add(1)
 
+		for atomic.LoadInt32(&max) == 8 {
+			time.Sleep(time.Millisecond * 20)
+		}
+		atomic.AddInt32(&max, 1)
+
+		reqs++
+
+		fmt.Println("reqs:", reqs)
+
 		go func() {
+			defer atomic.AddInt32(&max, -1)
 			defer wg.Done()
+
 			req := fasthttp.AcquireRequest()
 			res := fasthttp.AcquireResponse()
 
 			res.Reset()
 
 			req.Header.SetMethod("GET")
-			// TODO: Use SetRequestURI
 			req.URI().Update("https://api.binance.com/api/v3/exchangeInfo")
 
 			err := c.Do(req, res)
 			if err != nil {
-				log.Fatalln(err)
+				log.Println(err)
+
+				res.Header.VisitAll(func(k, v []byte) {
+					fmt.Printf("%s: %s\n", k, v)
+				})
+
+				return
 			}
 
-			body := res.Body()
-
-			fmt.Printf("%d: %d\n", res.Header.StatusCode(), len(body))
-			res.Header.VisitAll(func(k, v []byte) {
-				fmt.Printf("%s: %s\n", k, v)
-			})
-
 			a := make(map[string]interface{})
-			if err = json.Unmarshal(body, &a); err != nil {
+			if err = json.Unmarshal(res.Body(), &a); err != nil {
 				panic(err)
 			}
 
-			fmt.Println("------------------------")
+			fmt.Println(len(res.Body()))
 		}()
 	}
 
-	// fmt.Printf("%s\n", body)
+	fmt.Printf("total reqs: %d\n", reqs)
 
 	wg.Wait()
 }
