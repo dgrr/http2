@@ -401,7 +401,7 @@ loop:
 				return
 			}
 		case <-ticker.C:
-			// sc.sendPing()
+			sc.writePing()
 		}
 	}
 }
