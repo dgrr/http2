@@ -1,20 +1,21 @@
-package fasthttp2
+package http2
 
 import (
 	"bufio"
 	"bytes"
 	"io"
 	"math/rand"
+	"net"
 	"testing"
-
-	"github.com/dgrr/http2"
 )
 
 func TestClientWriteOrder(t *testing.T) {
 	bf := bytes.NewBuffer(nil)
 
-	c := &http2.Client{}
-	c.writer = make(chan *Frame, 1)
+	c := &Conn{
+		c: &net.TCPConn{},
+	}
+	c.out = make(chan *FrameHeader, 1)
 	c.bw = bufio.NewWriter(bf)
 
 	go c.writeLoop()
@@ -22,11 +23,12 @@ func TestClientWriteOrder(t *testing.T) {
 	framesToTest := 32
 
 	id := uint32(1)
-	frames := make([]*Frame, 0, framesToTest)
+	frames := make([]*FrameHeader, 0, framesToTest)
 
 	for i := 0; i < framesToTest; i++ {
-		fr := AcquireFrame()
+		fr := AcquireFrameHeader()
 		fr.SetStream(id)
+		fr.SetBody(&Data{})
 		id += 2
 		frames = append(frames, fr)
 	}
@@ -34,12 +36,12 @@ func TestClientWriteOrder(t *testing.T) {
 	for len(frames) > 0 {
 		i := rand.Intn(len(frames))
 
-		c.writeFrame(frames[i])
+		c.out <- frames[i]
 		frames = append(frames[:i], frames[i+1:]...)
 	}
 
 	br := bufio.NewReader(bf)
-	fr := AcquireFrame()
+	fr := AcquireFrameHeader()
 
 	expected := uint32(1)
 	for i := 0; i < framesToTest; i++ {
@@ -58,5 +60,5 @@ func TestClientWriteOrder(t *testing.T) {
 		expected += 2
 	}
 
-	close(c.writer)
+	close(c.out)
 }

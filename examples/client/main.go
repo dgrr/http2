@@ -17,7 +17,7 @@ func main() {
 		IsTLS: true,
 	}
 
-	if err := http2.ConfigureClient(c); err != nil {
+	if err := http2.ConfigureClient(c, http2.ClientOpts{}); err != nil {
 		panic(err)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"time"
 
 	"github.com/valyala/fasthttp"
 )
@@ -12,6 +13,12 @@ var (
 	// ErrServerSupport indicates whether the server supports HTTP/2 or not.
 	ErrServerSupport = errors.New("server doesn't support HTTP/2")
 )
+
+type ClientOpts struct {
+	// OnRTT is assigned to every client after creation, and the handler
+	// will be called after every RTT measurement (after receiving a PONG mesage).
+	OnRTT func(time.Duration)
+}
 
 func configureDialer(d *Dialer) {
 	if d.TLSConfig == nil {
@@ -37,7 +44,7 @@ func configureDialer(d *Dialer) {
 }
 
 // ConfigureClient configures the fasthttp.HostClient to run over HTTP/2.
-func ConfigureClient(c *fasthttp.HostClient) error {
+func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 	emptyServerName := c.TLSConfig != nil && len(c.TLSConfig.ServerName) == 0
 
 	d := &Dialer{
@@ -66,6 +73,8 @@ func ConfigureClient(c *fasthttp.HostClient) error {
 	c.TLSConfig = d.TLSConfig
 
 	cl := createClient(d)
+	cl.onRTT = opts.OnRTT
+
 	cl.conns.Init()
 
 	c.Transport = cl.Do

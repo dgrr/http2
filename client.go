@@ -3,6 +3,7 @@ package http2
 import (
 	"container/list"
 	"sync"
+	"time"
 
 	"github.com/valyala/fasthttp"
 )
@@ -19,6 +20,8 @@ type Ctx struct {
 // Client ...
 type Client struct {
 	d *Dialer
+
+	onRTT func(time.Duration)
 
 	lck   sync.Mutex
 	conns list.List
@@ -44,8 +47,7 @@ getConn:
 	} else {
 		var err error
 
-		c, err = cl.d.Dial()
-		if err != nil {
+		if c, err = cl.d.Dial(); err != nil {
 			cl.lck.Unlock()
 			return err
 		}
