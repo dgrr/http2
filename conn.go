@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"sync/atomic"
 
 	"github.com/valyala/fasthttp"
@@ -69,6 +70,10 @@ type Conn struct {
 
 	current Settings
 	serverS Settings
+
+	openResps sync.Map
+
+	closed uint64
 }
 
 type Dialer struct {
@@ -78,7 +83,7 @@ type Dialer struct {
 }
 
 func (d *Dialer) tryDial() (net.Conn, error) {
-	if !func() bool {
+	if d.TLSConfig == nil || !func() bool {
 		for _, proto := range d.TLSConfig.NextProtos {
 			if proto == "h2" {
 				return true
@@ -160,11 +165,15 @@ func (d *Dialer) Dial() (*Conn, error) {
 	return nc, err
 }
 
-func (c *Conn) CanOpenStream() bool {
-	return c.openStreams < int32(c.serverS.maxStreams)
+func (c *Conn) Closed() bool {
+	return atomic.LoadUint64(&c.closed) == 1
 }
 
 func (c *Conn) Close() error {
+	if !atomic.CompareAndSwapUint64(&c.closed, 0, 1) {
+		return io.EOF
+	}
+
 	fr := AcquireFrameHeader()
 	defer ReleaseFrameHeader(fr)
 
@@ -185,6 +194,14 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) Write(req *fasthttp.Request) (uint32, error) {
+	if atomic.LoadUint64(&c.closed) == 1 {
+		return 0, io.EOF
+	}
+
+	if c.openStreams == int32(c.serverS.maxStreams) {
+		return 0, ErrNotAvailableStreams
+	}
+
 	hasBody := len(req.Body()) != 0
 
 	enc := c.enc
@@ -239,6 +256,10 @@ func (c *Conn) Write(req *fasthttp.Request) (uint32, error) {
 
 	if err == nil {
 		err = c.bw.Flush()
+		if err == nil {
+			c.openResps.Store(id, fasthttp.AcquireResponse())
+			c.openStreams++
+		}
 	}
 
 	return id, err
@@ -263,9 +284,7 @@ func writeData(bw *bufio.Writer, fh *FrameHeader, body []byte) (err error) {
 	return err
 }
 
-func (c *Conn) Read(res *fasthttp.Response) (id uint32, err error) {
-	var fr *FrameHeader
-
+func (c *Conn) Next() (fr *FrameHeader, err error) {
 	for err == nil {
 		fr, err = ReadFrameFrom(c.br)
 		if err != nil {
@@ -273,12 +292,11 @@ func (c *Conn) Read(res *fasthttp.Response) (id uint32, err error) {
 		}
 
 		if fr.Stream() != 0 {
-			id, err = c.readStream(fr, res)
-			if err == nil && fr.Flags().Has(FlagEndStream) {
-				break
+			if fr.Flags().Has(FlagEndStream) {
+				c.openStreams--
 			}
 
-			continue
+			break
 		}
 
 		switch fr.Type() {
@@ -346,9 +364,7 @@ func (c *Conn) handlePing(ping *Ping) error {
 	}
 }
 
-func (c *Conn) readStream(fr *FrameHeader, res *fasthttp.Response) (id uint32, err error) {
-	id = fr.Stream()
-
+func (c *Conn) readStream(fr *FrameHeader, res *fasthttp.Response) (err error) {
 	switch fr.Type() {
 	case FrameHeaders, FrameContinuation:
 		h := fr.Body().(FrameWithHeaders)

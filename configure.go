@@ -13,14 +13,14 @@ var (
 )
 
 func configureDialer(d *Dialer) {
-	tlsConfig := d.TLSConfig
-
-	if tlsConfig == nil {
-		tlsConfig = &tls.Config{
-			MaxVersion: tls.VersionTLS13,
+	if d.TLSConfig == nil {
+		d.TLSConfig = &tls.Config{
 			MinVersion: tls.VersionTLS12,
+			MaxVersion: tls.VersionTLS13,
 		}
 	}
+
+	tlsConfig := d.TLSConfig
 
 	emptyServerName := len(tlsConfig.ServerName) == 0
 	if emptyServerName {
@@ -36,27 +36,37 @@ func configureDialer(d *Dialer) {
 }
 
 func ConfigureClient(c *fasthttp.HostClient) error {
-	tlsConfig := c.TLSConfig
-	emptyServerName := len(tlsConfig.ServerName) == 0
+	emptyServerName := c.TLSConfig != nil && len(c.TLSConfig.ServerName) == 0
 
-	d := Dialer{
+	d := &Dialer{
 		Addr:      c.Addr,
-		TLSConfig: tlsConfig,
+		TLSConfig: c.TLSConfig,
 	}
 
-	_, err := d.tryDial()
+	c2, err := d.Dial()
 	if err != nil {
 		if err == ErrServerSupport && c.TLSConfig != nil { // remove added config settings
-			tlsConfig.NextProtos = tlsConfig.NextProtos[:len(tlsConfig.NextProtos)-1]
+			for i := range c.TLSConfig.NextProtos {
+				if c.TLSConfig.NextProtos[i] == "h2" {
+					c.TLSConfig.NextProtos = append(c.TLSConfig.NextProtos[:i], c.TLSConfig.NextProtos[i+1:]...)
+				}
+			}
+
 			if emptyServerName {
-				tlsConfig.ServerName = ""
+				c.TLSConfig.ServerName = ""
 			}
 		}
 
 		return err
 	}
+	defer c2.Close()
 
-	c.TLSConfig = tlsConfig
+	c.TLSConfig = d.TLSConfig
+
+	cl := createClient(d)
+	cl.conns.Init()
+
+	c.Transport = cl.Do
 
 	return nil
 }
