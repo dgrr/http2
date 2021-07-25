@@ -256,6 +256,11 @@ loop:
 
 			uid, err := c.writeRequest(req)
 			if err != nil {
+				if err == ErrNotAvailableStreams {
+					r.Err <- err
+					continue
+				}
+
 				break loop
 			}
 

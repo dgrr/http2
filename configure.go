@@ -70,6 +70,7 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 	}
 	defer c2.Close()
 
+	c.IsTLS = true
 	c.TLSConfig = d.TLSConfig
 
 	cl := createClient(d)

@@ -46,17 +46,16 @@ import (
         "fmt"
         "log"
 
-        "github.com/dgrr/http2/fasthttp2"
+        "github.com/dgrr/http2"
         "github.com/valyala/fasthttp"
 )
 
 func main() {
         hc := &fasthttp.HostClient{
                 Addr:  "api.binance.com:443",
-                IsTLS: true,
         }
 
-        if err := fasthttp2.ConfigureClient(hc); err != nil {
+        if err := http2.ConfigureClient(hc, http2.ClientOpts{}); err != nil {
                 log.Printf("%s doesn't support http/2\n", hc.Addr)
         }
 
