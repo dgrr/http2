@@ -5,7 +5,7 @@ http2 is a implementation of HTTP/2 protocol for [fasthttp](https://github.com/v
 # Download
 
 ```bash
-go get github.com/dgrr/http2@v0.0.9
+go get github.com/dgrr/http2@v0.1.1
 ```
 
 # Help
@@ -15,7 +15,7 @@ If you need any help setting up, contributing or understanding this repo, you ca
 # How to use the server?
 
 The server can only be used if your server supports TLS.
-Then, you can call [ConfigureServer](https://pkg.go.dev/github.com/dgrr/http2@v0.0.3/fasthttp2#ConfigureServer).
+Then, you can call [ConfigureServer](https://pkg.go.dev/github.com/dgrr/http2@v0.1.1/http2#ConfigureServer).
 
 ```go
 import (
