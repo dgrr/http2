@@ -84,6 +84,28 @@ type Conn struct {
 	closed uint64
 }
 
+// NewConn returns a new HTTP/2 connection.
+// To start using the connection you need to call Handshake.
+func NewConn(c net.Conn) *Conn {
+	nc := &Conn{
+		c:             c,
+		br:            bufio.NewReaderSize(c, 4096),
+		bw:            bufio.NewWriterSize(c, maxFrameSize),
+		enc:           AcquireHPACK(),
+		dec:           AcquireHPACK(),
+		nextID:        1,
+		maxWindow:     1 << 20,
+		currentWindow: 1 << 20,
+		in:            make(chan *Ctx, 128),
+		out:           make(chan *FrameHeader, 128),
+	}
+
+	nc.current.SetMaxWindowSize(1 << 20)
+	nc.current.SetPush(false)
+
+	return nc
+}
+
 // Dialer allows to create HTTP/2 connections easily.
 type Dialer struct {
 	// Addr is the server's address in the form: `host:port`.
@@ -142,37 +164,32 @@ func (d *Dialer) Dial() (*Conn, error) {
 		return nil, err
 	}
 
-	nc := &Conn{
-		c:             c,
-		br:            bufio.NewReaderSize(c, 4096),
-		bw:            bufio.NewWriterSize(c, maxFrameSize),
-		enc:           AcquireHPACK(),
-		dec:           AcquireHPACK(),
-		nextID:        1,
-		maxWindow:     1 << 20,
-		currentWindow: 1 << 20,
-		in:            make(chan *Ctx, 128),
-		out:           make(chan *FrameHeader, 128),
-	}
+	nc := NewConn(c)
 
-	nc.current.SetMaxWindowSize(1 << 20)
-	nc.current.SetPush(false)
+	return nc, nc.Handshake()
+}
 
-	if err = Handshake(true, nc.bw, &nc.current, nc.maxWindow-65535); err != nil {
-		c.Close()
-		return nil, err
+// Handshake will perform the necessary handshake to establish the connection
+// with the server. If an error is returned you can assume the TCP connection has been closed.
+func (c *Conn) Handshake() error {
+	var err error
+
+	if err = Handshake(true, c.bw, &c.current, c.maxWindow-65535); err != nil {
+		c.c.Close()
+		return err
 	}
 
 	var fr *FrameHeader
 
-	if fr, err = ReadFrameFrom(nc.br); err == nil && fr.Type() != FrameSettings {
-		return nil, fmt.Errorf("unexpected frame, expected settings, got %s", fr.Type())
+	if fr, err = ReadFrameFrom(c.br); err == nil && fr.Type() != FrameSettings {
+		c.c.Close()
+		return fmt.Errorf("unexpected frame, expected settings, got %s", fr.Type())
 	} else if err == nil {
 		st := fr.Body().(*Settings)
 		if !st.IsAck() {
-			st.CopyTo(&nc.serverS)
+			st.CopyTo(&c.serverS)
 
-			nc.serverStreamWindow += int32(nc.serverS.MaxWindowSize())
+			c.serverStreamWindow += int32(c.serverS.MaxWindowSize())
 
 			// reply back
 			fr := AcquireFrameHeader()
@@ -182,8 +199,8 @@ func (d *Dialer) Dial() (*Conn, error) {
 
 			fr.SetBody(stRes)
 
-			if _, err = fr.WriteTo(nc.bw); err == nil {
-				err = nc.bw.Flush()
+			if _, err = fr.WriteTo(c.bw); err == nil {
+				err = c.bw.Flush()
 			}
 
 			ReleaseFrameHeader(fr)
@@ -195,11 +212,11 @@ func (d *Dialer) Dial() (*Conn, error) {
 	} else {
 		ReleaseFrameHeader(fr)
 
-		go nc.writeLoop()
-		go nc.readLoop()
+		go c.writeLoop()
+		go c.readLoop()
 	}
 
-	return nc, err
+	return err
 }
 
 func (c *Conn) CanOpenStream() bool {
