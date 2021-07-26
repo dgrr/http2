@@ -235,6 +235,8 @@ func (c *Conn) Close() error {
 		return io.EOF
 	}
 
+	close(c.in)
+
 	fr := AcquireFrameHeader()
 	defer ReleaseFrameHeader(fr)
 
@@ -333,7 +335,6 @@ func (c *Conn) readLoop() {
 	}
 
 	c.Close()
-	close(c.in)
 }
 
 func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
