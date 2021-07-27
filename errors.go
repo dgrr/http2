@@ -2,6 +2,7 @@ package http2
 
 import (
 	"fmt"
+	"strconv"
 )
 
 // ErrorCode defines the HTTP/2 error codes:
@@ -29,7 +30,11 @@ const (
 )
 
 func (e ErrorCode) Error() string {
-	return errParser[e]
+	if int(e) < len(errParser) {
+		return errParser[e]
+	}
+
+	return strconv.Itoa(int(e))
 }
 
 type Error struct {

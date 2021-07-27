@@ -81,6 +81,8 @@ type Conn struct {
 	in  chan *Ctx
 	out chan *FrameHeader
 
+	lastErr error
+
 	closed uint64
 }
 
@@ -169,6 +171,11 @@ func (d *Dialer) Dial() (*Conn, error) {
 	return nc, nc.Handshake()
 }
 
+// LastErr returns the last registered error in case the connection was closed by the server.
+func (c *Conn) LastErr() error {
+	return c.lastErr
+}
+
 // Handshake will perform the necessary handshake to establish the connection
 // with the server. If an error is returned you can assume the TCP connection has been closed.
 func (c *Conn) Handshake() error {
@@ -219,6 +226,7 @@ func (c *Conn) Handshake() error {
 	return err
 }
 
+// CanOpenStream returns whether the client will be able to open a new stream or not.
 func (c *Conn) CanOpenStream() bool {
 	return atomic.LoadInt32(&c.openStreams) < int32(c.serverS.maxStreams)
 }
@@ -257,6 +265,8 @@ func (c *Conn) Close() error {
 }
 
 // Write queues the request to be sent to the server.
+//
+// Check if `c` has been previously closed before accessing this function.
 func (c *Conn) Write(r *Ctx) {
 	c.in <- r
 }
@@ -461,6 +471,7 @@ func (c *Conn) readNext() (fr *FrameHeader, err error) {
 				c.handlePing(ping)
 			}
 		case FrameGoAway:
+			c.lastErr = fr.Body().(*GoAway)
 			c.Close()
 			err = io.EOF
 		}

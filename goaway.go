@@ -1,6 +1,8 @@
 package http2
 
 import (
+	"fmt"
+
 	"github.com/dgrr/http2/http2utils"
 )
 
@@ -13,8 +15,12 @@ var _ Frame = &GoAway{}
 // https://tools.ietf.org/html/rfc7540#section-6.8
 type GoAway struct {
 	stream uint32
-	code   uint32
+	code   ErrorCode
 	data   []byte // additional data
+}
+
+func (ga *GoAway) Error() string {
+	return fmt.Sprintf("stream=%d, code=%s, data=%s", ga.stream, ga.code, ga.data)
 }
 
 func (ga *GoAway) Type() FrameType {
@@ -29,20 +35,28 @@ func (ga *GoAway) Reset() {
 }
 
 // CopyTo ...
-func (ga *GoAway) CopyTo(ga2 *GoAway) {
-	ga2.stream = ga.stream
-	ga2.code = ga.code
-	ga2.data = append(ga2.data[:0], ga.data...)
+func (ga *GoAway) CopyTo(other *GoAway) {
+	other.stream = ga.stream
+	other.code = ga.code
+	other.data = append(other.data[:0], ga.data...)
+}
+
+func (ga *GoAway) Copy() *GoAway {
+	other := new(GoAway)
+	other.stream = ga.stream
+	other.code = ga.code
+	other.data = append(other.data[:0], ga.data...)
+	return other
 }
 
 // Code ...
 func (ga *GoAway) Code() ErrorCode {
-	return ErrorCode(ga.code)
+	return ga.code
 }
 
 // SetCode ...
 func (ga *GoAway) SetCode(code ErrorCode) {
-	ga.code = uint32(code & (1<<31 - 1))
+	ga.code = code & (1<<31 - 1)
 	// TODO: Set error description as a debug data?
 }
 
@@ -66,15 +80,16 @@ func (ga *GoAway) SetData(b []byte) {
 	ga.data = append(ga.data[:0], b...)
 }
 
-// ReadFrame ...
+// Deserialize ...
 func (ga *GoAway) Deserialize(fr *FrameHeader) (err error) {
 	if len(fr.payload) < 8 { // 8 is the min number of bytes
 		err = ErrMissingBytes
 	} else {
-		ga.code = http2utils.BytesToUint32(fr.payload)
-		ga.code = http2utils.BytesToUint32(fr.payload[4:])
+		ga.code = ErrorCode(http2utils.BytesToUint32(fr.payload))
+		ga.code = ErrorCode(http2utils.BytesToUint32(fr.payload[4:]))
+		// TODO: what?
 
-		if len(fr.payload[8:]) > 0 {
+		if len(fr.payload[8:]) != 0 {
 			ga.data = append(ga.data[:0], fr.payload[8:]...)
 		}
 	}
@@ -84,7 +99,7 @@ func (ga *GoAway) Deserialize(fr *FrameHeader) (err error) {
 
 func (ga *GoAway) Serialize(fr *FrameHeader) {
 	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:0], ga.stream)
-	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:4], ga.code)
+	fr.payload = http2utils.AppendUint32Bytes(fr.payload[:4], uint32(ga.code))
 
 	fr.payload = append(fr.payload, ga.data...)
 }
