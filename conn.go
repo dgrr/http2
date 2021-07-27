@@ -348,10 +348,6 @@ func (c *Conn) readLoop() {
 }
 
 func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
-	if atomic.LoadUint64(&c.closed) == 1 {
-		return 0, io.EOF
-	}
-
 	if !c.CanOpenStream() {
 		return 0, ErrNotAvailableStreams
 	}
@@ -416,6 +412,10 @@ func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
 		}
 	}
 
+	if err != nil {
+		c.lastErr = err
+	}
+
 	return id, err
 }
 
@@ -444,6 +444,7 @@ func (c *Conn) readNext() (fr *FrameHeader, err error) {
 	for err == nil {
 		fr, err = ReadFrameFrom(c.br)
 		if err != nil {
+			c.lastErr = err
 			break
 		}
 
