@@ -15,6 +15,14 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// ConnOpts defines the connection options.
+type ConnOpts struct {
+	// PingInterval defines the interval in which the client will ping the server.
+	//
+	// An interval of 0 will make the library to use DefaultPingInterval. Because ping intervals can't be disabled
+	PingInterval time.Duration
+}
+
 // Handshake performs an HTTP/2 handshake. That means, it will send
 // the preface if `preface` is true, send a settings frame and a
 // window update frame (for the connection's window).
@@ -81,6 +89,8 @@ type Conn struct {
 	in  chan *Ctx
 	out chan *FrameHeader
 
+	pingInterval time.Duration
+
 	lastErr error
 
 	closed uint64
@@ -88,7 +98,7 @@ type Conn struct {
 
 // NewConn returns a new HTTP/2 connection.
 // To start using the connection you need to call Handshake.
-func NewConn(c net.Conn) *Conn {
+func NewConn(c net.Conn, opts ConnOpts) *Conn {
 	nc := &Conn{
 		c:             c,
 		br:            bufio.NewReaderSize(c, 4096),
@@ -100,6 +110,7 @@ func NewConn(c net.Conn) *Conn {
 		currentWindow: 1 << 20,
 		in:            make(chan *Ctx, 128),
 		out:           make(chan *FrameHeader, 128),
+		pingInterval:  opts.PingInterval,
 	}
 
 	nc.current.SetMaxWindowSize(1 << 20)
@@ -108,7 +119,7 @@ func NewConn(c net.Conn) *Conn {
 	return nc
 }
 
-// Dialer allows to create HTTP/2 connections easily.
+// Dialer allows to create HTTP/2 connections by specifying an address and tls configuration.
 type Dialer struct {
 	// Addr is the server's address in the form: `host:port`.
 	Addr string
@@ -117,6 +128,11 @@ type Dialer struct {
 	//
 	// If TLSConfig is nil, a default one will be defined on the Dial call.
 	TLSConfig *tls.Config
+
+	// PingInterval defines the interval in which the client will ping the server.
+	//
+	// An interval of 0 will make the library to use DefaultPingInterval. Because ping intervals can't be disabled.
+	PingInterval time.Duration
 }
 
 func (d *Dialer) tryDial() (net.Conn, error) {
@@ -159,14 +175,14 @@ func (d *Dialer) tryDial() (net.Conn, error) {
 
 // Dial creates an HTTP/2 connection or returns an error.
 //
-// An error that can be expected from this call is ErrServerSupport.
-func (d *Dialer) Dial() (*Conn, error) {
+// An expected error is ErrServerSupport.
+func (d *Dialer) Dial(opts ConnOpts) (*Conn, error) {
 	c, err := d.tryDial()
 	if err != nil {
 		return nil, err
 	}
 
-	nc := NewConn(c)
+	nc := NewConn(c, opts)
 
 	return nc, nc.Handshake()
 }
@@ -274,7 +290,11 @@ func (c *Conn) Write(r *Ctx) {
 func (c *Conn) writeLoop() {
 	defer c.Close()
 
-	ticker := time.NewTicker(time.Second * 5)
+	if c.pingInterval <= 0 {
+		c.pingInterval = DefaultPingInterval
+	}
+
+	ticker := time.NewTicker(c.pingInterval)
 	defer ticker.Stop()
 
 loop:
