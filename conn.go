@@ -300,7 +300,7 @@ func (c *Conn) writeLoop() {
 loop:
 	for {
 		select {
-		case r, ok := <-c.in:
+		case r, ok := <-c.in: // sending requests
 			if !ok {
 				break loop
 			}
@@ -318,7 +318,7 @@ loop:
 			}
 
 			c.reqQueued.Store(uid, r)
-		case fr := <-c.out:
+		case fr := <-c.out: // generic output
 			if _, err := fr.WriteTo(c.bw); err == nil {
 				if err = c.bw.Flush(); err != nil {
 					break loop
@@ -328,7 +328,7 @@ loop:
 			}
 
 			ReleaseFrameHeader(fr)
-		case <-ticker.C:
+		case <-ticker.C: // ping
 			if err := c.writePing(); err != nil {
 				break loop
 			}
@@ -336,10 +336,21 @@ loop:
 	}
 }
 
+func (c *Conn) finish(r *Ctx, stream uint32, err error) {
+	atomic.AddInt32(&c.openStreams, -1)
+
+	r.Err <- err
+
+	c.reqQueued.Delete(stream)
+
+	close(r.Err)
+}
+
 func (c *Conn) readLoop() {
 	for {
 		fr, err := c.readNext()
 		if err != nil {
+			c.lastErr = err
 			break
 		}
 
@@ -350,14 +361,10 @@ func (c *Conn) readLoop() {
 			err := c.readStream(fr, r.Response)
 			if err == nil {
 				if fr.Flags().Has(FlagEndStream) {
-					c.reqQueued.Delete(fr.Stream())
-
-					close(r.Err)
+					c.finish(r, fr.Stream(), nil)
 				}
 			} else {
-				c.reqQueued.Delete(fr.Stream())
-
-				r.Err <- err
+				c.finish(r, fr.Stream(), err)
 			}
 		}
 
@@ -428,7 +435,7 @@ func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
 	if err == nil {
 		err = c.bw.Flush()
 		if err == nil {
-			c.openStreams++
+			atomic.AddInt32(&c.openStreams, 1)
 		}
 	}
 
@@ -464,15 +471,10 @@ func (c *Conn) readNext() (fr *FrameHeader, err error) {
 	for err == nil {
 		fr, err = ReadFrameFrom(c.br)
 		if err != nil {
-			c.lastErr = err
 			break
 		}
 
 		if fr.Stream() != 0 {
-			if fr.Flags().Has(FlagEndStream) {
-				c.openStreams--
-			}
-
 			break
 		}
 
@@ -492,9 +494,8 @@ func (c *Conn) readNext() (fr *FrameHeader, err error) {
 				c.handlePing(ping)
 			}
 		case FrameGoAway:
-			c.lastErr = fr.Body().(*GoAway)
+			err = fr.Body().(*GoAway)
 			c.Close()
-			err = io.EOF
 		}
 
 		ReleaseFrameHeader(fr)
