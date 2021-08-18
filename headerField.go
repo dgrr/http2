@@ -1,6 +1,7 @@
 package http2
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -10,6 +11,11 @@ import (
 type HeaderField struct {
 	key, value []byte
 	sensible   bool
+}
+
+// String returns a string representation of the header field.
+func (hf *HeaderField) String() string {
+	return fmt.Sprintf("%s: %s", hf.key, hf.value)
 }
 
 var headerPool = sync.Pool{

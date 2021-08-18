@@ -203,6 +203,7 @@ func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 
 loop:
 	c = b[0]
+
 	switch {
 	// Indexed Header Field.
 	// The value must be indexed in the static or the dynamic table.
@@ -271,7 +272,7 @@ loop:
 	// https://tools.ietf.org/html/rfc7541#section-6.2.2
 	case c&noIndexByte == 0: // 0000 0000
 		// Reading key
-		if c != 0 { // Reading key as index
+		if c&15 != 0 { // Reading key as index
 			b, n = readInt(4, b)
 			hf2 := hpack.peek(n)
 			if hf2 == nil {
