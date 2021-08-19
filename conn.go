@@ -309,8 +309,9 @@ loop:
 
 			uid, err := c.writeRequest(req)
 			if err != nil {
+				r.Err <- err
+
 				if err == ErrNotAvailableStreams {
-					r.Err <- err
 					continue
 				}
 
@@ -334,6 +335,13 @@ loop:
 			}
 		}
 	}
+
+	// send eofs to pending requests
+	c.reqQueued.Range(func(_, v interface{}) bool {
+		r := v.(*Ctx)
+		r.Err <- io.EOF
+		return true
+	})
 }
 
 func (c *Conn) finish(r *Ctx, stream uint32, err error) {
