@@ -104,6 +104,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 			continue
 		}
 
+		// handle 'anonymous' frames (frames without stream_id)
 		switch fr.Type() {
 		case FrameSettings:
 			st := fr.Body().(*Settings)
@@ -158,6 +159,7 @@ func (sc *serverConn) writePing() {
 	sc.writer <- fr
 }
 
+// handleStreams handles everything related to the streams and the HPACK table synchronously.
 func (sc *serverConn) handleStreams() {
 	var strms = make(map[uint32]*Stream)
 
@@ -325,11 +327,21 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 	return err
 }
 
+// handleEndRequest dispatches the finished request to the handler.
 func (sc *serverConn) handleEndRequest(strm *Stream) {
 	ctx := strm.ctx
 	ctx.Request.Header.SetProtocolBytes(StringHTTP2)
 
 	sc.h(ctx)
+
+	// control the stack after the dispatch
+	//
+	// this recover is here just in case the sc.writer<-fr fails.
+	defer func() {
+		if err := recover(); err != nil {
+			// TODO: idk
+		}
+	}()
 
 	hasBody := len(ctx.Response.Body()) != 0
 
