@@ -44,85 +44,87 @@ var hpackPool = sync.Pool{
 // AcquireHPACK gets HPACK from pool
 func AcquireHPACK() *HPACK {
 	// TODO: Change the name
-	hpack := hpackPool.Get().(*HPACK)
-	hpack.Reset()
-	return hpack
+	hp := hpackPool.Get().(*HPACK)
+	hp.Reset()
+	return hp
 }
 
 // ReleaseHPACK puts HPACK to the pool
-func ReleaseHPACK(hpack *HPACK) {
-	hpackPool.Put(hpack)
+func ReleaseHPACK(hp *HPACK) {
+	hpackPool.Put(hp)
 }
 
-func (hpack *HPACK) releaseDynamic() {
-	for _, hf := range hpack.dynamic {
+func (hp *HPACK) releaseDynamic() {
+	for _, hf := range hp.dynamic {
 		ReleaseHeaderField(hf)
 	}
-	hpack.dynamic = hpack.dynamic[:0]
+	hp.dynamic = hp.dynamic[:0]
 }
 
 // Reset deletes and releases all dynamic header fields
-func (hpack *HPACK) Reset() {
-	hpack.releaseDynamic()
-	hpack.tableSize = 0
-	hpack.maxTableSize = int(defaultHeaderTableSize)
-	hpack.DisableCompression = false
+func (hp *HPACK) Reset() {
+	hp.releaseDynamic()
+	hp.tableSize = 0
+	hp.maxTableSize = int(defaultHeaderTableSize)
+	hp.DisableCompression = false
 }
 
 // SetMaxTableSize sets the maximum dynamic table size.
-func (hpack *HPACK) SetMaxTableSize(size int) {
-	hpack.maxTableSize = size
+func (hp *HPACK) SetMaxTableSize(size int) {
+	hp.maxTableSize = size
 }
 
-// Dynamic size returns the size of the dynamic table.
+// DynamicSize returns the size of the dynamic table.
+//
 // https://tools.ietf.org/html/rfc7541#section-4.1
-func (hpack *HPACK) DynamicSize() (n int) {
-	for _, hf := range hpack.dynamic {
+func (hp *HPACK) DynamicSize() (n int) {
+	for _, hf := range hp.dynamic {
 		n += hf.Size()
 	}
 	return
 }
 
-// add adds header field to the dynamic table.
-func (hpack *HPACK) addDynamic(hf *HeaderField) {
+// add header field to the dynamic table.
+func (hp *HPACK) addDynamic(hf *HeaderField) {
 	// TODO: Optimize using reverse indexes.
 
 	// append a copy
 	hf2 := AcquireHeaderField()
 	hf.CopyTo(hf2)
 
-	hpack.dynamic = append(hpack.dynamic, hf2)
+	hp.dynamic = append(hp.dynamic, hf2)
 
 	// checking table size
-	hpack.shrink()
+	hp.shrink()
 }
 
-// shrink shrinks the dynamic table if needed.
-func (hpack *HPACK) shrink() {
+// shrink the dynamic table if needed.
+func (hp *HPACK) shrink() {
 	n := 0 // elements to remove
-	hpack.tableSize = hpack.DynamicSize()
-	for i := range hpack.dynamic {
-		if hpack.tableSize < hpack.maxTableSize {
+	hp.tableSize = hp.DynamicSize()
+
+	for i := range hp.dynamic {
+		if hp.tableSize < hp.maxTableSize {
 			break
 		}
-		hpack.tableSize -= hpack.dynamic[i].Size()
+		hp.tableSize -= hp.dynamic[i].Size()
 		n++
 	}
 
 	for i := 0; i < n; i++ {
 		// release the header field
-		ReleaseHeaderField(hpack.dynamic[i])
+		ReleaseHeaderField(hp.dynamic[i])
 		// shrinking slice
 	}
 	if n > 0 {
-		hpack.dynamic = append(hpack.dynamic[:0], hpack.dynamic[n:]...)
+		hp.dynamic = append(hp.dynamic[:0], hp.dynamic[n:]...)
 	}
 }
 
 // peek returns HeaderField from static or dynamic table.
 //
 // n must be the index in the table.
-func (hpack *HPACK) peek(n uint64) *HeaderField {
+func (hp *HPACK) peek(n uint64) *HeaderField {
 	var (
 		index int
 		table []*HeaderField
@@ -131,11 +133,11 @@ func (hpack *HPACK) peek(n uint64) *HeaderField {
 	if n < maxIndex {
 		index, table = int(n-1), staticTable
 	} else { // search in dynamic table
-		nn := len(hpack.dynamic) - int(n-maxIndex) - 1
+		nn := len(hp.dynamic) - int(n-maxIndex) - 1
 		// dynamic_len = 11
 		// n = 64
 		// nn = 11 - 64 - 62 - 1 = 8
-		index, table = nn, hpack.dynamic
+		index, table = nn, hp.dynamic
 	}
 
 	if index < 0 {
@@ -146,12 +148,12 @@ func (hpack *HPACK) peek(n uint64) *HeaderField {
 }
 
 // find gets the index of existent key in static or dynamic tables.
-func (hpack *HPACK) search(hf *HeaderField) (n uint64, fullMatch bool) {
+func (hp *HPACK) search(hf *HeaderField) (n uint64, fullMatch bool) {
 	// start searching in the dynamic table (probably it contains less fields than the static.
-	for i, hf2 := range hpack.dynamic {
+	for i, hf2 := range hp.dynamic {
 		if fullMatch = bytes.Equal(hf.key, hf2.key) &&
 			bytes.Equal(hf.value, hf2.value); fullMatch {
-			n = uint64(maxIndex + len(hpack.dynamic) - i - 1)
+			n = uint64(maxIndex + len(hp.dynamic) - i - 1)
 			break
 		}
 	}
@@ -185,16 +187,18 @@ var bytePool = sync.Pool{
 	},
 }
 
-var ErrFieldNotFound = NewError(
-	FlowControlError,
-	"field not found in neither table")
+var (
+	ErrIndexFieldNotFound   = NewError(FlowControlError, "index field not found")
+	ErrLiteralFieldNotFound = NewError(FlowControlError, "literal indexed field not found")
+	ErrNoIndexFieldNotFound = NewError(FlowControlError, "non indexed field not found")
+)
 
 // Next reads and process the content of `b`. If buf contains a valid HTTP/2 header
 // the content will be parsed into `hf`.
 //
 // This function returns the next byte slice that should be read.
 // `b` must be a valid payload coming from a Header frame.
-func (hpack *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
+func (hp *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 	var (
 		n   uint64
 		c   byte
@@ -210,9 +214,9 @@ loop:
 	// https://httpwg.org/specs/rfc7541.html#indexed.header.representation
 	case c&indexByte == indexByte: // 1000 0000
 		b, n = readInt(7, b)
-		hf2 := hpack.peek(n)
+		hf2 := hp.peek(n)
 		if hf2 == nil {
-			return b, ErrFieldNotFound
+			return b, ErrIndexFieldNotFound
 		}
 
 		hf2.CopyTo(hf)
@@ -225,9 +229,9 @@ loop:
 		if c != 64 { // Read key as index
 			b, n = readInt(6, b)
 
-			hf2 := hpack.peek(n)
+			hf2 := hp.peek(n)
 			if hf2 == nil {
-				return b, ErrFieldNotFound
+				return b, ErrLiteralFieldNotFound
 			}
 
 			hf.SetKeyBytes(hf2.KeyBytes())
@@ -255,7 +259,7 @@ loop:
 			if err == nil {
 				hf.SetValueBytes(dst)
 				// add to the table as RFC specifies.
-				hpack.addDynamic(hf)
+				hp.addDynamic(hf)
 			}
 
 			bytePool.Put(dst)
@@ -274,9 +278,9 @@ loop:
 		// Reading key
 		if c&15 != 0 { // Reading key as index
 			b, n = readInt(4, b)
-			hf2 := hpack.peek(n)
+			hf2 := hp.peek(n)
 			if hf2 == nil {
-				return b, ErrFieldNotFound
+				return b, ErrNoIndexFieldNotFound
 			}
 
 			hf.SetKeyBytes(hf2.key)
@@ -313,8 +317,8 @@ loop:
 	// https://tools.ietf.org/html/rfc7541#section-6.3
 	case c&32 == 32: // 001- ----
 		b, n = readInt(5, b)
-		hpack.maxTableSize = int(n)
-		hpack.shrink()
+		hp.maxTableSize = int(n)
+		hp.shrink()
 		goto loop
 	}
 
@@ -428,12 +432,12 @@ func appendString(dst, src []byte, encode bool) []byte {
 }
 
 // TODO: Change naming
-func (hpack *HPACK) AppendHeaderField(h *Headers, hf *HeaderField, store bool) {
-	h.rawHeaders = hpack.AppendHeader(h.rawHeaders, hf, store)
+func (hp *HPACK) AppendHeaderField(h *Headers, hf *HeaderField, store bool) {
+	h.rawHeaders = hp.AppendHeader(h.rawHeaders, hf, store)
 }
 
 // AppendHeader appends the content of an encoded HeaderField to dst.
-func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte {
+func (hp *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte {
 	var (
 		c         bool
 		bits      uint8
@@ -441,10 +445,10 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte
 		fullMatch bool
 	)
 
-	c = !hpack.DisableCompression
+	c = !hp.DisableCompression
 	bits = 6
 
-	index, fullMatch = hpack.search(hf)
+	index, fullMatch = hp.search(hf)
 	if hf.sensible {
 		c = false
 		dst = append(dst, 16)
@@ -458,14 +462,14 @@ func (hpack *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte
 				dst = append(dst, literalByte)
 				// append this field to the dynamic table.
 				if index < maxIndex {
-					hpack.addDynamic(hf)
+					hp.addDynamic(hf)
 				}
 			}
-		} else if !store || hpack.DisableDynamicTable { // with or without indexing
+		} else if !store || hp.DisableDynamicTable { // with or without indexing
 			dst = append(dst, 0, 0)
 		} else {
 			dst = append(dst, literalByte)
-			hpack.addDynamic(hf)
+			hp.addDynamic(hf)
 		}
 	}
 

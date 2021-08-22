@@ -1,7 +1,6 @@
 package http2
 
 import (
-	"fmt"
 	"sync"
 )
 
@@ -15,7 +14,7 @@ type HeaderField struct {
 
 // String returns a string representation of the header field.
 func (hf *HeaderField) String() string {
-	return fmt.Sprintf("%s: %s", hf.key, hf.value)
+	return string(hf.AppendBytes(nil))
 }
 
 var headerPool = sync.Pool{
@@ -62,11 +61,11 @@ func (hf *HeaderField) Size() int {
 	return len(hf.key) + len(hf.value) + 32
 }
 
-// CopyTo copies hf to hf2
-func (hf *HeaderField) CopyTo(hf2 *HeaderField) {
-	hf2.key = append(hf2.key[:0], hf.key...)
-	hf2.value = append(hf2.value[:0], hf.value...)
-	hf2.sensible = hf.sensible
+// CopyTo copies the HeaderField to `other`.
+func (hf *HeaderField) CopyTo(other *HeaderField) {
+	other.key = append(other.key[:0], hf.key...)
+	other.value = append(other.value[:0], hf.value...)
+	other.sensible = hf.sensible
 }
 
 func (hf *HeaderField) Set(k, v string) {
