@@ -491,67 +491,67 @@ func (hp *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte {
 }
 
 var staticTable = []*HeaderField{ // entry + 1
-	&HeaderField{key: []byte(":authority")},                          // 1
-	&HeaderField{key: []byte(":method"), value: []byte("GET")},       // 2
-	&HeaderField{key: []byte(":method"), value: []byte("POST")},      // 3
-	&HeaderField{key: []byte(":path"), value: []byte("/")},           // 4
-	&HeaderField{key: []byte(":path"), value: []byte("/index.html")}, // 5
-	&HeaderField{key: []byte(":scheme"), value: []byte("http")},      // 6
-	&HeaderField{key: []byte(":scheme"), value: []byte("https")},     // 7
-	&HeaderField{key: []byte(":status"), value: []byte("200")},       // 8
-	&HeaderField{key: []byte(":status"), value: []byte("204")},
-	&HeaderField{key: []byte(":status"), value: []byte("206")},
-	&HeaderField{key: []byte(":status"), value: []byte("304")},
-	&HeaderField{key: []byte(":status"), value: []byte("400")},
-	&HeaderField{key: []byte(":status"), value: []byte("404")},
-	&HeaderField{key: []byte(":status"), value: []byte("500")},
-	&HeaderField{key: []byte("accept-charset")},
-	&HeaderField{key: []byte("accept-encoding"), value: []byte("gzip, deflate")},
-	&HeaderField{key: []byte("accept-language")},
-	&HeaderField{key: []byte("accept-ranges")},
-	&HeaderField{key: []byte("accept")},
-	&HeaderField{key: []byte("access-control-allow-origin")},
-	&HeaderField{key: []byte("age")},
-	&HeaderField{key: []byte("allow")},
-	&HeaderField{key: []byte("authorization")},
-	&HeaderField{key: []byte("cache-control")},
-	&HeaderField{key: []byte("content-disposition")},
-	&HeaderField{key: []byte("content-encoding")},
-	&HeaderField{key: []byte("content-language")},
-	&HeaderField{key: []byte("content-length")},
-	&HeaderField{key: []byte("content-location")},
-	&HeaderField{key: []byte("content-range")},
-	&HeaderField{key: []byte("content-type")},
-	&HeaderField{key: []byte("cookie")},
-	&HeaderField{key: []byte("date")},
-	&HeaderField{key: []byte("etag")},
-	&HeaderField{key: []byte("expect")},
-	&HeaderField{key: []byte("expires")},
-	&HeaderField{key: []byte("from")},
-	&HeaderField{key: []byte("host")},
-	&HeaderField{key: []byte("if-match")},
-	&HeaderField{key: []byte("if-modified-since")},
-	&HeaderField{key: []byte("if-none-match")},
-	&HeaderField{key: []byte("if-range")},
-	&HeaderField{key: []byte("if-unmodified-since")},
-	&HeaderField{key: []byte("last-modified")},
-	&HeaderField{key: []byte("link")},
-	&HeaderField{key: []byte("location")},
-	&HeaderField{key: []byte("max-forwards")},
-	&HeaderField{key: []byte("proxy-authenticate")},
-	&HeaderField{key: []byte("proxy-authorization")},
-	&HeaderField{key: []byte("range")},
-	&HeaderField{key: []byte("referer")},
-	&HeaderField{key: []byte("refresh")},
-	&HeaderField{key: []byte("retry-after")},
-	&HeaderField{key: []byte("server")},
-	&HeaderField{key: []byte("set-cookie")},
-	&HeaderField{key: []byte("strict-transport-security")},
-	&HeaderField{key: []byte("transfer-encoding")},
-	&HeaderField{key: []byte("user-agent")},
-	&HeaderField{key: []byte("vary")},
-	&HeaderField{key: []byte("via")},
-	&HeaderField{key: []byte("www-authenticate")}, // 61
+	{key: []byte(":authority")},                          // 1
+	{key: []byte(":method"), value: []byte("GET")},       // 2
+	{key: []byte(":method"), value: []byte("POST")},      // 3
+	{key: []byte(":path"), value: []byte("/")},           // 4
+	{key: []byte(":path"), value: []byte("/index.html")}, // 5
+	{key: []byte(":scheme"), value: []byte("http")},      // 6
+	{key: []byte(":scheme"), value: []byte("https")},     // 7
+	{key: []byte(":status"), value: []byte("200")},       // 8
+	{key: []byte(":status"), value: []byte("204")},
+	{key: []byte(":status"), value: []byte("206")},
+	{key: []byte(":status"), value: []byte("304")},
+	{key: []byte(":status"), value: []byte("400")},
+	{key: []byte(":status"), value: []byte("404")},
+	{key: []byte(":status"), value: []byte("500")},
+	{key: []byte("accept-charset")},
+	{key: []byte("accept-encoding"), value: []byte("gzip, deflate")},
+	{key: []byte("accept-language")},
+	{key: []byte("accept-ranges")},
+	{key: []byte("accept")},
+	{key: []byte("access-control-allow-origin")},
+	{key: []byte("age")},
+	{key: []byte("allow")},
+	{key: []byte("authorization")},
+	{key: []byte("cache-control")},
+	{key: []byte("content-disposition")},
+	{key: []byte("content-encoding")},
+	{key: []byte("content-language")},
+	{key: []byte("content-length")},
+	{key: []byte("content-location")},
+	{key: []byte("content-range")},
+	{key: []byte("content-type")},
+	{key: []byte("cookie")},
+	{key: []byte("date")},
+	{key: []byte("etag")},
+	{key: []byte("expect")},
+	{key: []byte("expires")},
+	{key: []byte("from")},
+	{key: []byte("host")},
+	{key: []byte("if-match")},
+	{key: []byte("if-modified-since")},
+	{key: []byte("if-none-match")},
+	{key: []byte("if-range")},
+	{key: []byte("if-unmodified-since")},
+	{key: []byte("last-modified")},
+	{key: []byte("link")},
+	{key: []byte("location")},
+	{key: []byte("max-forwards")},
+	{key: []byte("proxy-authenticate")},
+	{key: []byte("proxy-authorization")},
+	{key: []byte("range")},
+	{key: []byte("referer")},
+	{key: []byte("refresh")},
+	{key: []byte("retry-after")},
+	{key: []byte("server")},
+	{key: []byte("set-cookie")},
+	{key: []byte("strict-transport-security")},
+	{key: []byte("transfer-encoding")},
+	{key: []byte("user-agent")},
+	{key: []byte("vary")},
+	{key: []byte("via")},
+	{key: []byte("www-authenticate")}, // 61
 }
 
 // maxIndex defines the maximum index number of the static table.
