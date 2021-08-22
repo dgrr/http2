@@ -451,6 +451,8 @@ func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
 		c.lastErr = err
 	}
 
+	ReleaseHeaderField(hf)
+
 	return id, err
 }
 

@@ -26,7 +26,7 @@ func main() {
 	reqs := 0
 
 	max := int32(0)
-	for i := 0; i < 150; i++ {
+	for i := 0; i < 20; i++ {
 		wg.Add(1)
 
 		for atomic.LoadInt32(&max) == 8 {
