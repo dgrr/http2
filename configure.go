@@ -46,9 +46,10 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 		PingInterval: opts.PingInterval,
 	}
 
-	c2, err := d.Dial(ConnOpts{
-		PingInterval: d.PingInterval,
-	})
+	cl := createClient(d, opts)
+	cl.conns.Init()
+
+	_, _, err := cl.createConn()
 	if err != nil {
 		if err == ErrServerSupport && c.TLSConfig != nil { // remove added config settings
 			for i := range c.TLSConfig.NextProtos {
@@ -64,14 +65,9 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 
 		return err
 	}
-	defer c2.Close()
 
 	c.IsTLS = true
 	c.TLSConfig = d.TLSConfig
-
-	cl := createClient(d, opts)
-
-	cl.conns.Init()
 
 	c.Transport = cl.Do
 

@@ -36,6 +36,7 @@ type Ctx struct {
 type Client struct {
 	d *Dialer
 
+	// TODO: impl rtt
 	onRTT func(time.Duration)
 
 	lck   sync.Mutex
@@ -51,6 +52,33 @@ func createClient(d *Dialer, opts ClientOpts) *Client {
 	return cl
 }
 
+func (cl *Client) onConnectionDropped(c *Conn) {
+	cl.lck.Lock()
+	defer cl.lck.Unlock()
+
+	for e := cl.conns.Front(); e != nil; e = e.Next() {
+		if e.Value.(*Conn) == c {
+			cl.conns.Remove(e)
+
+			cl.createConn()
+
+			break
+		}
+	}
+}
+
+func (cl *Client) createConn() (*Conn, *list.Element, error) {
+	c, err := cl.d.Dial(ConnOpts{
+		PingInterval: cl.d.PingInterval,
+		OnDisconnect: cl.onConnectionDropped,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return c, cl.conns.PushFront(c), nil
+}
+
 func (cl *Client) Do(req *fasthttp.Request, res *fasthttp.Response) (err error) {
 	var c *Conn
 
@@ -62,16 +90,10 @@ func (cl *Client) Do(req *fasthttp.Request, res *fasthttp.Response) (err error) 
 		if e != nil {
 			c = e.Value.(*Conn)
 		} else {
-			var err error
-
-			if c, err = cl.d.Dial(ConnOpts{
-				PingInterval: cl.d.PingInterval,
-			}); err != nil {
-				cl.lck.Unlock()
+			c, e, err = cl.createConn()
+			if err != nil {
 				return err
 			}
-
-			e = cl.conns.PushFront(c)
 		}
 
 		// if we can't open a stream, then move on to the next one.

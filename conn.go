@@ -21,6 +21,8 @@ type ConnOpts struct {
 	//
 	// An interval of 0 will make the library to use DefaultPingInterval. Because ping intervals can't be disabled
 	PingInterval time.Duration
+	// OnDisconnect is a callback that fires when the Conn disconnects.
+	OnDisconnect func(c *Conn)
 }
 
 // Handshake performs an HTTP/2 handshake. That means, it will send
@@ -91,7 +93,8 @@ type Conn struct {
 
 	pingInterval time.Duration
 
-	lastErr error
+	lastErr      error
+	onDisconnect func(*Conn)
 
 	closed uint64
 }
@@ -111,6 +114,7 @@ func NewConn(c net.Conn, opts ConnOpts) *Conn {
 		in:            make(chan *Ctx, 128),
 		out:           make(chan *FrameHeader, 128),
 		pingInterval:  opts.PingInterval,
+		onDisconnect:  opts.OnDisconnect,
 	}
 
 	nc.current.SetMaxWindowSize(1 << 20)
@@ -277,6 +281,10 @@ func (c *Conn) Close() error {
 
 	c.c.Close()
 
+	if c.onDisconnect != nil {
+		c.onDisconnect(c)
+	}
+
 	return err
 }
 
@@ -355,6 +363,8 @@ func (c *Conn) finish(r *Ctx, stream uint32, err error) {
 }
 
 func (c *Conn) readLoop() {
+	defer c.Close()
+
 	for {
 		fr, err := c.readNext()
 		if err != nil {
@@ -378,8 +388,6 @@ func (c *Conn) readLoop() {
 
 		ReleaseFrameHeader(fr)
 	}
-
-	c.Close()
 }
 
 func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
