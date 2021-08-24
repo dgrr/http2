@@ -191,6 +191,11 @@ func (d *Dialer) Dial(opts ConnOpts) (*Conn, error) {
 	return nc, nc.Handshake()
 }
 
+// SetOnDisconnect sets the callback that will fire when the HTTP/2 connection is closed.
+func (c *Conn) SetOnDisconnect(cb func(*Conn)) {
+	c.onDisconnect = cb
+}
+
 // LastErr returns the last registered error in case the connection was closed by the server.
 func (c *Conn) LastErr() error {
 	return c.lastErr
