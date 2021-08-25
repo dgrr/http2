@@ -29,6 +29,7 @@ const (
 	HTTP11Required                 = 0xd
 )
 
+// Error implements the error interface.
 func (e ErrorCode) Error() string {
 	if int(e) < len(errParser) {
 		return errParser[e]
@@ -37,15 +38,28 @@ func (e ErrorCode) Error() string {
 	return strconv.Itoa(int(e))
 }
 
+// Error defines the HTTP/2 errors, composed by the code and debug data.
 type Error struct {
 	code  ErrorCode
 	debug string
 }
 
+// Is implements the interface for errors.Is.
+func (e Error) Is(target error) bool {
+	return e.code == target
+}
+
+// Code returns the error code.
 func (e Error) Code() ErrorCode {
 	return e.code
 }
 
+// Debug returns the debug string.
+func (e Error) Debug() string {
+	return e.debug
+}
+
+// NewError creates a new Error.
 func NewError(e ErrorCode, debug string) Error {
 	return Error{
 		code:  e,
@@ -53,6 +67,7 @@ func NewError(e ErrorCode, debug string) Error {
 	}
 }
 
+// Error implements the error interface.
 func (e Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.code, e.debug)
 }

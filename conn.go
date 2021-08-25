@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -388,6 +389,10 @@ func (c *Conn) readLoop() {
 				}
 			} else {
 				c.finish(r, fr.Stream(), err)
+
+				if errors.Is(err, Error{}) {
+					fmt.Printf("%s. payload=%v\n", err, fr.payload)
+				}
 			}
 		}
 
