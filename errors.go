@@ -14,19 +14,19 @@ type ErrorCode uint32
 
 const (
 	NoError              ErrorCode = 0x0
-	ProtocolError                  = 0x1
-	InternalError                  = 0x2
-	FlowControlError               = 0x3
-	SettingsTimeoutError           = 0x4
-	StreamClosedError              = 0x5
-	FrameSizeError                 = 0x6
-	RefusedStreamError             = 0x7
-	CancelError                    = 0x8
-	CompressionError               = 0x9
-	ConnectionError                = 0xa
-	EnhanceYourCalm                = 0xb
-	InadequateSecurity             = 0xc
-	HTTP11Required                 = 0xd
+	ProtocolError        ErrorCode = 0x1
+	InternalError        ErrorCode = 0x2
+	FlowControlError     ErrorCode = 0x3
+	SettingsTimeoutError ErrorCode = 0x4
+	StreamClosedError    ErrorCode = 0x5
+	FrameSizeError       ErrorCode = 0x6
+	RefusedStreamError   ErrorCode = 0x7
+	CancelError          ErrorCode = 0x8
+	CompressionError     ErrorCode = 0x9
+	ConnectionError      ErrorCode = 0xa
+	EnhanceYourCalm      ErrorCode = 0xb
+	InadequateSecurity   ErrorCode = 0xc
+	HTTP11Required       ErrorCode = 0xd
 )
 
 // Error implements the error interface.
