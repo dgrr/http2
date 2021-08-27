@@ -4,10 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -390,9 +390,7 @@ func (c *Conn) readLoop() {
 			} else {
 				c.finish(r, fr.Stream(), err)
 
-				if errors.Is(err, Error{}) {
-					fmt.Printf("%s. payload=%v\n", err, fr.payload)
-				}
+				fmt.Fprintf(os.Stderr, "%s. payload=%v\n", err, fr.payload)
 			}
 		}
 
