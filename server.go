@@ -88,6 +88,10 @@ func (s *Server) ServeConn(c net.Conn) error {
 		err error
 	)
 
+	// unset any deadline
+	c.SetWriteDeadline(time.Time{})
+	c.SetReadDeadline(time.Time{})
+
 	for err == nil {
 		fr, err = ReadFrameFrom(sc.br)
 		if err != nil {
