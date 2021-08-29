@@ -1,8 +1,10 @@
 package http2
 
 import (
-	"github.com/valyala/fasthttp"
 	"sync"
+	"time"
+
+	"github.com/valyala/fasthttp"
 )
 
 // StreamState ...
@@ -34,10 +36,11 @@ func (ss StreamState) String() string {
 }
 
 type Stream struct {
-	id     uint32
-	window int32
-	state  StreamState
-	ctx    *fasthttp.RequestCtx
+	id        uint32
+	window    int32
+	state     StreamState
+	ctx       *fasthttp.RequestCtx
+	startedAt time.Time
 }
 
 var streamPool = sync.Pool{

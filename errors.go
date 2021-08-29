@@ -1,6 +1,7 @@
 package http2
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 )
@@ -21,7 +22,7 @@ const (
 	StreamClosedError    ErrorCode = 0x5
 	FrameSizeError       ErrorCode = 0x6
 	RefusedStreamError   ErrorCode = 0x7
-	CancelError          ErrorCode = 0x8
+	StreamCancelled      ErrorCode = 0x8
 	CompressionError     ErrorCode = 0x9
 	ConnectionError      ErrorCode = 0xa
 	EnhanceYourCalm      ErrorCode = 0xb
@@ -46,7 +47,7 @@ type Error struct {
 
 // Is implements the interface for errors.Is.
 func (e Error) Is(target error) bool {
-	return e.code == target
+	return errors.Is(e.code, target)
 }
 
 // Code returns the error code.
@@ -82,7 +83,7 @@ var (
 		StreamClosedError:    "Stream have been closed",
 		FrameSizeError:       "FrameHeader size error",
 		RefusedStreamError:   "Refused Stream",
-		CancelError:          "Canceled",
+		StreamCancelled:      "Stream cancelled",
 		CompressionError:     "Compression error",
 		ConnectionError:      "Connection error",
 		EnhanceYourCalm:      "Enhance your calm",

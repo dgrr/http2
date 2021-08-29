@@ -41,6 +41,8 @@ type serverConn struct {
 	writer chan *FrameHeader
 	reader chan *FrameHeader
 
+	readTimeout time.Duration
+
 	st      Settings
 	clientS Settings
 }
@@ -53,15 +55,16 @@ func (s *Server) ServeConn(c net.Conn) error {
 	}
 
 	sc := &serverConn{
-		c:      c,
-		h:      s.s.Handler,
-		br:     bufio.NewReader(c),
-		bw:     bufio.NewWriterSize(c, 1<<14*10),
-		enc:    AcquireHPACK(),
-		dec:    AcquireHPACK(),
-		lastID: 0,
-		writer: make(chan *FrameHeader, 128),
-		reader: make(chan *FrameHeader, 128),
+		c:           c,
+		h:           s.s.Handler,
+		br:          bufio.NewReader(c),
+		bw:          bufio.NewWriterSize(c, 1<<14*10),
+		enc:         AcquireHPACK(),
+		dec:         AcquireHPACK(),
+		lastID:      0,
+		writer:      make(chan *FrameHeader, 128),
+		reader:      make(chan *FrameHeader, 128),
+		readTimeout: s.s.ReadTimeout,
 	}
 
 	sc.maxWindow = 1 << 22
@@ -195,6 +198,13 @@ func (sc *serverConn) handleStreams() {
 
 			handleState(fr, strm)
 
+			if strm.State() < StreamStateHalfClosed && sc.readTimeout > 0 {
+				if time.Since(strm.startedAt) > sc.readTimeout {
+					sc.writeReset(strm.ID(), StreamCancelled)
+					strm.SetState(StreamStateClosed)
+				}
+			}
+
 			switch strm.State() {
 			case StreamStateHalfClosed:
 				sc.handleEndRequest(strm)
@@ -221,7 +231,7 @@ func (sc *serverConn) writeReset(strm uint32, code ErrorCode) {
 }
 
 func (sc *serverConn) writeError(strm *Stream, err error) {
-	code := ErrorCode(InternalError)
+	code := InternalError
 	if errors.Is(err, Error{}) {
 		code = err.(Error).Code()
 	}
@@ -273,6 +283,7 @@ func (sc *serverConn) createStream(c net.Conn, strm *Stream) {
 	// ctx.Ctx.Header.DisableNormalizing()
 	// ctx.Ctx.URI().DisablePathNormalizing = true
 
+	strm.startedAt = time.Now()
 	strm.SetData(ctx)
 }
 

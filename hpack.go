@@ -32,6 +32,16 @@ type HPACK struct {
 	maxTableSize int
 }
 
+func headerFieldsToString(hfs []*HeaderField, indexOffset int) string {
+	s := ""
+
+	for i, hf := range hfs {
+		s += fmt.Sprintf("%d - %s\n", i+indexOffset, hf)
+	}
+
+	return s
+}
+
 var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPACK{
@@ -136,7 +146,7 @@ func (hp *HPACK) peek(n uint64) *HeaderField {
 		nn := len(hp.dynamic) - int(n-maxIndex) - 1
 		// dynamic_len = 11
 		// n = 64
-		// nn = 11 - 64 - 62 - 1 = 8
+		// nn = 11 - (64 - 62) - 1 = 8
 		index, table = nn, hp.dynamic
 	}
 
@@ -187,12 +197,6 @@ var bytePool = sync.Pool{
 	},
 }
 
-var (
-	ErrIndexFieldNotFound   = NewError(FlowControlError, "index field not found")
-	ErrLiteralFieldNotFound = NewError(FlowControlError, "literal indexed field not found")
-	ErrNoIndexFieldNotFound = NewError(FlowControlError, "non indexed field not found")
-)
-
 // Next reads and process the content of `b`. If buf contains a valid HTTP/2 header
 // the content will be parsed into `hf`.
 //
@@ -216,7 +220,8 @@ loop:
 		b, n = readInt(7, b)
 		hf2 := hp.peek(n)
 		if hf2 == nil {
-			return b, ErrIndexFieldNotFound
+			return b, NewError(FlowControlError, fmt.Sprintf("index field not found: %d. table:\n%s", n,
+				headerFieldsToString(hp.dynamic, maxIndex)))
 		}
 
 		hf2.CopyTo(hf)
@@ -231,7 +236,8 @@ loop:
 
 			hf2 := hp.peek(n)
 			if hf2 == nil {
-				return b, ErrLiteralFieldNotFound
+				return b, NewError(FlowControlError, fmt.Sprintf("literal indexed field not found: %d. table:\n%s",
+					n, headerFieldsToString(hp.dynamic, maxIndex)))
 			}
 
 			hf.SetKeyBytes(hf2.KeyBytes())
@@ -280,7 +286,8 @@ loop:
 			b, n = readInt(4, b)
 			hf2 := hp.peek(n)
 			if hf2 == nil {
-				return b, ErrNoIndexFieldNotFound
+				return b, NewError(FlowControlError, fmt.Sprintf("non indexed field not found: %d. table:\n%s", n,
+					headerFieldsToString(hp.dynamic, maxIndex)))
 			}
 
 			hf.SetKeyBytes(hf2.key)
