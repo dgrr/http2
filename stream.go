@@ -41,6 +41,7 @@ type Stream struct {
 	state     StreamState
 	ctx       *fasthttp.RequestCtx
 	startedAt time.Time
+	previousHeaderBytes []byte
 }
 
 var streamPool = sync.Pool{

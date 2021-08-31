@@ -98,6 +98,10 @@ func (s *Server) ServeConn(c net.Conn) error {
 	for err == nil {
 		fr, err = ReadFrameFrom(sc.br)
 		if err != nil {
+			if errors.Is(err, ErrUnknowFrameType) {
+				err = nil
+				continue
+			}
 			break
 		}
 
@@ -150,6 +154,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 
 func (sc *serverConn) handlePing(ping *Ping) {
 	fr := AcquireFrameHeader()
+	ping.SetAck(true)
 	fr.SetBody(ping)
 
 	sc.writer <- fr
@@ -292,14 +297,19 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 
 	switch fr.Type() {
 	case FrameHeaders, FrameContinuation:
-		b := fr.Body().(FrameWithHeaders).Headers()
+		b := append(strm.previousHeaderBytes, fr.Body().(FrameWithHeaders).Headers()...)
 		hf := AcquireHeaderField()
 		scheme := []byte("https")
 		req := &ctx.Request
 
 		for len(b) > 0 {
+			pb := b
 			b, err = sc.dec.Next(hf, b)
 			if err != nil {
+				if errors.Is(err, UnexpectedSizeError) && len(pb) > 0 {
+					err = nil
+					strm.previousHeaderBytes = append(strm.previousHeaderBytes[:0], pb...)
+				}
 				break
 			}
 
