@@ -26,10 +26,15 @@ type HPACK struct {
 	// the fields stablished by the client losing performance calculated by client.
 	DisableDynamicTable bool
 
-	// dynamic represents the dynamic table
+	// the dynamic table is in a inverse order.
+	//
+	// the insertion point should be the beginning. But we are going to do
+	// the opposite, insert on the end and drop on the beginning.
+	//
+	// To get the original index then we need to do the following:
+	// dynamic_length - (input_index - 62) - 1
 	dynamic []*HeaderField
 
-	tableSize    int
 	maxTableSize int
 }
 
@@ -57,6 +62,7 @@ func AcquireHPACK() *HPACK {
 	// TODO: Change the name
 	hp := hpackPool.Get().(*HPACK)
 	hp.Reset()
+
 	return hp
 }
 
@@ -69,13 +75,13 @@ func (hp *HPACK) releaseDynamic() {
 	for _, hf := range hp.dynamic {
 		ReleaseHeaderField(hf)
 	}
+
 	hp.dynamic = hp.dynamic[:0]
 }
 
 // Reset deletes and releases all dynamic header fields
 func (hp *HPACK) Reset() {
 	hp.releaseDynamic()
-	hp.tableSize = 0
 	hp.maxTableSize = int(defaultHeaderTableSize)
 	hp.DisableCompression = false
 }
@@ -112,22 +118,19 @@ func (hp *HPACK) addDynamic(hf *HeaderField) {
 // shrink the dynamic table if needed.
 func (hp *HPACK) shrink() {
 	n := 0 // elements to remove
-	hp.tableSize = hp.DynamicSize()
+	tableSize := hp.DynamicSize()
 
-	for i := range hp.dynamic {
-		if hp.tableSize < hp.maxTableSize {
-			break
+	for n = 0; n < len(hp.dynamic) && tableSize > hp.maxTableSize; n++ {
+		tableSize -= hp.dynamic[n].Size()
+	}
+
+	if n != 0 {
+		for i := 0; i < n; i++ {
+			// release the header field
+			ReleaseHeaderField(hp.dynamic[i])
+			// shrinking slice
 		}
-		hp.tableSize -= hp.dynamic[i].Size()
-		n++
-	}
 
-	for i := 0; i < n; i++ {
-		// release the header field
-		ReleaseHeaderField(hp.dynamic[i])
-		// shrinking slice
-	}
-	if n > 0 {
 		hp.dynamic = append(hp.dynamic[:0], hp.dynamic[n:]...)
 	}
 }
@@ -162,8 +165,7 @@ func (hp *HPACK) peek(n uint64) *HeaderField {
 func (hp *HPACK) search(hf *HeaderField) (n uint64, fullMatch bool) {
 	// start searching in the dynamic table (probably it contains less fields than the static.
 	for i, hf2 := range hp.dynamic {
-		if fullMatch = bytes.Equal(hf.key, hf2.key) &&
-			bytes.Equal(hf.value, hf2.value); fullMatch {
+		if fullMatch = bytes.Equal(hf.key, hf2.key) && bytes.Equal(hf.value, hf2.value); fullMatch {
 			n = uint64(maxIndex + len(hp.dynamic) - i - 1)
 			break
 		}
@@ -176,6 +178,7 @@ func (hp *HPACK) search(hf *HeaderField) (n uint64, fullMatch bool) {
 					n = uint64(i + 1)
 					break
 				}
+
 				if n == 0 {
 					n = uint64(i + 1)
 				}
@@ -198,7 +201,7 @@ var bytePool = sync.Pool{
 	},
 }
 
-// Next reads and process the content of `b`. If buf contains a valid HTTP/2 header
+// Next reads and process the contents of `b`. If `b` contains a valid HTTP/2 header
 // the content will be parsed into `hf`.
 //
 // This function returns the next byte slice that should be read.
@@ -214,6 +217,7 @@ loop:
 	if len(b) == 0 {
 		return b, nil
 	}
+
 	c = b[0]
 
 	switch {
@@ -395,10 +399,13 @@ func appendInt(dst []byte, bits uint8, index uint64) []byte {
 // https://tools.ietf.org/html/rfc7541#section-5.2
 func readString(dst, b []byte) ([]byte, []byte, error) {
 	var n uint64
+
 	if len(b) == 0 {
 		return b, dst, errors.New("no bytes left reading a string. Malformed data?")
 	}
+
 	mustDecode := b[0]&128 == 128 // huffman encoded
+
 	b, n = readInt(7, b)
 	if uint64(len(b)) < n {
 		return b, dst, UnexpectedSizeError
@@ -409,12 +416,13 @@ func readString(dst, b []byte) ([]byte, []byte, error) {
 	} else {
 		dst = append(dst, b[:n]...)
 	}
+
 	b = b[n:]
 
 	return b, dst, nil
 }
 
-var UnexpectedSizeError  = errors.New("unexpected size")
+var UnexpectedSizeError = errors.New("unexpected size")
 
 // appendString writes bytes slice to dst and returns it.
 // https://tools.ietf.org/html/rfc7541#section-5.2

@@ -146,8 +146,8 @@ func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []str
 		n++
 	}
 
-	if hpack.tableSize != tableSize {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, tableSize)
+	if hpack.DynamicSize() != tableSize {
+		t.Fatalf("Unexpected table size: %d<>%d", hpack.DynamicSize(), tableSize)
 	}
 }
 
@@ -448,8 +448,8 @@ func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []st
 		n++
 	}
 
-	if hpack.tableSize != tableSize {
-		t.Fatalf("Unexpected table size: %d<>%d", hpack.tableSize, tableSize)
+	if hpack.DynamicSize() != tableSize {
+		t.Fatalf("Unexpected table size: %d<>%d", hpack.DynamicSize(), tableSize)
 	}
 }
 

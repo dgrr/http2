@@ -224,6 +224,9 @@ func (c *Conn) Handshake() error {
 			st.CopyTo(&c.serverS)
 
 			c.serverStreamWindow += int32(c.serverS.MaxWindowSize())
+			if st.HeaderTableSize() <= defaultHeaderTableSize {
+				c.enc.SetMaxTableSize(int(st.HeaderTableSize()))
+			}
 
 			// reply back
 			fr := AcquireFrameHeader()
@@ -556,6 +559,7 @@ func (c *Conn) handleSettings(st *Settings) {
 	st.CopyTo(&c.serverS)
 
 	c.serverStreamWindow += int32(c.serverS.MaxWindowSize())
+	c.enc.SetMaxTableSize(int(st.HeaderTableSize()))
 
 	// reply back
 	fr := AcquireFrameHeader()

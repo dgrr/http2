@@ -36,11 +36,11 @@ func (ss StreamState) String() string {
 }
 
 type Stream struct {
-	id        uint32
-	window    int32
-	state     StreamState
-	ctx       *fasthttp.RequestCtx
-	startedAt time.Time
+	id                  uint32
+	window              int32
+	state               StreamState
+	ctx                 *fasthttp.RequestCtx
+	startedAt           time.Time
 	previousHeaderBytes []byte
 }
 

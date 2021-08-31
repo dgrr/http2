@@ -205,7 +205,7 @@ func (sc *serverConn) handleStreams() {
 
 			if strm.State() < StreamStateHalfClosed && sc.readTimeout > 0 {
 				if time.Since(strm.startedAt) > sc.readTimeout {
-					sc.writeReset(strm.ID(), StreamCancelled)
+					sc.writeGoAway(strm.ID(), StreamCancelled)
 					strm.SetState(StreamStateClosed)
 				}
 			}
@@ -231,6 +231,20 @@ func (sc *serverConn) writeReset(strm uint32, code ErrorCode) {
 	fr.SetBody(r)
 
 	r.SetCode(code)
+
+	sc.writer <- fr
+}
+
+func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode) {
+	ga := AcquireFrame(FrameGoAway).(*GoAway)
+
+	fr := AcquireFrameHeader()
+	fr.SetStream(strm)
+
+	ga.SetStream(strm)
+	ga.SetCode(code)
+
+	fr.SetBody(ga)
 
 	sc.writer <- fr
 }

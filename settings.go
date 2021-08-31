@@ -56,17 +56,6 @@ func (st *Settings) Reset() {
 	st.ack = false
 }
 
-func (st *Settings) Clear() {
-	st.tableSize = 0
-	st.maxStreams = 0
-	st.windowSize = 0
-	st.frameSize = 0
-	st.enablePush = false
-	st.headerSize = 0
-	st.rawSettings = st.rawSettings[:0]
-	st.ack = false
-}
-
 // CopyTo copies st fields to st2
 func (st *Settings) CopyTo(st2 *Settings) {
 	st2.ack = st.ack
@@ -159,14 +148,14 @@ func (st *Settings) MaxFrameSize() uint32 {
 	return st.frameSize
 }
 
-// SetMaxFrameSize sets maximum size of header list.
+// SetMaxHeaderListSize sets maximum size of header list uncompressed.
 //
 // If this value is 0 indicates that there are no limit.
 func (st *Settings) SetMaxHeaderListSize(size uint32) {
 	st.headerSize = size
 }
 
-// MaxFrameSize returns maximum size of header list.
+// MaxHeaderListSize returns maximum size of header list uncompressed.
 //
 // If this value is 0 indicates that there are no limit.
 func (st *Settings) MaxHeaderListSize() uint32 {
