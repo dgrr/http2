@@ -154,6 +154,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 
 func (sc *serverConn) handlePing(ping *Ping) {
 	fr := AcquireFrameHeader()
+	ping.SetAck(true)
 	fr.SetBody(ping)
 
 	sc.writer <- fr
