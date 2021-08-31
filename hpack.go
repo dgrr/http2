@@ -2,6 +2,7 @@ package http2
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -326,7 +327,9 @@ loop:
 		b, n = readInt(5, b)
 		hp.maxTableSize = int(n)
 		hp.shrink()
-		goto loop
+		if len(b) > 0 {
+			goto loop
+		}
 	}
 
 	return b, err
@@ -392,6 +395,9 @@ func appendInt(dst []byte, bits uint8, index uint64) []byte {
 func readString(dst, b []byte) ([]byte, []byte, error) {
 	var n uint64
 	var err error
+	if len(b) < 1 {
+		return b, dst, errors.New("invalid data")
+	}
 	mustDecode := b[0]&128 == 128 // huffman encoded
 	b, n = readInt(7, b)
 	if uint64(len(b)) < n {

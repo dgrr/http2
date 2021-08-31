@@ -120,31 +120,32 @@ func (h *Headers) SetPadding(value bool) {
 	h.hasPadding = value
 }
 
-func (h *Headers) Deserialize(frh *FrameHeader) (err error) {
+func (h *Headers) Deserialize(frh *FrameHeader) error {
 	flags := frh.Flags()
 	payload := frh.payload
 
 	if flags.Has(FlagPadded) {
-		payload = http2utils.CutPadding(payload, len(payload))
+		var err error
+		payload, err = http2utils.CutPadding(payload, len(payload))
+		if err != nil {
+			return err
+		}
 	}
 
 	if flags.Has(FlagPriority) {
 		if len(payload) < 5 { // 4 (stream) + 1 (weight) = 5
-			err = ErrMissingBytes
-		} else {
-			h.stream = http2utils.BytesToUint32(payload) & (1<<31 - 1)
-			h.weight = payload[4]
-			payload = payload[5:]
+			return ErrMissingBytes
 		}
+		h.stream = http2utils.BytesToUint32(payload) & (1<<31 - 1)
+		h.weight = payload[4]
+		payload = payload[5:]
 	}
 
-	if err == nil {
-		h.endStream = flags.Has(FlagEndStream)
-		h.endHeaders = flags.Has(FlagEndHeaders)
-		h.rawHeaders = append(h.rawHeaders, payload...)
-	}
+	h.endStream = flags.Has(FlagEndStream)
+	h.endHeaders = flags.Has(FlagEndHeaders)
+	h.rawHeaders = append(h.rawHeaders, payload...)
 
-	return
+	return nil
 }
 
 func (h *Headers) Serialize(frh *FrameHeader) {
