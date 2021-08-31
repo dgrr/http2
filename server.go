@@ -98,6 +98,10 @@ func (s *Server) ServeConn(c net.Conn) error {
 	for err == nil {
 		fr, err = ReadFrameFrom(sc.br)
 		if err != nil {
+			if errors.Is(err, ErrUnknowFrameType) {
+				err = nil
+				continue
+			}
 			break
 		}
 
