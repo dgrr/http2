@@ -176,7 +176,7 @@ func (frh *FrameHeader) readFrom(br *bufio.Reader, max uint32) (int64, error) {
 
 	// Parsing FrameHeader's Header field.
 	frh.parseValues(header)
-	if int(frh.kind) > len(framePools) {
+	if frh.kind > FrameContinuation {
 		return 0, ErrUnknowFrameType
 	}
 	frh.fr = AcquireFrame(frh.kind)

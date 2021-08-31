@@ -77,7 +77,7 @@ func CutPadding(payload []byte, length int) ([]byte, error) {
 	pad := int(payload[0])
 
 	if len(payload) < length-pad-1 || length-pad < 1 {
-		return nil, fmt.Errorf("out of range: %d < %d", uint32(len(payload)), length-pad-1)
+		return nil, fmt.Errorf("out of range: %d < %d", len(payload), length-pad-1)
 	}
 	payload = payload[1 : length-pad]
 
