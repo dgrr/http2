@@ -40,22 +40,26 @@ func (pp *PushPromise) Write(b []byte) (int, error) {
 	return n, nil
 }
 
-func (pp *PushPromise) Deserialize(fr *FrameHeader) (err error) {
+func (pp *PushPromise) Deserialize(fr *FrameHeader) error {
 	payload := fr.payload
 
 	if fr.Flags().Has(FlagPadded) {
-		payload = http2utils.CutPadding(payload, fr.Len())
+		var err error
+		payload, err = http2utils.CutPadding(payload, fr.Len())
+		if err != nil {
+			return err
+		}
 	}
 
 	if len(fr.payload) < 4 {
-		err = ErrMissingBytes
-	} else {
-		pp.stream = http2utils.BytesToUint32(payload) & (1<<31 - 1)
-		pp.header = append(pp.header, payload[4:]...)
-		pp.ended = fr.Flags().Has(FlagEndHeaders)
+		return ErrMissingBytes
 	}
 
-	return
+	pp.stream = http2utils.BytesToUint32(payload) & (1<<31 - 1)
+	pp.header = append(pp.header, payload[4:]...)
+	pp.ended = fr.Flags().Has(FlagEndHeaders)
+
+	return nil
 }
 
 func (pp *PushPromise) Serialize(fr *FrameHeader) {

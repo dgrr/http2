@@ -2,6 +2,7 @@ package http2
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -210,6 +211,9 @@ func (hp *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
 	)
 
 loop:
+	if len(b) == 0 {
+		return b, nil
+	}
 	c = b[0]
 
 	switch {
@@ -392,6 +396,9 @@ func appendInt(dst []byte, bits uint8, index uint64) []byte {
 func readString(dst, b []byte) ([]byte, []byte, error) {
 	var n uint64
 	var err error
+	if len(b) == 0 {
+		return b, dst, errors.New("no bytes left reading a string. Malformed data?")
+	}
 	mustDecode := b[0]&128 == 128 // huffman encoded
 	b, n = readInt(7, b)
 	if uint64(len(b)) < n {

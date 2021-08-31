@@ -85,17 +85,21 @@ func (data *Data) Write(b []byte) (int, error) {
 	return n, nil
 }
 
-func (data *Data) Deserialize(fr *FrameHeader) (err error) {
+func (data *Data) Deserialize(fr *FrameHeader) error {
 	payload := fr.payload
 
 	if fr.Flags().Has(FlagPadded) {
-		payload = http2utils.CutPadding(payload, fr.Len())
+		var err error
+		payload, err = http2utils.CutPadding(payload, fr.Len())
+		if err != nil {
+			return err
+		}
 	}
 
 	data.endStream = fr.Flags().Has(FlagEndStream)
 	data.b = append(data.b[:0], payload...)
 
-	return
+	return nil
 }
 
 func (data *Data) Serialize(fr *FrameHeader) {
