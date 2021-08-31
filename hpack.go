@@ -395,25 +395,26 @@ func appendInt(dst []byte, bits uint8, index uint64) []byte {
 // https://tools.ietf.org/html/rfc7541#section-5.2
 func readString(dst, b []byte) ([]byte, []byte, error) {
 	var n uint64
-	var err error
 	if len(b) == 0 {
 		return b, dst, errors.New("no bytes left reading a string. Malformed data?")
 	}
 	mustDecode := b[0]&128 == 128 // huffman encoded
 	b, n = readInt(7, b)
 	if uint64(len(b)) < n {
-		err = fmt.Errorf("unexpected size: %d < %d", len(b), n)
+		return b, dst, UnexpectedSizeError
 	}
-	if err == nil {
-		if mustDecode {
-			dst = HuffmanDecode(dst, b[:n])
-		} else {
-			dst = append(dst, b[:n]...)
-		}
-		b = b[n:]
+
+	if mustDecode {
+		dst = HuffmanDecode(dst, b[:n])
+	} else {
+		dst = append(dst, b[:n]...)
 	}
-	return b, dst, err
+	b = b[n:]
+
+	return b, dst, nil
 }
+
+var UnexpectedSizeError  = errors.New("unexpected size")
 
 // appendString writes bytes slice to dst and returns it.
 // https://tools.ietf.org/html/rfc7541#section-5.2
