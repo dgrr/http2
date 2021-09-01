@@ -97,5 +97,5 @@ var (
 	ErrMissingBytes = NewError(
 		ProtocolError, "missing payload bytes. Need more")
 	ErrPayloadExceeds = NewError(
-		ProtocolError, "FrameHeader payload exceeds the negotiated maximum size")
+		FrameSizeError, "FrameHeader payload exceeds the negotiated maximum size")
 )

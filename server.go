@@ -96,7 +96,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 	c.SetReadDeadline(time.Time{})
 
 	for err == nil {
-		fr, err = ReadFrameFrom(sc.br)
+		fr, err = ReadFrameFromWithSize(sc.br, sc.clientS.frameSize)
 		if err != nil {
 			if errors.Is(err, ErrUnknowFrameType) {
 				err = nil
