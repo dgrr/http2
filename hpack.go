@@ -13,7 +13,6 @@ import (
 // HPACK is equivalent to a HTTP/1 header.
 //
 // Use AcquireHPACK to acquire new HPACK structure
-// TODO: HPACK to Headers?
 type HPACK struct {
 	// DisableCompression disables compression for literal header fields.
 	DisableCompression bool
@@ -41,8 +40,8 @@ type HPACK struct {
 func headerFieldsToString(hfs []*HeaderField, indexOffset int) string {
 	s := ""
 
-	for i, hf := range hfs {
-		s += fmt.Sprintf("%d - %s\n", i+indexOffset, hf)
+	for i := len(hfs) - 1; i >= 0; i-- {
+		s += fmt.Sprintf("%d - %s\n", (len(hfs)-i)+indexOffset-1, hfs[i])
 	}
 
 	return s
