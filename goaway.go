@@ -85,7 +85,7 @@ func (ga *GoAway) Deserialize(fr *FrameHeader) (err error) {
 	if len(fr.payload) < 8 { // 8 is the min number of bytes
 		err = ErrMissingBytes
 	} else {
-		ga.code = ErrorCode(http2utils.BytesToUint32(fr.payload))
+		ga.stream = http2utils.BytesToUint32(fr.payload)
 		ga.code = ErrorCode(http2utils.BytesToUint32(fr.payload[4:]))
 		// TODO: what?
 

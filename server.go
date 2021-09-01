@@ -96,7 +96,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 	c.SetReadDeadline(time.Time{})
 
 	for err == nil {
-		fr, err = ReadFrameFrom(sc.br)
+		fr, err = ReadFrameFromWithSize(sc.br, sc.clientS.frameSize)
 		if err != nil {
 			if errors.Is(err, ErrUnknowFrameType) {
 				err = nil
@@ -174,6 +174,7 @@ func (sc *serverConn) writePing() {
 // handleStreams handles everything related to the streams and the HPACK table synchronously.
 func (sc *serverConn) handleStreams() {
 	var strms = make(map[uint32]*Stream)
+	var currentStrm uint32
 
 	for {
 		select {
@@ -197,15 +198,23 @@ func (sc *serverConn) handleStreams() {
 				sc.createStream(sc.c, strm)
 			}
 
+			if currentStrm != 0 && currentStrm != fr.Stream() {
+				sc.writeError(strm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
+				continue
+			}
+
 			if err := sc.handleFrame(strm, fr); err != nil {
 				sc.writeError(strm, err)
 			}
 
 			handleState(fr, strm)
+			if fr.Type() == FrameHeaders && fr.Flags().Has(FlagEndHeaders) {
+				currentStrm = 0
+			}
 
 			if strm.State() < StreamStateHalfClosed && sc.readTimeout > 0 {
 				if time.Since(strm.startedAt) > sc.readTimeout {
-					sc.writeGoAway(strm.ID(), StreamCancelled)
+					sc.writeGoAway(strm.ID(), StreamCancelled, "timeout")
 					strm.SetState(StreamStateClosed)
 				}
 			}
@@ -218,6 +227,8 @@ func (sc *serverConn) handleStreams() {
 				ctxPool.Put(strm.ctx)
 				delete(strms, strm.ID())
 				streamPool.Put(strm)
+			case StreamStateOpen:
+				currentStrm = strm.ID()
 			}
 		}
 	}
@@ -235,14 +246,14 @@ func (sc *serverConn) writeReset(strm uint32, code ErrorCode) {
 	sc.writer <- fr
 }
 
-func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode) {
+func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode, message string) {
 	ga := AcquireFrame(FrameGoAway).(*GoAway)
 
 	fr := AcquireFrameHeader()
-	fr.SetStream(strm)
 
 	ga.SetStream(strm)
 	ga.SetCode(code)
+	ga.SetData([]byte(message))
 
 	fr.SetBody(ga)
 
@@ -250,12 +261,20 @@ func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode) {
 }
 
 func (sc *serverConn) writeError(strm *Stream, err error) {
-	code := InternalError
-	if errors.Is(err, Error{}) {
-		code = err.(Error).Code()
+	streamErr := Error{}
+	if !errors.As(err, &streamErr) {
+		sc.writeReset(strm.ID(), InternalError)
+		strm.SetState(StreamStateClosed)
+		return
 	}
 
-	sc.writeReset(strm.ID(), code)
+	switch streamErr.frameType {
+	case FrameGoAway:
+		sc.writeGoAway(strm.ID(), streamErr.Code(), streamErr.Error())
+	case FrameResetStream:
+		sc.writeReset(strm.ID(), streamErr.Code())
+	}
+
 	strm.SetState(StreamStateClosed)
 }
 
@@ -323,6 +342,8 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 				if errors.Is(err, UnexpectedSizeError) && len(pb) > 0 {
 					err = nil
 					strm.previousHeaderBytes = append(strm.previousHeaderBytes[:0], pb...)
+				} else {
+					err = ErrCompression
 				}
 				break
 			}
@@ -361,6 +382,11 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 	case FrameData:
 		ctx.Request.AppendBody(
 			fr.Body().(*Data).Data())
+	case FrameResetStream:
+	default:
+		if strm.State() == StreamStateOpen {
+			return NewGoAwayError(ProtocolError, "invalid frame")
+		}
 	}
 
 	return err

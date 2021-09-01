@@ -148,6 +148,22 @@ func ReadFrameFrom(br *bufio.Reader) (*FrameHeader, error) {
 
 	return fr, err
 }
+func ReadFrameFromWithSize(br *bufio.Reader, max uint32) (*FrameHeader, error) {
+	fr := AcquireFrameHeader()
+	fr.maxLen = max
+	_, err := fr.ReadFrom(br)
+	if err != nil {
+		if fr.Body() != nil {
+			ReleaseFrameHeader(fr)
+		} else {
+			frameHeaderPool.Put(fr)
+		}
+
+		fr = nil
+	}
+
+	return fr, err
+}
 
 // ReadFrom reads frame from Reader.
 //
@@ -155,16 +171,11 @@ func ReadFrameFrom(br *bufio.Reader) (*FrameHeader, error) {
 //
 // Unlike io.ReaderFrom this method does not read until io.EOF
 func (frh *FrameHeader) ReadFrom(br *bufio.Reader) (int64, error) {
-	return frh.readFrom(br, 0)
-}
-
-// ReadFromLimitPayload reads frame from reader limiting the payload.
-func (frh *FrameHeader) ReadFromLimitPayload(br *bufio.Reader, max uint32) (int64, error) {
-	return frh.readFrom(br, max)
+	return frh.readFrom(br)
 }
 
 // TODO: Delete rb?
-func (frh *FrameHeader) readFrom(br *bufio.Reader, max uint32) (int64, error) {
+func (frh *FrameHeader) readFrom(br *bufio.Reader) (int64, error) {
 	header, err := br.Peek(DefaultFrameSize)
 	if err != nil {
 		return -1, err
@@ -176,6 +187,10 @@ func (frh *FrameHeader) readFrom(br *bufio.Reader, max uint32) (int64, error) {
 
 	// Parsing FrameHeader's Header field.
 	frh.parseValues(header)
+	if err := frh.checkLen(); err != nil {
+		return 0, err
+	}
+
 	if frh.kind > FrameContinuation {
 		br.Discard(frh.length)
 		return 0, ErrUnknowFrameType
@@ -235,6 +250,13 @@ func (frh *FrameHeader) SetBody(fr Frame) {
 
 func (fhr *FrameHeader) setPayload(payload []byte) {
 	fhr.payload = append(fhr.payload[:0], payload...)
+}
+
+func (fhr *FrameHeader) checkLen() error {
+	if fhr.maxLen != 0 && fhr.length > int(fhr.maxLen) {
+		return ErrPayloadExceeds
+	}
+	return nil
 }
 
 func (frh *FrameHeader) appendCheckingLen(dst, src []byte) (n int, err error) {
