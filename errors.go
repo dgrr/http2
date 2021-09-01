@@ -42,6 +42,7 @@ func (e ErrorCode) Error() string {
 // Error defines the HTTP/2 errors, composed by the code and debug data.
 type Error struct {
 	code  ErrorCode
+	frameType FrameType
 	debug string
 }
 
@@ -65,6 +66,15 @@ func NewError(e ErrorCode, debug string) Error {
 	return Error{
 		code:  e,
 		debug: debug,
+		frameType: FrameResetStream,
+	}
+}
+
+func NewGoAwayError(e ErrorCode, debug string) Error {
+	return Error{
+		code:  e,
+		debug: debug,
+		frameType: FrameGoAway,
 	}
 }
 
@@ -98,4 +108,6 @@ var (
 		ProtocolError, "missing payload bytes. Need more")
 	ErrPayloadExceeds = NewError(
 		FrameSizeError, "FrameHeader payload exceeds the negotiated maximum size")
+	ErrCompression = NewGoAwayError(
+		CompressionError, "Compression error")
 )

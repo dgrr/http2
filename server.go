@@ -205,7 +205,7 @@ func (sc *serverConn) handleStreams() {
 
 			if strm.State() < StreamStateHalfClosed && sc.readTimeout > 0 {
 				if time.Since(strm.startedAt) > sc.readTimeout {
-					sc.writeGoAway(strm.ID(), StreamCancelled)
+					sc.writeGoAway(strm.ID(), StreamCancelled, "")
 					strm.SetState(StreamStateClosed)
 				}
 			}
@@ -235,14 +235,14 @@ func (sc *serverConn) writeReset(strm uint32, code ErrorCode) {
 	sc.writer <- fr
 }
 
-func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode) {
+func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode, message string) {
 	ga := AcquireFrame(FrameGoAway).(*GoAway)
 
 	fr := AcquireFrameHeader()
-	fr.SetStream(strm)
 
 	ga.SetStream(strm)
 	ga.SetCode(code)
+	ga.SetData([]byte(message))
 
 	fr.SetBody(ga)
 
@@ -250,12 +250,20 @@ func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode) {
 }
 
 func (sc *serverConn) writeError(strm *Stream, err error) {
-	code := InternalError
-	if errors.Is(err, Error{}) {
-		code = err.(Error).Code()
+	streamErr := Error{}
+	if !errors.As(err, &streamErr) {
+		sc.writeReset(strm.ID(), InternalError)
+		strm.SetState(StreamStateClosed)
+		return
 	}
 
-	sc.writeReset(strm.ID(), code)
+	switch streamErr.frameType {
+	case FrameGoAway:
+		sc.writeGoAway(strm.ID(), streamErr.Code(), streamErr.Error())
+	case FrameResetStream:
+		sc.writeReset(strm.ID(), streamErr.Code())
+	}
+
 	strm.SetState(StreamStateClosed)
 }
 
@@ -323,6 +331,8 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 				if errors.Is(err, UnexpectedSizeError) && len(pb) > 0 {
 					err = nil
 					strm.previousHeaderBytes = append(strm.previousHeaderBytes[:0], pb...)
+				} else {
+					err = ErrCompression
 				}
 				break
 			}
@@ -361,6 +371,11 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 	case FrameData:
 		ctx.Request.AppendBody(
 			fr.Body().(*Data).Data())
+	case FrameResetStream:
+	default:
+		if strm.State() == StreamStateOpen {
+			return NewGoAwayError(ProtocolError, "invalid frame")
+		}
 	}
 
 	return err
