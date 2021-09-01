@@ -208,17 +208,19 @@ func (sc *serverConn) handleStreams() {
 			}
 
 			handleState(fr, strm)
+			if fr.Type() == FrameHeaders && fr.Flags().Has(FlagEndHeaders) {
+				currentStrm = 0
+			}
 
 			if strm.State() < StreamStateHalfClosed && sc.readTimeout > 0 {
 				if time.Since(strm.startedAt) > sc.readTimeout {
-					sc.writeGoAway(strm.ID(), StreamCancelled, "")
+					sc.writeGoAway(strm.ID(), StreamCancelled, "timeout")
 					strm.SetState(StreamStateClosed)
 				}
 			}
 
 			switch strm.State() {
 			case StreamStateHalfClosed:
-				currentStrm = 0
 				sc.handleEndRequest(strm)
 				fallthrough
 			case StreamStateClosed:
