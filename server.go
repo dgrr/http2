@@ -174,6 +174,7 @@ func (sc *serverConn) writePing() {
 // handleStreams handles everything related to the streams and the HPACK table synchronously.
 func (sc *serverConn) handleStreams() {
 	var strms = make(map[uint32]*Stream)
+	var currentStrm uint32
 
 	for {
 		select {
@@ -197,6 +198,11 @@ func (sc *serverConn) handleStreams() {
 				sc.createStream(sc.c, strm)
 			}
 
+			if currentStrm != 0 && currentStrm != fr.Stream() {
+				sc.writeError(strm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
+				continue
+			}
+
 			if err := sc.handleFrame(strm, fr); err != nil {
 				sc.writeError(strm, err)
 			}
@@ -212,12 +218,15 @@ func (sc *serverConn) handleStreams() {
 
 			switch strm.State() {
 			case StreamStateHalfClosed:
+				currentStrm = 0
 				sc.handleEndRequest(strm)
 				fallthrough
 			case StreamStateClosed:
 				ctxPool.Put(strm.ctx)
 				delete(strms, strm.ID())
 				streamPool.Put(strm)
+			case StreamStateOpen:
+				currentStrm = strm.ID()
 			}
 		}
 	}
