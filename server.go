@@ -190,6 +190,10 @@ func (sc *serverConn) handleStreams() {
 					continue
 				}
 
+				if fr.Type() == FrameResetStream {
+					continue
+				}
+
 				strm = NewStream(fr.Stream(), sc.clientStreamWindow)
 				strms[fr.Stream()] = strm
 
