@@ -8,7 +8,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-const DefaultPingInterval = time.Second * 5
+const DefaultPingInterval = time.Second * 3
 
 // ClientOpts defines the client options for the HTTP/2 connection.
 type ClientOpts struct {

@@ -8,8 +8,8 @@ const (
 	// default Settings parameters
 	defaultHeaderTableSize   uint32 = 4096
 	defaultConcurrentStreams uint32 = 100
-	defaultWindowSize        uint32 = 1<<16-1
-	defaultDataFrameSize     uint32 = 1<<14
+	defaultWindowSize        uint32 = 1<<16 - 1
+	defaultDataFrameSize     uint32 = 1 << 14
 	defaultMaxHeaderListSize uint32 = 1048896
 
 	windowSize   = 1<<31 - 1

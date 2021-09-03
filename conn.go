@@ -23,6 +23,8 @@ type ConnOpts struct {
 	//
 	// An interval of 0 will make the library to use DefaultPingInterval. Because ping intervals can't be disabled
 	PingInterval time.Duration
+	// DisablePingChecking ...
+	DisablePingChecking bool
 	// OnDisconnect is a callback that fires when the Conn disconnects.
 	OnDisconnect func(c *Conn)
 }
@@ -95,6 +97,9 @@ type Conn struct {
 
 	pingInterval time.Duration
 
+	unacks      int
+	disableAcks bool
+
 	lastErr      error
 	onDisconnect func(*Conn)
 
@@ -116,6 +121,7 @@ func NewConn(c net.Conn, opts ConnOpts) *Conn {
 		in:            make(chan *Ctx, 128),
 		out:           make(chan *FrameHeader, 128),
 		pingInterval:  opts.PingInterval,
+		disableAcks:   opts.DisablePingChecking,
 		onDisconnect:  opts.OnDisconnect,
 	}
 
@@ -352,6 +358,11 @@ loop:
 				break loop
 			}
 		}
+
+		if !c.disableAcks && c.unacks >= 3 {
+			c.lastErr = ErrTimeout
+			break loop
+		}
 	}
 
 	// send eofs to pending requests
@@ -526,6 +537,8 @@ func (c *Conn) readNext() (fr *FrameHeader, err error) {
 			ping := fr.Body().(*Ping)
 			if !ping.IsAck() {
 				c.handlePing(ping)
+			} else {
+				c.unacks--
 			}
 		case FrameGoAway:
 			err = fr.Body().(*GoAway)
@@ -537,6 +550,8 @@ func (c *Conn) readNext() (fr *FrameHeader, err error) {
 
 	return
 }
+
+var ErrTimeout = errors.New("server is not replying to pings")
 
 func (c *Conn) writePing() error {
 	fr := AcquireFrameHeader()
@@ -550,6 +565,9 @@ func (c *Conn) writePing() error {
 	_, err := fr.WriteTo(c.bw)
 	if err == nil {
 		err = c.bw.Flush()
+		if err == nil {
+			c.unacks++
+		}
 	}
 
 	return err
