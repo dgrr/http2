@@ -64,6 +64,9 @@ func (p *Ping) DataAsTime() time.Time {
 // Deserialize ...
 func (p *Ping) Deserialize(frh *FrameHeader) error {
 	p.ack = frh.Flags().Has(FlagAck)
+	if len(frh.payload) != 8 {
+		return NewGoAwayError(FrameSizeError, "invalid ping payload")
+	}
 	p.SetData(frh.payload)
 	return nil
 }
