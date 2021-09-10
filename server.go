@@ -78,11 +78,13 @@ func (s *Server) ServeConn(c net.Conn) error {
 		return err
 	}
 
-	go sc.handleStreams()
+	go func() {
+		sc.handleStreams()
+		close(sc.writer)
+	}()
 	go sc.writeLoop()
 
 	defer func() {
-		close(sc.writer)
 		close(sc.reader)
 	}()
 
