@@ -163,7 +163,7 @@ func (st *Settings) MaxHeaderListSize() uint32 {
 }
 
 // Read reads from d and decodes the read values into st.
-func (st *Settings) Read(d []byte) { // TODO: return error?
+func (st *Settings) Read(d []byte) error {
 	var b []byte
 	var key uint16
 	var value uint32
@@ -179,12 +179,21 @@ func (st *Settings) Read(d []byte) { // TODO: return error?
 		case HeaderTableSize:
 			st.tableSize = value
 		case EnablePush:
+			if value != 0 && value	 != 1 {
+				return NewGoAwayError(ProtocolError, "wrong value for SETTINGS_ENABLE_PUSH")
+			}
 			st.enablePush = value != 0
 		case MaxConcurrentStreams:
 			st.maxStreams = value
 		case MaxWindowSize:
+			if value > 1<<31-1 {
+				return NewGoAwayError(FlowControlError, "SETTINGS_INITIAL_WINDOW_SIZE above maximum")
+			}
 			st.windowSize = value
 		case MaxFrameSize:
+			if value < 1<<14 || value > 1<<24-1 {
+				return NewGoAwayError(ProtocolError, "wrong value for SETTINGS_MAX_FRAME_SIZE")
+			}
 			st.frameSize = value
 		case MaxHeaderListSize:
 			st.headerSize = value
@@ -193,6 +202,7 @@ func (st *Settings) Read(d []byte) { // TODO: return error?
 		last = i
 		i += 6
 	}
+	return nil
 }
 
 // Encode encodes settings to be sent through the wire
@@ -258,10 +268,17 @@ func (st *Settings) SetAck(ack bool) {
 }
 
 func (st *Settings) Deserialize(fr *FrameHeader) error {
-	st.ack = fr.Flags().Has(FlagAck)
-	st.Read(fr.payload) // TODO: return error?
+	if len(fr.payload)%6 != 0 {
+		return NewGoAwayError(FrameSizeError, "wrong payload for settings")
+	}
 
-	return nil
+	st.ack = fr.Flags().Has(FlagAck)
+
+	if st.IsAck() && len(fr.payload) > 0 {
+		return NewGoAwayError(FrameSizeError, "settings with ack and payload")
+	}
+
+	return st.Read(fr.payload)
 }
 
 func (st *Settings) Serialize(fr *FrameHeader) {
