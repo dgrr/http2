@@ -42,6 +42,7 @@ type Stream struct {
 	ctx                 *fasthttp.RequestCtx
 	startedAt           time.Time
 	previousHeaderBytes []byte
+	headersFinished     bool
 }
 
 var streamPool = sync.Pool{

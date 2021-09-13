@@ -78,11 +78,13 @@ func (s *Server) ServeConn(c net.Conn) error {
 		return err
 	}
 
-	go sc.handleStreams()
+	go func() {
+		sc.handleStreams()
+		close(sc.writer)
+	}()
 	go sc.writeLoop()
 
 	defer func() {
-		close(sc.writer)
 		close(sc.reader)
 	}()
 
@@ -140,6 +142,8 @@ func (s *Server) ServeConn(c net.Conn) error {
 			} else {
 				err = fmt.Errorf("goaway: %s: %s", ga.Code(), ga.Data())
 			}
+		default:
+			sc.writeGoAway(0, ProtocolError, "Invalid frame")
 		}
 
 		ReleaseFrameHeader(fr)
@@ -174,6 +178,7 @@ func (sc *serverConn) writePing() {
 // handleStreams handles everything related to the streams and the HPACK table synchronously.
 func (sc *serverConn) handleStreams() {
 	var strms = make(map[uint32]*Stream)
+	var closedStrms = make(map[uint32]struct{})
 	var currentStrm uint32
 
 	for {
@@ -185,12 +190,16 @@ func (sc *serverConn) handleStreams() {
 
 			strm, ok := strms[fr.Stream()]
 			if !ok { // then create it
-				if len(strms) > int(sc.st.maxStreams) {
-					sc.writeReset(fr.Stream(), RefusedStreamError)
+				if fr.Type() == FrameResetStream {
+					// only send go away on idle stream not on already closed stream
+					if _, ok = closedStrms[fr.Stream()]; !ok {
+						sc.writeGoAway(fr.Stream(), ProtocolError, "RST_STREAM on idle stream")
+					}
 					continue
 				}
 
-				if fr.Type() == FrameResetStream {
+				if len(strms) > int(sc.st.maxStreams) {
+					sc.writeReset(fr.Stream(), RefusedStreamError)
 					continue
 				}
 
@@ -211,10 +220,11 @@ func (sc *serverConn) handleStreams() {
 				sc.writeError(strm, err)
 			}
 
-			handleState(fr, strm)
-			if fr.Type() == FrameHeaders && fr.Flags().Has(FlagEndHeaders) {
+			if strm.headersFinished {
 				currentStrm = 0
 			}
+
+			handleState(fr, strm)
 
 			if strm.State() < StreamStateHalfClosed && sc.readTimeout > 0 {
 				if time.Since(strm.startedAt) > sc.readTimeout {
@@ -229,6 +239,7 @@ func (sc *serverConn) handleStreams() {
 				fallthrough
 			case StreamStateClosed:
 				ctxPool.Put(strm.ctx)
+				closedStrms[strm.ID()] = struct{}{}
 				delete(strms, strm.ID())
 				streamPool.Put(strm)
 			case StreamStateOpen:
@@ -334,6 +345,14 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 
 	switch fr.Type() {
 	case FrameHeaders, FrameContinuation:
+		if strm.headersFinished {
+			return NewGoAwayError(ProtocolError, "stream not open")
+		}
+
+		if fr.Flags().Has(FlagEndHeaders) {
+			strm.headersFinished = true
+		}
+
 		b := append(strm.previousHeaderBytes, fr.Body().(FrameWithHeaders).Headers()...)
 		hf := AcquireHeaderField()
 		scheme := []byte("https")
@@ -384,13 +403,21 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 		// calling req.URI() triggers a URL parsing, so because of that we need to delay the URL parsing.
 		req.URI().SetSchemeBytes(scheme)
 	case FrameData:
+		if !strm.headersFinished {
+			return NewGoAwayError(ProtocolError, "stream open")
+		}
+
+		if strm.State() != StreamStateHalfClosed {
+			return NewGoAwayError(StreamClosedError, "stream closed")
+		}
 		ctx.Request.AppendBody(
 			fr.Body().(*Data).Data())
 	case FrameResetStream:
-	default:
-		if strm.State() == StreamStateOpen {
-			return NewGoAwayError(ProtocolError, "invalid frame")
+		if strm.State() == StreamStateIdle {
+			return NewGoAwayError(ProtocolError, "RST_STREAM on idle stream")
 		}
+	default:
+		return NewGoAwayError(ProtocolError, "invalid frame")
 	}
 
 	return err
