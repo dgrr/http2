@@ -311,6 +311,26 @@ func (c *Conn) Write(r *Ctx) {
 	c.in <- r
 }
 
+type WriteError struct {
+	err error
+}
+
+func (we WriteError) Error() string {
+	return fmt.Sprintf("writing error: %s", we.err)
+}
+
+func (we WriteError) Unwrap() error {
+	return we.err
+}
+
+func (we WriteError) Is(target error) bool {
+	return errors.Is(we.err, target)
+}
+
+func (we WriteError) As(target interface{}) bool {
+	return errors.As(we.err, target)
+}
+
 func (c *Conn) writeLoop() {
 	defer c.Close()
 
@@ -320,6 +340,8 @@ func (c *Conn) writeLoop() {
 
 	ticker := time.NewTicker(c.pingInterval)
 	defer ticker.Stop()
+
+	var lastErr error
 
 loop:
 	for {
@@ -339,6 +361,8 @@ loop:
 					continue
 				}
 
+				lastErr = WriteError{err}
+
 				break loop
 			}
 
@@ -346,29 +370,36 @@ loop:
 		case fr := <-c.out: // generic output
 			if _, err := fr.WriteTo(c.bw); err == nil {
 				if err = c.bw.Flush(); err != nil {
+					lastErr = WriteError{err}
 					break loop
 				}
 			} else {
+				lastErr = WriteError{err}
 				break loop
 			}
 
 			ReleaseFrameHeader(fr)
 		case <-ticker.C: // ping
 			if err := c.writePing(); err != nil {
+				lastErr = WriteError{err}
 				break loop
 			}
 		}
 
 		if !c.disableAcks && c.unacks >= 3 {
-			c.lastErr = ErrTimeout
+			lastErr = ErrTimeout
 			break loop
 		}
+	}
+
+	if lastErr == nil {
+		lastErr = io.EOF
 	}
 
 	// send eofs to pending requests
 	c.reqQueued.Range(func(_, v interface{}) bool {
 		r := v.(*Ctx)
-		r.Err <- io.EOF
+		r.Err <- lastErr
 		return true
 	})
 }
