@@ -56,6 +56,9 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.id = id
 	strm.window = win
 	strm.state = StreamStateIdle
+	strm.headersFinished = false
+	strm.startedAt = time.Time{}
+	strm.previousHeaderBytes = strm.previousHeaderBytes[:0]
 	strm.ctx = nil
 
 	return strm
