@@ -21,12 +21,9 @@ func ReadPreface(br io.Reader) bool {
 	n, err := br.Read(b[:prefaceLen])
 	if err == nil && n == prefaceLen {
 		if bytes.Equal(b, http2Preface) {
-			b = nil
 			return true
 		}
 	}
-
-	b = nil
 
 	return false
 }

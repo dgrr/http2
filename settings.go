@@ -5,14 +5,12 @@ const FrameSettings FrameType = 0x4
 var _ Frame = &Settings{}
 
 const (
-	// default Settings parameters
+	// default Settings parameters.
 	defaultHeaderTableSize   uint32 = 4096
 	defaultConcurrentStreams uint32 = 100
 	defaultWindowSize        uint32 = 1<<16 - 1
 	defaultDataFrameSize     uint32 = 1 << 14
-	defaultMaxHeaderListSize uint32 = 1048896
 
-	windowSize   = 1<<31 - 1
 	maxFrameSize = 1<<24 - 1
 
 	// FrameSettings string values (https://httpwg.org/specs/rfc7540.html#SettingValues)
@@ -43,7 +41,7 @@ func (st *Settings) Type() FrameType {
 	return FrameSettings
 }
 
-// Reset resets settings to default values
+// Reset resets settings to default values.
 func (st *Settings) Reset() {
 	// default settings
 	st.tableSize = defaultHeaderTableSize
@@ -56,7 +54,7 @@ func (st *Settings) Reset() {
 	st.ack = false
 }
 
-// CopyTo copies st fields to st2
+// CopyTo copies st fields to st2.
 func (st *Settings) CopyTo(st2 *Settings) {
 	st2.ack = st.ack
 	st2.rawSettings = append(st2.rawSettings[:0], st.rawSettings...)
@@ -71,7 +69,7 @@ func (st *Settings) CopyTo(st2 *Settings) {
 // SetHeaderTableSize sets the maximum size of the header
 // compression table used to decode header blocks.
 //
-// Default value is 4096
+// Default value is 4096.
 func (st *Settings) SetHeaderTableSize(size uint32) {
 	st.tableSize = size
 }
@@ -79,7 +77,7 @@ func (st *Settings) SetHeaderTableSize(size uint32) {
 // HeaderTableSize returns the maximum size of the header
 // compression table used to decode header blocks.
 //
-// Default value is 4096
+// Default value is 4096.
 func (st *Settings) HeaderTableSize() uint32 {
 	return st.tableSize
 }
@@ -116,7 +114,7 @@ func (st *Settings) MaxConcurrentStreams() uint32 {
 // for Stream-level flow control.
 //
 // Default value is 1 << 16 - 1
-// Maximum value is 1 << 31 - 1
+// Maximum value is 1 << 31 - 1.
 func (st *Settings) SetMaxWindowSize(size uint32) {
 	st.windowSize = size
 }
@@ -125,7 +123,7 @@ func (st *Settings) SetMaxWindowSize(size uint32) {
 // for Stream-level flow control.
 //
 // Default value is 1 << 16 - 1
-// Maximum value is 1 << 31 - 1
+// Maximum value is 1 << 31 - 1.
 func (st *Settings) MaxWindowSize() uint32 {
 	return st.windowSize
 }
@@ -134,7 +132,7 @@ func (st *Settings) MaxWindowSize() uint32 {
 // Payload that the sender is willing to receive.
 //
 // Default value is 1 << 14
-// Maximum value is 1 << 24 - 1
+// Maximum value is 1 << 24 - 1.
 func (st *Settings) SetMaxFrameSize(size uint32) {
 	st.frameSize = size
 }
@@ -143,7 +141,7 @@ func (st *Settings) SetMaxFrameSize(size uint32) {
 // Payload that the sender is willing to receive.
 //
 // Default value is 1 << 14
-// Maximum value is 1 << 24 - 1
+// Maximum value is 1 << 24 - 1.
 func (st *Settings) MaxFrameSize() uint32 {
 	return st.frameSize
 }
@@ -179,7 +177,7 @@ func (st *Settings) Read(d []byte) error {
 		case HeaderTableSize:
 			st.tableSize = value
 		case EnablePush:
-			if value != 0 && value	 != 1 {
+			if value != 0 && value != 1 {
 				return NewGoAwayError(ProtocolError, "wrong value for SETTINGS_ENABLE_PUSH")
 			}
 			st.enablePush = value != 0
@@ -205,7 +203,7 @@ func (st *Settings) Read(d []byte) error {
 	return nil
 }
 
-// Encode encodes settings to be sent through the wire
+// Encode encodes settings to be sent through the wire.
 func (st *Settings) Encode() {
 	st.rawSettings = st.rawSettings[:0]
 

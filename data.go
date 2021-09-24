@@ -25,7 +25,6 @@ func (data *Data) Type() FrameType {
 	return FrameData
 }
 
-// Reset ...
 func (data *Data) Reset() {
 	data.endStream = false
 	data.hasPadding = false
@@ -39,7 +38,6 @@ func (data *Data) CopyTo(d *Data) {
 	d.b = append(d.b[:0], data.b...)
 }
 
-// SetEndStream ...
 func (data *Data) SetEndStream(value bool) {
 	data.endStream = value
 }
@@ -68,7 +66,7 @@ func (data *Data) SetPadding(value bool) {
 	data.hasPadding = value
 }
 
-// Append appends b to data
+// Append appends b to data.
 func (data *Data) Append(b []byte) {
 	data.b = append(data.b, b...)
 }
@@ -77,7 +75,7 @@ func (data *Data) Len() int {
 	return len(data.b)
 }
 
-// Write writes b to data
+// Write writes b to data.
 func (data *Data) Write(b []byte) (int, error) {
 	n := len(b)
 	data.Append(b)

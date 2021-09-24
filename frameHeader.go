@@ -17,7 +17,7 @@ const (
 	defaultMaxLen = 1 << 14
 
 	// Frame Flag (described along the frame types)
-	// More flags have been ignored due to redundancy
+	// More flags have been ignored due to redundancy.
 	FlagAck        FrameFlags = 0x1
 	FlagEndStream  FrameFlags = 0x1
 	FlagEndHeaders FrameFlags = 0x4
@@ -70,68 +70,66 @@ func ReleaseFrameHeader(fr *FrameHeader) {
 }
 
 // Reset resets header values.
-func (frh *FrameHeader) Reset() {
-	frh.kind = 0
-	frh.flags = 0
-	frh.stream = 0
-	frh.length = 0
-	frh.maxLen = defaultMaxLen
-	frh.fr = nil
-	frh.payload = frh.payload[:0]
+func (f *FrameHeader) Reset() {
+	f.kind = 0
+	f.flags = 0
+	f.stream = 0
+	f.length = 0
+	f.maxLen = defaultMaxLen
+	f.fr = nil
+	f.payload = f.payload[:0]
 }
 
 // Type returns the frame type (https://httpwg.org/specs/rfc7540.html#Frame_types)
-func (frh *FrameHeader) Type() FrameType {
-	return frh.kind
+func (f *FrameHeader) Type() FrameType {
+	return f.kind
 }
 
-// Flags ...
-func (frh *FrameHeader) Flags() FrameFlags {
-	return frh.flags
+func (f *FrameHeader) Flags() FrameFlags {
+	return f.flags
 }
 
-func (frh *FrameHeader) SetFlags(flags FrameFlags) {
-	frh.flags = flags
+func (f *FrameHeader) SetFlags(flags FrameFlags) {
+	f.flags = flags
 }
 
 // Stream returns the stream id of the current frame.
-func (frh *FrameHeader) Stream() uint32 {
-	return frh.stream
+func (f *FrameHeader) Stream() uint32 {
+	return f.stream
 }
 
 // SetStream sets the stream id on the current frame.
 //
 // This function DOESN'T delete the reserved bit (first bit)
 // in order to support personalized implementations of the protocol.
-func (frh *FrameHeader) SetStream(stream uint32) {
-	frh.stream = stream
+func (f *FrameHeader) SetStream(stream uint32) {
+	f.stream = stream
 }
 
-// Len returns the payload length
-func (frh *FrameHeader) Len() int {
-	return frh.length
+// Len returns the payload length.
+func (f *FrameHeader) Len() int {
+	return f.length
 }
 
 // MaxLen returns max negotiated payload length.
-func (frh *FrameHeader) MaxLen() uint32 {
-	return frh.maxLen
+func (f *FrameHeader) MaxLen() uint32 {
+	return f.maxLen
 }
 
-func (frh *FrameHeader) parseValues(header []byte) {
-	frh.length = int(http2utils.BytesToUint24(header[:3]))          // & (1<<24 - 1)    // 3
-	frh.kind = FrameType(header[3])                                 // 1
-	frh.flags = FrameFlags(header[4])                               // 1
-	frh.stream = http2utils.BytesToUint32(header[5:]) & (1<<31 - 1) // 4
+func (f *FrameHeader) parseValues(header []byte) {
+	f.length = int(http2utils.BytesToUint24(header[:3]))          // & (1<<24 - 1)    // 3
+	f.kind = FrameType(header[3])                                 // 1
+	f.flags = FrameFlags(header[4])                               // 1
+	f.stream = http2utils.BytesToUint32(header[5:]) & (1<<31 - 1) // 4
 }
 
-func (frh *FrameHeader) parseHeader(header []byte) {
-	http2utils.Uint24ToBytes(header[:3], uint32(frh.length)) // 2
-	header[3] = byte(frh.kind)                               // 1
-	header[4] = byte(frh.flags)                              // 1
-	http2utils.Uint32ToBytes(header[5:], frh.stream)         // 4
+func (f *FrameHeader) parseHeader(header []byte) {
+	http2utils.Uint24ToBytes(header[:3], uint32(f.length)) // 2
+	header[3] = byte(f.kind)                               // 1
+	header[4] = byte(f.flags)                              // 1
+	http2utils.Uint32ToBytes(header[5:], f.stream)         // 4
 }
 
-// ReadFrameFrom ...
 func ReadFrameFrom(br *bufio.Reader) (*FrameHeader, error) {
 	fr := AcquireFrameHeader()
 
@@ -148,6 +146,7 @@ func ReadFrameFrom(br *bufio.Reader) (*FrameHeader, error) {
 
 	return fr, err
 }
+
 func ReadFrameFromWithSize(br *bufio.Reader, max uint32) (*FrameHeader, error) {
 	fr := AcquireFrameHeader()
 	fr.maxLen = max
@@ -169,104 +168,91 @@ func ReadFrameFromWithSize(br *bufio.Reader, max uint32) (*FrameHeader, error) {
 //
 // This function returns read bytes and/or error.
 //
-// Unlike io.ReaderFrom this method does not read until io.EOF
-func (frh *FrameHeader) ReadFrom(br *bufio.Reader) (int64, error) {
-	return frh.readFrom(br)
+// Unlike io.ReaderFrom this method does not read until io.EOF.
+func (f *FrameHeader) ReadFrom(br *bufio.Reader) (int64, error) {
+	return f.readFrom(br)
 }
 
 // TODO: Delete rb?
-func (frh *FrameHeader) readFrom(br *bufio.Reader) (int64, error) {
+func (f *FrameHeader) readFrom(br *bufio.Reader) (int64, error) {
 	header, err := br.Peek(DefaultFrameSize)
 	if err != nil {
 		return -1, err
 	}
 
-	br.Discard(DefaultFrameSize)
+	_, _ = br.Discard(DefaultFrameSize)
 
 	rn := int64(DefaultFrameSize)
 
 	// Parsing FrameHeader's Header field.
-	frh.parseValues(header)
-	if err := frh.checkLen(); err != nil {
+	f.parseValues(header)
+	if err = f.checkLen(); err != nil {
 		return 0, err
 	}
 
-	if frh.kind > FrameContinuation {
-		br.Discard(frh.length)
+	if f.kind > FrameContinuation {
+		_, _ = br.Discard(f.length)
 		return 0, ErrUnknowFrameType
 	}
-	frh.fr = AcquireFrame(frh.kind)
+	f.fr = AcquireFrame(f.kind)
 
 	// if max > 0 && frh.length > max {
 	// TODO: Discard bytes and return an error
-	if frh.length > 0 {
-		n := frh.length
+	if f.length > 0 {
+		n := f.length
 		if n < 0 {
-			panic(fmt.Sprintf("length is less than 0 (%d). Overflow? (%d)", n, frh.length))
+			panic(fmt.Sprintf("length is less than 0 (%d). Overflow? (%d)", n, f.length))
 		}
 
-		frh.payload = http2utils.Resize(frh.payload, n)
+		f.payload = http2utils.Resize(f.payload, n)
 
-		n, err = io.ReadFull(br, frh.payload[:n])
+		n, _ = io.ReadFull(br, f.payload[:n])
 		rn += int64(n)
 	}
 
-	return rn, frh.fr.Deserialize(frh)
+	return rn, f.fr.Deserialize(f)
 }
 
 // WriteTo writes frame to the Writer.
 //
 // This function returns FrameHeader bytes written and/or error.
-func (frh *FrameHeader) WriteTo(w *bufio.Writer) (wb int64, err error) {
-	frh.fr.Serialize(frh)
+func (f *FrameHeader) WriteTo(w *bufio.Writer) (wb int64, err error) {
+	f.fr.Serialize(f)
 
-	frh.length = len(frh.payload)
-	frh.parseHeader(frh.rawHeader[:])
+	f.length = len(f.payload)
+	f.parseHeader(f.rawHeader[:])
 
-	n, err := w.Write(frh.rawHeader[:])
+	n, err := w.Write(f.rawHeader[:])
 	if err == nil {
 		wb += int64(n)
 
-		n, err = w.Write(frh.payload)
+		n, err = w.Write(f.payload)
 		wb += int64(n)
 	}
 
 	return wb, err
 }
 
-// Body ...
-func (frh *FrameHeader) Body() Frame {
-	return frh.fr
+func (f *FrameHeader) Body() Frame {
+	return f.fr
 }
 
-func (frh *FrameHeader) SetBody(fr Frame) {
+func (f *FrameHeader) SetBody(fr Frame) {
 	if fr == nil {
 		panic("Body cannot be nil")
 	}
 
-	frh.kind = fr.Type()
-	frh.fr = fr
+	f.kind = fr.Type()
+	f.fr = fr
 }
 
-func (fhr *FrameHeader) setPayload(payload []byte) {
-	fhr.payload = append(fhr.payload[:0], payload...)
+func (f *FrameHeader) setPayload(payload []byte) {
+	f.payload = append(f.payload[:0], payload...)
 }
 
-func (fhr *FrameHeader) checkLen() error {
-	if fhr.maxLen != 0 && fhr.length > int(fhr.maxLen) {
+func (f *FrameHeader) checkLen() error {
+	if f.maxLen != 0 && f.length > int(f.maxLen) {
 		return ErrPayloadExceeds
 	}
 	return nil
-}
-
-func (frh *FrameHeader) appendCheckingLen(dst, src []byte) (n int, err error) {
-	n = len(src)
-	if frh.maxLen > 0 && uint32(n+len(dst)) > frh.maxLen {
-		err = ErrPayloadExceeds
-	} else {
-		frh.payload = append(dst, src...)
-		frh.length = len(frh.payload)
-	}
-
-	return
 }

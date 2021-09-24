@@ -35,6 +35,8 @@ func TestHPACKAppendInt(t *testing.T) {
 }
 
 func checkInt(t *testing.T, err error, n, e uint64, elen int, b []byte) {
+	t.Helper()
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +50,7 @@ func checkInt(t *testing.T, err error, n, e uint64, elen int, b []byte) {
 
 func TestHPACKReadInt(t *testing.T) {
 	var err error
-	n := uint64(0)
+	var n uint64
 	b := []byte{15, 31, 154, 10, 122}
 
 	b, n = readInt(5, b)
@@ -77,7 +79,7 @@ func TestHPACKWriteTwoStrings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dst, dstB, err = readString(nil, dst)
+	_, dstB, err = readString(nil, dst)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +94,8 @@ func TestHPACKWriteTwoStrings(t *testing.T) {
 }
 
 func check(t *testing.T, slice []*HeaderField, i int, k, v string) {
+	t.Helper()
+
 	if len(slice) <= i {
 		t.Fatalf("fields len exceeded. %d <> %d", len(slice), i)
 	}
@@ -107,9 +111,11 @@ func check(t *testing.T, slice []*HeaderField, i int, k, v string) {
 }
 
 func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []string, tableSize int) {
+	t.Helper()
+
 	var err error
 	var lck sync.Mutex
-	var ok = false
+	var ok bool
 
 	go func() {
 		// timeout in case a header has any error
@@ -421,6 +427,8 @@ func compare(b, r []byte) int {
 }
 
 func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []string, tableSize int) {
+	t.Helper()
+
 	n := 0
 	hfs := make([]*HeaderField, 0, len(fields)/2)
 	for i := 0; i < len(fields); i += 2 {
@@ -430,9 +438,7 @@ func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []st
 		n++
 	}
 
-	var (
-		b []byte
-	)
+	var b []byte
 
 	for _, hf := range hfs {
 		b = hpack.AppendHeader(b, hf, true)

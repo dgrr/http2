@@ -7,7 +7,6 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// StreamState ...
 type StreamState int8
 
 const (

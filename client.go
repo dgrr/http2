@@ -24,15 +24,11 @@ type ClientOpts struct {
 
 // Ctx represents a context for a stream. Every stream is related to a context.
 type Ctx struct {
-	// Request ...
-	Request *fasthttp.Request
-	// Response ...
+	Request  *fasthttp.Request
 	Response *fasthttp.Response
-	// Err ...
-	Err chan error
+	Err      chan error
 }
 
-// Client ...
 type Client struct {
 	d *Dialer
 
@@ -60,7 +56,7 @@ func (cl *Client) onConnectionDropped(c *Conn) {
 		if e.Value.(*Conn) == c {
 			cl.conns.Remove(e)
 
-			cl.createConn()
+			_, _, _ = cl.createConn()
 
 			break
 		}
@@ -120,9 +116,5 @@ func (cl *Client) Do(req *fasthttp.Request, res *fasthttp.Response) (err error) 
 		Err:      ch,
 	})
 
-	select {
-	case err = <-ch:
-	}
-
-	return err
+	return <-ch
 }

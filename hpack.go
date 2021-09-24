@@ -12,7 +12,7 @@ import (
 //
 // HPACK is equivalent to a HTTP/1 header.
 //
-// Use AcquireHPACK to acquire new HPACK structure
+// Use AcquireHPACK to acquire new HPACK structure.
 type HPACK struct {
 	// DisableCompression disables compression for literal header fields.
 	DisableCompression bool
@@ -56,7 +56,7 @@ var hpackPool = sync.Pool{
 	},
 }
 
-// AcquireHPACK gets HPACK from pool
+// AcquireHPACK gets HPACK from pool.
 func AcquireHPACK() *HPACK {
 	// TODO: Change the name
 	hp := hpackPool.Get().(*HPACK)
@@ -65,7 +65,7 @@ func AcquireHPACK() *HPACK {
 	return hp
 }
 
-// ReleaseHPACK puts HPACK to the pool
+// ReleaseHPACK puts HPACK to the pool.
 func ReleaseHPACK(hp *HPACK) {
 	hpackPool.Put(hp)
 }
@@ -78,7 +78,7 @@ func (hp *HPACK) releaseDynamic() {
 	hp.dynamic = hp.dynamic[:0]
 }
 
-// Reset deletes and releases all dynamic header fields
+// Reset deletes and releases all dynamic header fields.
 func (hp *HPACK) Reset() {
 	hp.releaseDynamic()
 	hp.maxTableSize = int(defaultHeaderTableSize)
@@ -116,7 +116,7 @@ func (hp *HPACK) addDynamic(hf *HeaderField) {
 
 // shrink the dynamic table if needed.
 func (hp *HPACK) shrink() {
-	n := 0 // elements to remove
+	var n int // elements to remove
 	tableSize := hp.DynamicSize()
 
 	for n = 0; n < len(hp.dynamic) && tableSize > hp.maxTableSize; n++ {
@@ -407,7 +407,7 @@ func readString(dst, b []byte) ([]byte, []byte, error) {
 
 	b, n = readInt(7, b)
 	if uint64(len(b)) < n {
-		return b, dst, UnexpectedSizeError
+		return b, dst, ErrUnexpectedSize
 	}
 
 	if mustDecode {
@@ -421,7 +421,7 @@ func readString(dst, b []byte) ([]byte, []byte, error) {
 	return b, dst, nil
 }
 
-var UnexpectedSizeError = errors.New("unexpected size")
+var ErrUnexpectedSize = errors.New("unexpected size")
 
 // appendString writes bytes slice to dst and returns it.
 // https://tools.ietf.org/html/rfc7541#section-5.2
@@ -453,7 +453,7 @@ func appendString(dst, src []byte, encode bool) []byte {
 	return dst
 }
 
-// TODO: Change naming
+// TODO: Change naming.
 func (hp *HPACK) AppendHeaderField(h *Headers, hf *HeaderField, store bool) {
 	h.rawHeaders = hp.AppendHeader(h.rawHeaders, hf, store)
 }

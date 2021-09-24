@@ -50,7 +50,7 @@ func HuffmanDecode(dst, src []byte) []byte {
 				bits -= 8
 			} else {
 				bits -= root.codeLen
-				dst = append(dst, byte(root.sym))
+				dst = append(dst, root.sym)
 				root = rootHuffmanNode
 			}
 		}
@@ -98,7 +98,7 @@ func (node *huffmanNode) add(sym byte, code uint32, length uint8) {
 		i := uint8(code >> length)
 		if node.sub[i] == nil {
 			node.sub[i] = &huffmanNode{
-				sub: make([]*huffmanNode, 256, 256),
+				sub: make([]*huffmanNode, 256),
 			}
 		}
 

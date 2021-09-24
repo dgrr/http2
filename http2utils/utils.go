@@ -3,7 +3,6 @@ package http2utils
 import (
 	"crypto/rand"
 	"fmt"
-	"reflect"
 	"unsafe"
 
 	"github.com/valyala/fastrand"
@@ -24,11 +23,7 @@ func BytesToUint24(b []byte) uint32 {
 }
 
 func AppendUint32Bytes(dst []byte, n uint32) []byte {
-	dst = append(dst, byte(n>>24))
-	dst = append(dst, byte(n>>16))
-	dst = append(dst, byte(n>>8))
-	dst = append(dst, byte(n))
-	return dst
+	return append(dst, byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
 }
 
 func Uint32ToBytes(b []byte, n uint32) {
@@ -93,22 +88,11 @@ func AddPadding(b []byte) []byte {
 
 	b[0] = uint8(n)
 
-	rand.Read(b[nn+1 : nn+n])
+	_, _ = rand.Read(b[nn+1 : nn+n])
 
 	return b
 }
 
 func FastBytesToString(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
-}
-
-func FastStringToBytes(s string) []byte {
-	sh := (*reflect.StringHeader)(unsafe.Pointer(&s))
-	bh := reflect.SliceHeader{
-		Data: sh.Data,
-		Len:  sh.Len,
-		Cap:  sh.Len,
-	}
-
-	return *(*[]byte)(unsafe.Pointer(&bh))
 }

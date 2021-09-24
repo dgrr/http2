@@ -9,9 +9,7 @@ const FramePing FrameType = 0x6
 
 var _ Frame = &Ping{}
 
-// Ping ...
-//
-// https://tools.ietf.org/html/rfc7540#section-6.7
+// Ping https://tools.ietf.org/html/rfc7540#section-6.7
 type Ping struct {
 	ack  bool
 	data [8]byte
@@ -29,23 +27,19 @@ func (p *Ping) Type() FrameType {
 	return FramePing
 }
 
-// Reset ...
 func (p *Ping) Reset() {
 	p.ack = false
 }
 
-// CopyTo ...
 func (p *Ping) CopyTo(other *Ping) {
 	p.ack = other.ack
 }
 
-// Write ...
 func (p *Ping) Write(b []byte) (n int, err error) {
 	copy(p.data[:], b)
 	return
 }
 
-// SetData ...
 func (p *Ping) SetData(b []byte) {
 	copy(p.data[:], b)
 }
@@ -61,7 +55,6 @@ func (p *Ping) DataAsTime() time.Time {
 	)
 }
 
-// Deserialize ...
 func (p *Ping) Deserialize(frh *FrameHeader) error {
 	p.ack = frh.Flags().Has(FlagAck)
 	if len(frh.payload) != 8 {
@@ -75,7 +68,6 @@ func (p *Ping) Data() []byte {
 	return p.data[:]
 }
 
-// Serialize ...
 func (p *Ping) Serialize(fr *FrameHeader) {
 	if p.ack {
 		fr.SetFlags(fr.Flags().Add(FlagAck))

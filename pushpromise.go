@@ -8,9 +8,7 @@ const FramePushPromise FrameType = 0x5
 
 var _ Frame = &PushPromise{}
 
-// PushPromise ...
-//
-// https://tools.ietf.org/html/rfc7540#section-6.6
+// PushPromise https://tools.ietf.org/html/rfc7540#section-6.6
 type PushPromise struct {
 	pad    bool
 	ended  bool
@@ -22,7 +20,6 @@ func (pp *PushPromise) Type() FrameType {
 	return FramePushPromise
 }
 
-// Reset ...
 func (pp *PushPromise) Reset() {
 	pp.pad = false
 	pp.ended = false
@@ -65,13 +62,11 @@ func (pp *PushPromise) Deserialize(fr *FrameHeader) error {
 func (pp *PushPromise) Serialize(fr *FrameHeader) {
 	fr.payload = fr.payload[:0]
 
-	if pp.pad {
-		fr.Flags().Add(FlagPadded)
-		// TODO: Write padding flag
-	}
+	// if pp.pad {
+	// 	fr.Flags().Add(FlagPadded)
+	// 	// TODO: Write padding flag
+	// }
 
 	fr.payload = append(fr.payload, pp.header...)
 	// TODO: write padding
-
-	return
 }

@@ -10,7 +10,7 @@ import (
 //
 // Error codes are defined here http://httpwg.org/specs/rfc7540.html#ErrorCodes
 //
-// Errors must be uint32 because of FrameReset
+// Errors must be uint32 because of FrameReset.
 type ErrorCode uint32
 
 const (
@@ -22,7 +22,7 @@ const (
 	StreamClosedError    ErrorCode = 0x5
 	FrameSizeError       ErrorCode = 0x6
 	RefusedStreamError   ErrorCode = 0x7
-	StreamCancelled      ErrorCode = 0x8
+	StreamCanceled       ErrorCode = 0x8
 	CompressionError     ErrorCode = 0x9
 	ConnectionError      ErrorCode = 0xa
 	EnhanceYourCalm      ErrorCode = 0xb
@@ -93,7 +93,7 @@ var (
 		StreamClosedError:    "Stream have been closed",
 		FrameSizeError:       "FrameHeader size error",
 		RefusedStreamError:   "Refused Stream",
-		StreamCancelled:      "Stream cancelled",
+		StreamCanceled:       "Stream canceled",
 		CompressionError:     "Compression error",
 		ConnectionError:      "Connection error",
 		EnhanceYourCalm:      "Enhance your calm",
@@ -101,7 +101,7 @@ var (
 		HTTP11Required:       "HTTP/1.1 required",
 	}
 
-	// This error codes must be used with FrameGoAway
+	// This error codes must be used with FrameGoAway.
 	ErrUnknowFrameType = NewError(
 		ProtocolError, "unknown frame type")
 	ErrMissingBytes = NewError(

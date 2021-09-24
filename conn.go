@@ -173,12 +173,12 @@ func (d *Dialer) tryDial() (net.Conn, error) {
 	tlsConn := tls.Client(c, d.TLSConfig)
 
 	if err := tlsConn.Handshake(); err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 
 	if tlsConn.ConnectionState().NegotiatedProtocol != "h2" {
-		c.Close()
+		_ = c.Close()
 		return nil, ErrServerSupport
 	}
 
@@ -196,7 +196,8 @@ func (d *Dialer) Dial(opts ConnOpts) (*Conn, error) {
 
 	nc := NewConn(c, opts)
 
-	return nc, nc.Handshake()
+	err = nc.Handshake()
+	return nc, err
 }
 
 // SetOnDisconnect sets the callback that will fire when the HTTP/2 connection is closed.
@@ -215,14 +216,14 @@ func (c *Conn) Handshake() error {
 	var err error
 
 	if err = Handshake(true, c.bw, &c.current, c.maxWindow-65535); err != nil {
-		c.c.Close()
+		_ = c.c.Close()
 		return err
 	}
 
 	var fr *FrameHeader
 
 	if fr, err = ReadFrameFrom(c.br); err == nil && fr.Type() != FrameSettings {
-		c.c.Close()
+		_ = c.c.Close()
 		return fmt.Errorf("unexpected frame, expected settings, got %s", fr.Type())
 	} else if err == nil {
 		st := fr.Body().(*Settings)
@@ -235,7 +236,7 @@ func (c *Conn) Handshake() error {
 			}
 
 			// reply back
-			fr := AcquireFrameHeader()
+			fr = AcquireFrameHeader()
 
 			stRes := AcquireFrame(FrameSettings).(*Settings)
 			stRes.SetAck(true)
@@ -251,7 +252,7 @@ func (c *Conn) Handshake() error {
 	}
 
 	if err != nil {
-		c.Close()
+		_ = c.Close()
 	} else {
 		ReleaseFrameHeader(fr)
 
@@ -295,7 +296,7 @@ func (c *Conn) Close() error {
 		err = c.bw.Flush()
 	}
 
-	c.c.Close()
+	_ = c.c.Close()
 
 	if c.onDisconnect != nil {
 		c.onDisconnect(c)
@@ -332,7 +333,7 @@ func (we WriteError) As(target interface{}) bool {
 }
 
 func (c *Conn) writeLoop() {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if c.pingInterval <= 0 {
 		c.pingInterval = DefaultPingInterval
@@ -357,7 +358,7 @@ loop:
 			if err != nil {
 				r.Err <- err
 
-				if err == ErrNotAvailableStreams {
+				if errors.Is(err, ErrNotAvailableStreams) {
 					continue
 				}
 
@@ -415,7 +416,7 @@ func (c *Conn) finish(r *Ctx, stream uint32, err error) {
 }
 
 func (c *Conn) readLoop() {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	for {
 		fr, err := c.readNext()
@@ -573,7 +574,7 @@ func (c *Conn) readNext() (fr *FrameHeader, err error) {
 			}
 		case FrameGoAway:
 			err = fr.Body().(*GoAway)
-			c.Close()
+			_ = c.Close()
 		}
 
 		ReleaseFrameHeader(fr)
@@ -676,7 +677,8 @@ func (c *Conn) updateWindow(streamID uint32, size int) {
 	c.out <- fr
 }
 
-func (c *Conn) readHeader(b []byte, res *fasthttp.Response) (err error) {
+func (c *Conn) readHeader(b []byte, res *fasthttp.Response) error {
+	var err error
 	hf := AcquireHeaderField()
 	defer ReleaseHeaderField(hf)
 
@@ -708,5 +710,5 @@ func (c *Conn) readHeader(b []byte, res *fasthttp.Response) (err error) {
 		}
 	}
 
-	return
+	return nil
 }

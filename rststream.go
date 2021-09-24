@@ -8,9 +8,7 @@ const FrameResetStream FrameType = 0x3
 
 var _ Frame = &RstStream{}
 
-// RstStream ...
-//
-// https://tools.ietf.org/html/rfc7540#section-6.4
+// RstStream https://tools.ietf.org/html/rfc7540#section-6.4
 type RstStream struct {
 	code ErrorCode
 }
