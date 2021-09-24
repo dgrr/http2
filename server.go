@@ -213,6 +213,7 @@ func (sc *serverConn) handleStreams() {
 
 				if strm.ID() < sc.lastID {
 					sc.writeGoAway(strm.ID(), ProtocolError, "stream id too low")
+					continue
 				}
 
 				sc.lastID = strm.ID()
