@@ -52,8 +52,8 @@ func newBTCTiles() fasthttp.RequestHandler {
 		var row [][]byte
 		for xi := 0; xi < xt; xi++ {
 			si := im.(subImager).SubImage(image.Rectangle{
-				Min: image.Point{xi * tileSize, yi * tileSize},
-				Max: image.Point{(xi + 1) * tileSize, (yi + 1) * tileSize},
+				Min: image.Point{X: xi * tileSize, Y: yi * tileSize},
+				Max: image.Point{X: (xi + 1) * tileSize, Y: (yi + 1) * tileSize},
 			})
 			buf := new(bytes.Buffer)
 			if err := jpeg.Encode(buf, si, &jpeg.Options{Quality: 90}); err != nil {

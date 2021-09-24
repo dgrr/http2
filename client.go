@@ -18,7 +18,7 @@ type ClientOpts struct {
 	PingInterval time.Duration
 
 	// OnRTT is assigned to every client after creation, and the handler
-	// will be called after every RTT measurement (after receiving a PONG mesage).
+	// will be called after every RTT measurement (after receiving a PONG message).
 	OnRTT func(time.Duration)
 }
 

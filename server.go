@@ -106,7 +106,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 	for err == nil {
 		fr, err = ReadFrameFromWithSize(sc.br, sc.clientS.frameSize)
 		if err != nil {
-			if errors.Is(err, ErrUnknowFrameType) {
+			if errors.Is(err, ErrUnknownFrameType) {
 				err = nil
 				continue
 			}
@@ -127,7 +127,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 		switch fr.Type() {
 		case FrameSettings:
 			st := fr.Body().(*Settings)
-			if !st.IsAck() { // if has ack, just ignore
+			if !st.IsAck() { // if it has ack, just ignore
 				sc.handleSettings(st)
 			}
 		case FrameWindowUpdate:

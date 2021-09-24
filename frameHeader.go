@@ -10,14 +10,16 @@ import (
 )
 
 const (
-	// FrameHeader default size
+	// DefaultFrameSize FrameHeader default size
 	// http://httpwg.org/specs/rfc7540.html#FrameHeader
 	DefaultFrameSize = 9
 	// https://httpwg.org/specs/rfc7540.html#SETTINGS_MAX_FRAME_SIZE
 	defaultMaxLen = 1 << 14
+)
 
-	// Frame Flag (described along the frame types)
-	// More flags have been ignored due to redundancy.
+// Frame Flag (described along the frame types)
+// More flags have been ignored due to redundancy.
+const (
 	FlagAck        FrameFlags = 0x1
 	FlagEndStream  FrameFlags = 0x1
 	FlagEndHeaders FrameFlags = 0x4
@@ -192,7 +194,7 @@ func (f *FrameHeader) readFrom(br *bufio.Reader) (int64, error) {
 
 	if f.kind > FrameContinuation {
 		_, _ = br.Discard(f.length)
-		return 0, ErrUnknowFrameType
+		return 0, ErrUnknownFrameType
 	}
 	f.fr = AcquireFrame(f.kind)
 

@@ -4,16 +4,18 @@ const FrameSettings FrameType = 0x4
 
 var _ Frame = &Settings{}
 
+// default Settings parameters.
 const (
-	// default Settings parameters.
 	defaultHeaderTableSize   uint32 = 4096
 	defaultConcurrentStreams uint32 = 100
 	defaultWindowSize        uint32 = 1<<16 - 1
 	defaultDataFrameSize     uint32 = 1 << 14
 
 	maxFrameSize = 1<<24 - 1
+)
 
-	// FrameSettings string values (https://httpwg.org/specs/rfc7540.html#SettingValues)
+// FrameSettings string values (https://httpwg.org/specs/rfc7540.html#SettingValues)
+const (
 	HeaderTableSize      uint16 = 0x1
 	EnablePush           uint16 = 0x2
 	MaxConcurrentStreams uint16 = 0x3
@@ -25,7 +27,7 @@ const (
 // Settings is the options to establish between endpoints
 // when starting the connection.
 //
-// This options have been humanize.
+// These options have been humanized.
 type Settings struct {
 	ack         bool
 	rawSettings []byte
@@ -84,7 +86,7 @@ func (st *Settings) HeaderTableSize() uint32 {
 
 // SetPush allows to set the PushPromise settings.
 //
-// If value is true the Push Promise will be enable.
+// If value is true the Push Promise will be enabled.
 // if not the Push Promise will be disabled.
 func (st *Settings) SetPush(value bool) {
 	st.enablePush = value

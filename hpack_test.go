@@ -445,7 +445,7 @@ func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []st
 	}
 
 	if i := compare(b, r); i != -1 {
-		t.Fatalf("failed in %d (%d): %s", i, tableSize, hexComparision(b[i:], r[i:]))
+		t.Fatalf("failed in %d (%d): %s", i, tableSize, hexComparison(b[i:], r[i:]))
 	}
 
 	n = 0
@@ -720,7 +720,7 @@ func TestHPACKWriteResponseWithHuffman(t *testing.T) { // WithHuffman
 	ReleaseHPACK(hpack)
 }
 
-func hexComparision(b, r []byte) (s string) {
+func hexComparison(b, r []byte) (s string) {
 	s += "\n"
 	for i := range b {
 		s += fmt.Sprintf("%x", b[i]) + " "

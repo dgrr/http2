@@ -1,6 +1,6 @@
 # HTTP2
 
-http2 is a implementation of HTTP/2 protocol for [fasthttp](https://github.com/valyala/fasthttp).
+http2 is an implementation of HTTP/2 protocol for [fasthttp](https://github.com/valyala/fasthttp).
 
 # Download
 
@@ -10,7 +10,7 @@ go get github.com/dgrr/http2@v0.2.9
 
 # Help
 
-If you need any help setting up, contributing or understanding this repo, you can contact me on [gofiber's Discord](https://gofiber.io/discord).
+If you need any help to set up, contributing or understanding this repo, you can contact me on [gofiber's Discord](https://gofiber.io/discord).
 
 # How to use the server?
 
@@ -18,6 +18,8 @@ The server can only be used if your server supports TLS.
 Then, you can call [ConfigureServer](https://pkg.go.dev/github.com/dgrr/http2@v0.1.1/http2#ConfigureServer).
 
 ```go
+package main
+
 import (
 	"github.com/valyala/fasthttp"
 	"github.com/dgrr/http2"

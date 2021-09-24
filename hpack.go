@@ -10,7 +10,7 @@ import (
 // HPACK represents header compression methods to
 // encode and decode header fields in HTTP/2.
 //
-// HPACK is equivalent to a HTTP/1 header.
+// HPACK is equivalent to an HTTP/1 header.
 //
 // Use AcquireHPACK to acquire new HPACK structure.
 type HPACK struct {
@@ -19,13 +19,13 @@ type HPACK struct {
 
 	// DisableDynamicTable disables the usage of the dynamic table for
 	// the HPACK structure. If this option is true the HPACK won't add any
-	// field to the dynamic table unless it was sended by the peer.
+	// field to the dynamic table unless it was sent by the peer.
 	//
 	// This field was implemented because in many ways the server could modify
-	// the fields stablished by the client losing performance calculated by client.
+	// the fields established by the client losing performance calculated by client.
 	DisableDynamicTable bool
 
-	// the dynamic table is in a inverse order.
+	// the dynamic table is in an inverse order.
 	//
 	// the insertion point should be the beginning. But we are going to do
 	// the opposite, insert on the end and drop on the beginning.
@@ -162,7 +162,7 @@ func (hp *HPACK) peek(n uint64) *HeaderField {
 
 // find gets the index of existent key in static or dynamic tables.
 func (hp *HPACK) search(hf *HeaderField) (n uint64, fullMatch bool) {
-	// start searching in the dynamic table (probably it contains less fields than the static.
+	// start searching in the dynamic table (probably it contains fewer fields than the static).
 	for i, hf2 := range hp.dynamic {
 		if fullMatch = bytes.Equal(hf.key, hf2.key) && bytes.Equal(hf.value, hf2.value); fullMatch {
 			n = uint64(maxIndex + len(hp.dynamic) - i - 1)

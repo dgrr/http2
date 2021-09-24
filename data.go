@@ -46,7 +46,7 @@ func (data *Data) EndStream() bool {
 	return data.endStream
 }
 
-// Data returns the byte slice of the data readed/to be sendStream.
+// Data returns the byte slice of the data read/to be sendStream.
 func (data *Data) Data() []byte {
 	return data.b
 }

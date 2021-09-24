@@ -106,7 +106,7 @@ func (node *huffmanNode) add(sym byte, code uint32, length uint8) {
 	}
 
 	n := 8 - length
-	start, end := int(uint8(code<<n)), int(1<<n)
+	start, end := int(uint8(code<<n)), 1<<n
 	for i := start; i < start+end; i++ {
 		node.sub[i] = &huffmanNode{sym: sym, codeLen: length}
 	}

@@ -101,8 +101,8 @@ var (
 		HTTP11Required:       "HTTP/1.1 required",
 	}
 
-	// This error codes must be used with FrameGoAway.
-	ErrUnknowFrameType = NewError(
+	// ErrUnknownFrameType This error codes must be used with FrameGoAway.
+	ErrUnknownFrameType = NewError(
 		ProtocolError, "unknown frame type")
 	ErrMissingBytes = NewError(
 		ProtocolError, "missing payload bytes. Need more")

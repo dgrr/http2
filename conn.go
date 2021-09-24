@@ -131,7 +131,7 @@ func NewConn(c net.Conn, opts ConnOpts) *Conn {
 	return nc
 }
 
-// Dialer allows to create HTTP/2 connections by specifying an address and tls configuration.
+// Dialer allows creating HTTP/2 connections by specifying an address and tls configuration.
 type Dialer struct {
 	// Addr is the server's address in the form: `host:port`.
 	Addr string
@@ -558,7 +558,7 @@ func (c *Conn) readNext() (fr *FrameHeader, err error) {
 		switch fr.Type() {
 		case FrameSettings:
 			st := fr.Body().(*Settings)
-			if !st.IsAck() { // if has ack, just ignore
+			if !st.IsAck() { // if it has ack, just ignore
 				c.handleSettings(st)
 			}
 		case FrameWindowUpdate:

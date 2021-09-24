@@ -3,12 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/dgrr/http2"
-	"github.com/valyala/fasthttp"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/dgrr/http2"
+	"github.com/valyala/fasthttp"
 )
 
 func main() {

@@ -86,11 +86,13 @@ issues:
     - 'ST1000: at least one file in a package should have a package comment'
     - 'G204: Subprocess launched with variable'
     - 'G304: Potential file inclusion via variable'
+    - 'ST1020: comment on exported (.*)'
     - 'exported: exported (.*) be unexported'
     - 'exported: comment on exported (.*)'
-    - 'ST1020: comment on exported (.*)'
 
   exclude-rules:
+    - path: http2utils/utils.go
+      text: 'G103: Use of unsafe calls should be audited'
     - path: hpack.go
       text:  'SA6002: argument should be pointer-like to avoid allocations'
     - path: hpack.go
@@ -99,7 +101,5 @@ issues:
       text: 'SA9003: empty branch'
     - path: server.go
       text: 'appendAssign: append result not assigned to the same slice'
-    - path: http2utils/utils.go
-      text: 'G103: Use of unsafe calls should be audited'
     - path: server.go
       text: 'cyclomatic complexity 34 of func'
