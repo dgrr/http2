@@ -109,7 +109,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 
 		if fr.Stream() != 0 {
 			if fr.Stream()&1 == 0 {
-				sc.writeReset(fr.Stream(), ProtocolError)
+				sc.writeGoAway(fr.Stream(), ProtocolError, "invalid stream id")
 			} else {
 				sc.reader <- fr
 			}
@@ -143,7 +143,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 				err = fmt.Errorf("goaway: %s: %s", ga.Code(), ga.Data())
 			}
 		default:
-			sc.writeGoAway(0, ProtocolError, "Invalid frame")
+			sc.writeGoAway(0, ProtocolError, "invalid frame")
 		}
 
 		ReleaseFrameHeader(fr)
@@ -198,7 +198,12 @@ func (sc *serverConn) handleStreams() {
 					continue
 				}
 
-				if len(strms) > int(sc.st.maxStreams) {
+				if _, ok = closedStrms[fr.Stream()]; ok && fr.Type() != FramePriority {
+					sc.writeGoAway(fr.Stream(), StreamClosedError, "frame on closed stream")
+					continue
+				}
+
+				if len(strms) >= int(sc.st.maxStreams) {
 					sc.writeReset(fr.Stream(), RefusedStreamError)
 					continue
 				}
@@ -206,7 +211,12 @@ func (sc *serverConn) handleStreams() {
 				strm = NewStream(fr.Stream(), sc.clientStreamWindow)
 				strms[fr.Stream()] = strm
 
-				// TODO: sc.lastID = strm.ID()
+				if strm.ID() < sc.lastID {
+					sc.writeGoAway(strm.ID(), ProtocolError, "stream id too low")
+					continue
+				}
+
+				sc.lastID = strm.ID()
 
 				sc.createStream(sc.c, strm)
 			}
@@ -236,7 +246,6 @@ func (sc *serverConn) handleStreams() {
 			switch strm.State() {
 			case StreamStateHalfClosed:
 				sc.handleEndRequest(strm)
-				fallthrough
 			case StreamStateClosed:
 				ctxPool.Put(strm.ctx)
 				closedStrms[strm.ID()] = struct{}{}
@@ -294,6 +303,10 @@ func (sc *serverConn) writeError(strm *Stream, err error) {
 }
 
 func handleState(fr *FrameHeader, strm *Stream) {
+	if fr.Type() == FrameResetStream {
+		strm.SetState(StreamStateClosed)
+	}
+
 	switch strm.State() {
 	case StreamStateIdle:
 		if fr.Type() == FrameHeaders {
@@ -343,10 +356,26 @@ func (sc *serverConn) createStream(c net.Conn, strm *Stream) {
 func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 	ctx := strm.ctx
 
+	switch strm.State() {
+	case StreamStateIdle:
+		if fr.Type() != FrameHeaders && fr.Type() != FramePriority {
+			return NewGoAwayError(ProtocolError, "wrong frame on idle stream")
+		}
+	case StreamStateHalfClosed:
+		if fr.Type() != FrameWindowUpdate && fr.Type() != FramePriority && fr.Type() != FrameResetStream {
+			return NewGoAwayError(StreamClosedError, "wrong frame on half-closed stream")
+		}
+	default:
+	}
+
 	switch fr.Type() {
 	case FrameHeaders, FrameContinuation:
 		if strm.headersFinished {
-			return NewGoAwayError(ProtocolError, "stream not open")
+			if fr.Flags().Has(FlagEndStream) && fr.Flags().Has(FlagEndHeaders) && fr.Type() == FrameHeaders {
+				// TODO handle trailers
+			} else {
+				return NewGoAwayError(ProtocolError, "stream not open")
+			}
 		}
 
 		if fr.Flags().Has(FlagEndHeaders) {
@@ -407,7 +436,7 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 			return NewGoAwayError(ProtocolError, "stream open")
 		}
 
-		if strm.State() != StreamStateHalfClosed {
+		if strm.State() >= StreamStateHalfClosed {
 			return NewGoAwayError(StreamClosedError, "stream closed")
 		}
 		ctx.Request.AppendBody(
