@@ -48,7 +48,7 @@ type serverConn struct {
 }
 
 func (s *Server) ServeConn(c net.Conn) error {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if !ReadPreface(c) {
 		return errors.New("wrong preface")
@@ -94,13 +94,19 @@ func (s *Server) ServeConn(c net.Conn) error {
 	)
 
 	// unset any deadline
-	c.SetWriteDeadline(time.Time{})
-	c.SetReadDeadline(time.Time{})
+	err = c.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return err
+	}
+	err = c.SetReadDeadline(time.Time{})
+	if err != nil {
+		return err
+	}
 
 	for err == nil {
 		fr, err = ReadFrameFromWithSize(sc.br, sc.clientS.frameSize)
 		if err != nil {
-			if errors.Is(err, ErrUnknowFrameType) {
+			if errors.Is(err, ErrUnknownFrameType) {
 				err = nil
 				continue
 			}
@@ -121,7 +127,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 		switch fr.Type() {
 		case FrameSettings:
 			st := fr.Body().(*Settings)
-			if !st.IsAck() { // if has ack, just ignore
+			if !st.IsAck() { // if it has ack, just ignore
 				sc.handleSettings(st)
 			}
 		case FrameWindowUpdate:
@@ -149,7 +155,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 		ReleaseFrameHeader(fr)
 	}
 
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		err = nil
 	}
 
@@ -177,83 +183,76 @@ func (sc *serverConn) writePing() {
 
 // handleStreams handles everything related to the streams and the HPACK table synchronously.
 func (sc *serverConn) handleStreams() {
-	var strms = make(map[uint32]*Stream)
-	var closedStrms = make(map[uint32]struct{})
+	strms := make(map[uint32]*Stream)
+	closedStrms := make(map[uint32]struct{})
 	var currentStrm uint32
 
-	for {
-		select {
-		case fr, ok := <-sc.reader:
-			if !ok {
-				return
-			}
-
-			strm, ok := strms[fr.Stream()]
-			if !ok { // then create it
-				if fr.Type() == FrameResetStream {
-					// only send go away on idle stream not on already closed stream
-					if _, ok = closedStrms[fr.Stream()]; !ok {
-						sc.writeGoAway(fr.Stream(), ProtocolError, "RST_STREAM on idle stream")
-					}
-					continue
+	for fr := range sc.reader {
+		strm, ok := strms[fr.Stream()]
+		if !ok { // then create it
+			if fr.Type() == FrameResetStream {
+				// only send go away on idle stream not on already closed stream
+				if _, ok = closedStrms[fr.Stream()]; !ok {
+					sc.writeGoAway(fr.Stream(), ProtocolError, "RST_STREAM on idle stream")
 				}
-
-				if _, ok = closedStrms[fr.Stream()]; ok && fr.Type() != FramePriority {
-					sc.writeGoAway(fr.Stream(), StreamClosedError, "frame on closed stream")
-					continue
-				}
-
-				if len(strms) >= int(sc.st.maxStreams) {
-					sc.writeReset(fr.Stream(), RefusedStreamError)
-					continue
-				}
-
-				strm = NewStream(fr.Stream(), sc.clientStreamWindow)
-				strms[fr.Stream()] = strm
-
-				if strm.ID() < sc.lastID {
-					sc.writeGoAway(strm.ID(), ProtocolError, "stream id too low")
-					continue
-				}
-
-				sc.lastID = strm.ID()
-
-				sc.createStream(sc.c, strm)
-			}
-
-			if currentStrm != 0 && currentStrm != fr.Stream() {
-				sc.writeError(strm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
 				continue
 			}
 
-			if err := sc.handleFrame(strm, fr); err != nil {
-				sc.writeError(strm, err)
+			if _, ok = closedStrms[fr.Stream()]; ok && fr.Type() != FramePriority {
+				sc.writeGoAway(fr.Stream(), StreamClosedError, "frame on closed stream")
+				continue
 			}
 
-			if strm.headersFinished {
-				currentStrm = 0
+			if len(strms) >= int(sc.st.maxStreams) {
+				sc.writeReset(fr.Stream(), RefusedStreamError)
+				continue
 			}
 
-			handleState(fr, strm)
+			strm = NewStream(fr.Stream(), sc.clientStreamWindow)
+			strms[fr.Stream()] = strm
 
-			if strm.State() < StreamStateHalfClosed && sc.readTimeout > 0 {
-				if time.Since(strm.startedAt) > sc.readTimeout {
-					sc.writeGoAway(strm.ID(), StreamCancelled, "timeout")
-					strm.SetState(StreamStateClosed)
-				}
+			if strm.ID() < sc.lastID {
+				sc.writeGoAway(strm.ID(), ProtocolError, "stream id too low")
+				continue
 			}
 
-			switch strm.State() {
-			case StreamStateHalfClosed:
-				sc.handleEndRequest(strm)
-			case StreamStateClosed:
-				ctxPool.Put(strm.ctx)
-				closedStrms[strm.ID()] = struct{}{}
-				delete(strms, strm.ID())
-				streamPool.Put(strm)
-			case StreamStateOpen:
-				currentStrm = strm.ID()
+			sc.lastID = strm.ID()
+
+			sc.createStream(sc.c, strm)
+		}
+
+		if currentStrm != 0 && currentStrm != fr.Stream() {
+			sc.writeError(strm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
+			continue
+		}
+
+		if err := sc.handleFrame(strm, fr); err != nil {
+			sc.writeError(strm, err)
+		}
+
+		if strm.headersFinished {
+			currentStrm = 0
+		}
+
+		handleState(fr, strm)
+
+		if strm.State() < StreamStateHalfClosed && sc.readTimeout > 0 {
+			if time.Since(strm.startedAt) > sc.readTimeout {
+				sc.writeGoAway(strm.ID(), StreamCanceled, "timeout")
+				strm.SetState(StreamStateClosed)
 			}
+		}
+
+		switch strm.State() {
+		case StreamStateHalfClosed:
+			sc.handleEndRequest(strm)
+		case StreamStateClosed:
+			ctxPool.Put(strm.ctx)
+			closedStrms[strm.ID()] = struct{}{}
+			delete(strms, strm.ID())
+			streamPool.Put(strm)
+		case StreamStateOpen:
+			currentStrm = strm.ID()
 		}
 	}
 }
@@ -346,9 +345,6 @@ func (sc *serverConn) createStream(c net.Conn, strm *Stream) {
 
 	ctx.Init2(c, logger, false)
 
-	// ctx.Ctx.Header.DisableNormalizing()
-	// ctx.Ctx.URI().DisablePathNormalizing = true
-
 	strm.startedAt = time.Now()
 	strm.SetData(ctx)
 }
@@ -391,7 +387,7 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 			pb := b
 			b, err = sc.dec.Next(hf, b)
 			if err != nil {
-				if errors.Is(err, UnexpectedSizeError) && len(pb) > 0 {
+				if errors.Is(err, ErrUnexpectedSize) && len(pb) > 0 {
 					err = nil
 					strm.previousHeaderBytes = append(strm.previousHeaderBytes[:0], pb...)
 				} else {

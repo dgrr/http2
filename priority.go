@@ -26,7 +26,6 @@ func (pry *Priority) Reset() {
 	pry.weight = 0
 }
 
-// CopyTo ...
 func (pry *Priority) CopyTo(p *Priority) {
 	p.stream = pry.stream
 	p.weight = pry.weight

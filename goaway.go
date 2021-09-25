@@ -10,9 +10,7 @@ const FrameGoAway FrameType = 0x7
 
 var _ Frame = &GoAway{}
 
-// GoAway ...
-//
-// https://tools.ietf.org/html/rfc7540#section-6.8
+// GoAway https://tools.ietf.org/html/rfc7540#section-6.8
 type GoAway struct {
 	stream uint32
 	code   ErrorCode
@@ -27,14 +25,12 @@ func (ga *GoAway) Type() FrameType {
 	return FrameGoAway
 }
 
-// Reset ...
 func (ga *GoAway) Reset() {
 	ga.stream = 0
 	ga.code = 0
 	ga.data = ga.data[:0]
 }
 
-// CopyTo ...
 func (ga *GoAway) CopyTo(other *GoAway) {
 	other.stream = ga.stream
 	other.code = ga.code
@@ -49,38 +45,31 @@ func (ga *GoAway) Copy() *GoAway {
 	return other
 }
 
-// Code ...
 func (ga *GoAway) Code() ErrorCode {
 	return ga.code
 }
 
-// SetCode ...
 func (ga *GoAway) SetCode(code ErrorCode) {
 	ga.code = code & (1<<31 - 1)
 	// TODO: Set error description as a debug data?
 }
 
-// Stream ...
 func (ga *GoAway) Stream() uint32 {
 	return ga.stream
 }
 
-// SetStream ...
 func (ga *GoAway) SetStream(stream uint32) {
 	ga.stream = stream & (1<<31 - 1)
 }
 
-// Data ...
 func (ga *GoAway) Data() []byte {
 	return ga.data
 }
 
-// SetData ...
 func (ga *GoAway) SetData(b []byte) {
 	ga.data = append(ga.data[:0], b...)
 }
 
-// Deserialize ...
 func (ga *GoAway) Deserialize(fr *FrameHeader) (err error) {
 	if len(fr.payload) < 8 { // 8 is the min number of bytes
 		err = ErrMissingBytes

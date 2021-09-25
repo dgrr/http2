@@ -15,7 +15,7 @@ var (
 
 func compareBytes(b, bb []byte) error {
 	if len(b) != len(bb) {
-		return fmt.Errorf("different sizes: %d<>%d\n", len(b), len(bb))
+		return fmt.Errorf("different sizes: %d<>%d", len(b), len(bb))
 	}
 	for i := 0; i < len(b); i++ {
 		if b[i] != bb[i] {
@@ -25,13 +25,9 @@ func compareBytes(b, bb []byte) error {
 	return nil
 }
 
-func makeCopy(bb []byte) []byte {
-	var b = make([]byte, len(bb))
-	copy(b, bb)
-	return b
-}
-
 func decodeHuffman(t *testing.T, b, bb, toCompare []byte) {
+	t.Helper()
+
 	b = HuffmanDecode(b[:0], bb)
 	if err := compareBytes(b, toCompare); err != nil {
 		t.Fatal(err)
@@ -39,10 +35,14 @@ func decodeHuffman(t *testing.T, b, bb, toCompare []byte) {
 }
 
 func TestHuffmanDecodeHuge(t *testing.T) {
+	t.Helper()
+
 	decodeHuffman(t, nil, encodedBytes, decodedBytes)
 }
 
 func TestHuffmanDecode(t *testing.T) {
+	t.Helper()
+
 	decodeHuffman(t, nil, littleEncodedBytes, littleDecodedBytes)
 }
 
@@ -59,6 +59,8 @@ func TestHuffmanDecodeReusingLittle(t *testing.T) {
 */
 
 func encodeHuffman(t *testing.T, b, bb, toCompare []byte) {
+	t.Helper()
+
 	b = HuffmanEncode(b[:0], bb)
 	if err := compareBytes(b, toCompare); err != nil {
 		t.Fatal(err)

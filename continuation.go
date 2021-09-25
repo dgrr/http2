@@ -7,10 +7,6 @@ var (
 	_ FrameWithHeaders = &Continuation{}
 )
 
-func (c *Continuation) Type() FrameType {
-	return FrameContinuation
-}
-
 // Continuation represents the Continuation frame.
 //
 // Continuation frame can carry raw headers and/or the EndHeaders flag.
@@ -21,7 +17,10 @@ type Continuation struct {
 	rawHeaders []byte
 }
 
-// Reset ...
+func (c *Continuation) Type() FrameType {
+	return FrameContinuation
+}
+
 func (c *Continuation) Reset() {
 	c.endHeaders = false
 	c.rawHeaders = c.rawHeaders[:0]
@@ -37,7 +36,6 @@ func (c *Continuation) Headers() []byte {
 	return c.rawHeaders
 }
 
-// SetEndHeaders ...
 func (c *Continuation) SetEndHeaders(value bool) {
 	c.endHeaders = value
 }
@@ -46,7 +44,6 @@ func (c *Continuation) EndHeaders() bool {
 	return c.endHeaders
 }
 
-// SetHeader ...
 func (c *Continuation) SetHeader(b []byte) {
 	c.rawHeaders = append(c.rawHeaders[:0], b...)
 }

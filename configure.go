@@ -8,10 +8,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-var (
-	// ErrServerSupport indicates whether the server supports HTTP/2 or not.
-	ErrServerSupport = errors.New("server doesn't support HTTP/2")
-)
+// ErrServerSupport indicates whether the server supports HTTP/2 or not.
+var ErrServerSupport = errors.New("server doesn't support HTTP/2")
 
 func configureDialer(d *Dialer) {
 	if d.TLSConfig == nil {
@@ -23,7 +21,7 @@ func configureDialer(d *Dialer) {
 
 	tlsConfig := d.TLSConfig
 
-	emptyServerName := len(tlsConfig.ServerName) == 0
+	emptyServerName := tlsConfig.ServerName == ""
 	if emptyServerName {
 		host, _, err := net.SplitHostPort(d.Addr)
 		if err != nil {
@@ -38,7 +36,7 @@ func configureDialer(d *Dialer) {
 
 // ConfigureClient configures the fasthttp.HostClient to run over HTTP/2.
 func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
-	emptyServerName := c.TLSConfig != nil && len(c.TLSConfig.ServerName) == 0
+	emptyServerName := c.TLSConfig != nil && c.TLSConfig.ServerName == ""
 
 	d := &Dialer{
 		Addr:         c.Addr,
@@ -51,7 +49,7 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 
 	_, _, err := cl.createConn()
 	if err != nil {
-		if err == ErrServerSupport && c.TLSConfig != nil { // remove added config settings
+		if errors.Is(err, ErrServerSupport) && c.TLSConfig != nil { // remove added config settings
 			for i := range c.TLSConfig.NextProtos {
 				if c.TLSConfig.NextProtos[i] == "h2" {
 					c.TLSConfig.NextProtos = append(c.TLSConfig.NextProtos[:i], c.TLSConfig.NextProtos[i+1:]...)

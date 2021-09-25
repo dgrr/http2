@@ -46,7 +46,7 @@ func (flags FrameFlags) Add(f FrameFlags) FrameFlags {
 	return flags | f
 }
 
-// Del deletes f from frame flags
+// Del deletes f from frame flags.
 func (flags FrameFlags) Del(f FrameFlags) FrameFlags {
 	return flags ^ f
 }

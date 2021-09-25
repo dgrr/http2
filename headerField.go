@@ -78,12 +78,12 @@ func (hf *HeaderField) SetBytes(k, v []byte) {
 	hf.SetValueBytes(v)
 }
 
-// Key returns the key of the field
+// Key returns the key of the field.
 func (hf *HeaderField) Key() string {
 	return string(hf.key)
 }
 
-// Value returns the value of the field
+// Value returns the value of the field.
 func (hf *HeaderField) Value() string {
 	return string(hf.value)
 }
@@ -108,17 +108,17 @@ func (hf *HeaderField) SetValue(value string) {
 	hf.value = append(hf.value[:0], value...)
 }
 
-// SetKeyString sets key to the field.
+// SetKeyBytes sets key to the field.
 func (hf *HeaderField) SetKeyBytes(key []byte) {
 	hf.key = append(hf.key[:0], key...)
 }
 
-// SetValueString sets value to the field.
+// SetValueBytes sets value to the field.
 func (hf *HeaderField) SetValueBytes(value []byte) {
 	hf.value = append(hf.value[:0], value...)
 }
 
-// IsPseudo returns true if field is pseudo header
+// IsPseudo returns true if field is pseudo header.
 func (hf *HeaderField) IsPseudo() bool {
 	return len(hf.key) > 0 && hf.key[0] == ':'
 }

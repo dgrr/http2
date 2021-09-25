@@ -19,7 +19,7 @@ endeavor to keep you informed of the progress being made towards a fix and full 
 These updates will be sent at least every five days.
 In reality, this is more likely to be every 24-48 hours.
 
-If you have not received a reply to your email within 48 hours or you have not heard from the security
+If you have not received a reply to your email within 48 hours, or you have not heard from the security
 team for the past five days please contact us by email to developers@highload.solutions or by Telegram message
 to [our support](https://t.me/highload_support).
 Please note that developers@highload.solutions list includes all developers, who may be outside our opensource security team.
@@ -56,7 +56,7 @@ If you have any suggestions to improve this policy, please send an email to oss-
 
 ### PGP Key for oss-security@highload.solutions
 
-We accept PGP-encrypted email, but the majority of the security team are not regular PGP users
+We accept PGP-encrypted email, but the majority of the security team are not regular PGP users,
 so it's somewhat inconvenient. Please only use PGP for critical security reports.
 
 ```
