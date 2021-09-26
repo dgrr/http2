@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/valyala/fastrand"
+	"github.com/dgrr/http2/internal/fastrand"
 )
 
 func Uint24ToBytes(b []byte, n uint32) {
