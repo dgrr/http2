@@ -347,16 +347,14 @@ func (c *Conn) writeLoop() {
 loop:
 	for {
 		select {
-		case r, ok := <-c.in: // sending requests
+		case ctx, ok := <-c.in: // sending requests
 			if !ok {
 				break loop
 			}
 
-			req := r.Request
-
-			uid, err := c.writeRequest(req)
+			err := c.writeRequest(ctx)
 			if err != nil {
-				r.Err <- err
+				ctx.Err <- err
 
 				if errors.Is(err, ErrNotAvailableStreams) {
 					continue
@@ -366,8 +364,6 @@ loop:
 
 				break loop
 			}
-
-			c.reqQueued.Store(uid, r)
 		case fr := <-c.out: // generic output
 			if _, err := fr.WriteTo(c.bw); err == nil {
 				if err = c.bw.Flush(); err != nil {
@@ -449,10 +445,12 @@ func (c *Conn) readLoop() {
 	}
 }
 
-func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
+func (c *Conn) writeRequest(ctx *Ctx) error {
 	if !c.CanOpenStream() {
-		return 0, ErrNotAvailableStreams
+		return ErrNotAvailableStreams
 	}
+
+	req := ctx.Request
 
 	hasBody := len(req.Body()) != 0
 
@@ -499,6 +497,9 @@ func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
 	h.SetEndStream(!hasBody)
 	h.SetEndHeaders(true)
 
+	// store the ctx before sending the request
+	c.reqQueued.Store(id, ctx)
+
 	_, err := fr.WriteTo(c.bw)
 	if err == nil && hasBody {
 		// release headers bc it's going to get replaced by the data frame
@@ -516,11 +517,13 @@ func (c *Conn) writeRequest(req *fasthttp.Request) (uint32, error) {
 
 	if err != nil {
 		c.lastErr = err
+		// if we had any error, remove it from the reqQueued.
+		c.reqQueued.Delete(id)
 	}
 
 	ReleaseHeaderField(hf)
 
-	return id, err
+	return err
 }
 
 func writeData(bw *bufio.Writer, fh *FrameHeader, body []byte) (err error) {
