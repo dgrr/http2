@@ -152,6 +152,7 @@ func ReadFrameFrom(br *bufio.Reader) (*FrameHeader, error) {
 func ReadFrameFromWithSize(br *bufio.Reader, max uint32) (*FrameHeader, error) {
 	fr := AcquireFrameHeader()
 	fr.maxLen = max
+
 	_, err := fr.ReadFrom(br)
 	if err != nil {
 		if fr.Body() != nil {

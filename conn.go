@@ -52,7 +52,7 @@ func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error
 	_, err := fr.WriteTo(bw)
 	if err == nil {
 		// then send a window update
-		fr = AcquireFrameHeader()
+		fr := AcquireFrameHeader()
 		wu := AcquireFrame(FrameWindowUpdate).(*WindowUpdate)
 		wu.SetIncrement(int(maxWin))
 
@@ -62,6 +62,8 @@ func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error
 		if err == nil {
 			err = bw.Flush()
 		}
+
+		ReleaseFrameHeader(fr)
 	}
 
 	return err
@@ -236,7 +238,7 @@ func (c *Conn) Handshake() error {
 			}
 
 			// reply back
-			fr = AcquireFrameHeader()
+			fr := AcquireFrameHeader()
 
 			stRes := AcquireFrame(FrameSettings).(*Settings)
 			stRes.SetAck(true)
@@ -333,7 +335,32 @@ func (we WriteError) As(target interface{}) bool {
 }
 
 func (c *Conn) writeLoop() {
+	var lastErr error
+
 	defer func() { _ = c.Close() }()
+
+	defer func() {
+		if err := recover(); err != nil {
+			if lastErr == nil {
+				switch errn := err.(type) {
+				case error:
+					lastErr = errn
+				case string:
+					lastErr = errors.New(errn)
+				}
+			}
+		}
+
+		if lastErr == nil {
+			lastErr = io.ErrUnexpectedEOF
+		}
+
+		c.reqQueued.Range(func(_, v interface{}) bool {
+			r := v.(*Ctx)
+			r.Err <- lastErr
+			return true
+		})
+	}()
 
 	if c.pingInterval <= 0 {
 		c.pingInterval = DefaultPingInterval
@@ -341,8 +368,6 @@ func (c *Conn) writeLoop() {
 
 	ticker := time.NewTicker(c.pingInterval)
 	defer ticker.Stop()
-
-	var lastErr error
 
 loop:
 	for {
@@ -364,7 +389,11 @@ loop:
 
 				break loop
 			}
-		case fr := <-c.out: // generic output
+		case fr, ok := <-c.out: // generic output
+			if !ok {
+				break loop
+			}
+
 			if _, err := fr.WriteTo(c.bw); err == nil {
 				if err = c.bw.Flush(); err != nil {
 					lastErr = WriteError{err}
@@ -388,17 +417,6 @@ loop:
 			break loop
 		}
 	}
-
-	if lastErr == nil {
-		lastErr = io.EOF
-	}
-
-	// send eofs to pending requests
-	c.reqQueued.Range(func(_, v interface{}) bool {
-		r := v.(*Ctx)
-		r.Err <- lastErr
-		return true
-	})
 }
 
 func (c *Conn) finish(r *Ctx, stream uint32, err error) {
