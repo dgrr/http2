@@ -113,7 +113,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 			break
 		}
 
-		if fr.Stream() != 0 {
+		if fr.Stream() != 0 && fr.Type() != FrameWindowUpdate {
 			if fr.Stream()&1 == 0 {
 				sc.writeGoAway(fr.Stream(), ProtocolError, "invalid stream id")
 			} else {
@@ -198,8 +198,12 @@ func (sc *serverConn) handleStreams() {
 				continue
 			}
 
-			if _, ok = closedStrms[fr.Stream()]; ok && fr.Type() != FramePriority {
-				sc.writeGoAway(fr.Stream(), StreamClosedError, "frame on closed stream")
+			// We don't need to check frame WINDOW_UPDATEs because they do not arrive to this function.
+			if _, ok = closedStrms[fr.Stream()]; ok {
+				if fr.Type() != FramePriority {
+					sc.writeGoAway(fr.Stream(), StreamClosedError, "frame on closed stream")
+				}
+
 				continue
 			}
 
@@ -246,6 +250,7 @@ func (sc *serverConn) handleStreams() {
 		switch strm.State() {
 		case StreamStateHalfClosed:
 			sc.handleEndRequest(strm)
+			fallthrough
 		case StreamStateClosed:
 			ctxPool.Put(strm.ctx)
 			closedStrms[strm.ID()] = struct{}{}
