@@ -103,3 +103,5 @@ issues:
       text: 'appendAssign: append result not assigned to the same slice'
     - path: server.go
       text: 'cyclomatic complexity 34 of func'
+    - path: conn.go
+      text: 'shadow: declaration of "fr" shadows declaration'
