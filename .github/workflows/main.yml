@@ -46,5 +46,8 @@ jobs:
       - name: Launch test
         run: go test ./
 
+      - name: Launch h2spec test
+        run: go test ./h2spec
+
       - name: golangci-lint
         run: golangci-lint run

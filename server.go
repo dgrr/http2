@@ -220,7 +220,9 @@ func (sc *serverConn) handleStreams() {
 				continue
 			}
 
-			sc.lastID = strm.ID()
+			if fr.Type() == FrameHeaders {
+				sc.lastID = strm.ID()
+			}
 
 			sc.createStream(sc.c, strm)
 		}
