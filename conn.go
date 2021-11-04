@@ -147,6 +147,10 @@ type Dialer struct {
 	//
 	// An interval of 0 will make the library to use DefaultPingInterval. Because ping intervals can't be disabled.
 	PingInterval time.Duration
+
+	// NetDial defines the callback for establishing new connection to the host.
+	// Default Dial is used if not set.
+	NetDial fasthttp.DialFunc
 }
 
 func (d *Dialer) tryDial() (net.Conn, error) {
@@ -162,14 +166,23 @@ func (d *Dialer) tryDial() (net.Conn, error) {
 		configureDialer(d)
 	}
 
-	tcpAddr, err := net.ResolveTCPAddr("tcp", d.Addr)
-	if err != nil {
-		return nil, err
-	}
+	var c net.Conn
+	var err error
 
-	c, err := net.DialTCP("tcp", nil, tcpAddr)
-	if err != nil {
-		return nil, err
+	if d.NetDial != nil {
+		c, err = d.NetDial(d.Addr)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		tcpAddr, err := net.ResolveTCPAddr("tcp", d.Addr)
+		if err != nil {
+			return nil, err
+		}
+		c, err = net.DialTCP("tcp", nil, tcpAddr)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	tlsConn := tls.Client(c, d.TLSConfig)
