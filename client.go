@@ -20,6 +20,8 @@ type ClientOpts struct {
 	// OnRTT is assigned to every client after creation, and the handler
 	// will be called after every RTT measurement (after receiving a PONG message).
 	OnRTT func(time.Duration)
+
+	NetDiag fasthttp.DialFunc
 }
 
 // Ctx represents a context for a stream. Every stream is related to a context.
@@ -35,6 +37,8 @@ type Client struct {
 	// TODO: impl rtt
 	onRTT func(time.Duration)
 
+	dial fasthttp.DialFunc
+
 	lck   sync.Mutex
 	conns list.List
 }
@@ -43,6 +47,7 @@ func createClient(d *Dialer, opts ClientOpts) *Client {
 	cl := &Client{
 		d:     d,
 		onRTT: opts.OnRTT,
+		dial:  opts.NetDiag,
 	}
 
 	return cl
@@ -65,6 +70,7 @@ func (cl *Client) onConnectionDropped(c *Conn) {
 
 func (cl *Client) createConn() (*Conn, *list.Element, error) {
 	c, err := cl.d.Dial(ConnOpts{
+		NetDiag:      cl.dial,
 		PingInterval: cl.d.PingInterval,
 		OnDisconnect: cl.onConnectionDropped,
 	})

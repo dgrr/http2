@@ -149,7 +149,7 @@ type Dialer struct {
 	PingInterval time.Duration
 }
 
-func (d *Dialer) tryDial() (net.Conn, error) {
+func (d *Dialer) tryDial(netDiag fasthttp.DialFunc) (net.Conn, error) {
 	if d.TLSConfig == nil || !func() bool {
 		for _, proto := range d.TLSConfig.NextProtos {
 			if proto == "h2" {
@@ -162,14 +162,23 @@ func (d *Dialer) tryDial() (net.Conn, error) {
 		configureDialer(d)
 	}
 
-	tcpAddr, err := net.ResolveTCPAddr("tcp", d.Addr)
-	if err != nil {
-		return nil, err
-	}
+	var c net.Conn
+	var err error
 
-	c, err := net.DialTCP("tcp", nil, tcpAddr)
-	if err != nil {
-		return nil, err
+	if netDiag != nil {
+		c, err = netDiag(d.Addr)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		tcpAddr, err := net.ResolveTCPAddr("tcp", d.Addr)
+		if err != nil {
+			return nil, err
+		}
+		c, err = net.DialTCP("tcp", nil, tcpAddr)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	tlsConn := tls.Client(c, d.TLSConfig)
