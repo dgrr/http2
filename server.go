@@ -575,7 +575,7 @@ func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
 		}
 	}
 	for {
-		n, err = r.Read(buf[n:])
+		n, err = r.Read(buf[0:])
 		if n <= 0 && err == nil {
 			err = errors.New("BUG: io.Reader returned 0, nil")
 		}
