@@ -489,12 +489,12 @@ func (sc *serverConn) handleEndRequest(strm *Stream) {
 
 	if hasBody {
 		if ctx.Response.IsBodyStream() {
-			streamWriter := AcquireStreamWrite()
+			streamWriter := acquireStreamWrite()
 			streamWriter.Strm = strm
 			streamWriter.Writer = sc.writer
 			streamWriter.Size = int64(ctx.Response.Header.ContentLength())
 			_ = ctx.Response.BodyWriteTo(streamWriter)
-			ReleaseStreamWrite(streamWriter)
+			releaseStreamWrite(streamWriter)
 		} else {
 			sc.writeData(strm, ctx.Response.Body())
 		}
@@ -521,23 +521,26 @@ type streamWrite struct {
 	Writer  chan *FrameHeader
 }
 
-func AcquireStreamWrite() *streamWrite {
+func acquireStreamWrite() *streamWrite {
 	v := streamWritePool.Get()
 	if v == nil {
 		return &streamWrite{}
 	}
 	return v.(*streamWrite)
 }
-func ReleaseStreamWrite(streamWrite *streamWrite) {
+
+func releaseStreamWrite(streamWrite *streamWrite) {
 	streamWrite.Reset()
 	streamWritePool.Put(streamWrite)
 }
+
 func (s *streamWrite) Reset() {
 	s.Size = 0
 	s.written = 0
 	s.Strm = nil
 	s.Writer = nil
 }
+
 func (s *streamWrite) Write(body []byte) (n int, err error) {
 	if (s.Size <= 0 && s.written > 0) || (s.Size > 0 && s.written >= s.Size) {
 		return 0, errors.New("writer closed")
@@ -564,16 +567,17 @@ func (s *streamWrite) Write(body []byte) (n int, err error) {
 
 	return len(body), nil
 }
+
 func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
 	vbuf := copyBufPool.Get()
 	buf := vbuf.([]byte)
-	n := 0
 	if s.Size < 0 {
 		lrSize := limitedReaderSize(r)
 		if lrSize >= 0 {
 			s.Size = lrSize
 		}
 	}
+	var n int
 	for {
 		n, err = r.Read(buf[0:])
 		if n <= 0 && err == nil {
@@ -595,7 +599,7 @@ func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
 		}
 	}
 	copyBufPool.Put(vbuf)
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		return num, nil
 	}
 	return num, err
