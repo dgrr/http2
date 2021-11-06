@@ -472,7 +472,7 @@ func (sc *serverConn) handleEndRequest(strm *Stream) {
 		}
 	}()
 
-	hasBody := len(ctx.Response.Body()) != 0
+	hasBody := ctx.Response.IsBodyStream() || len(ctx.Response.Body()) > 0
 
 	fr := AcquireFrameHeader()
 	fr.SetStream(strm.ID())
@@ -488,8 +488,121 @@ func (sc *serverConn) handleEndRequest(strm *Stream) {
 	sc.writer <- fr
 
 	if hasBody {
-		sc.writeData(strm, ctx.Response.Body())
+		if ctx.Response.IsBodyStream() {
+			streamWriter := acquireStreamWrite()
+			streamWriter.Strm = strm
+			streamWriter.Writer = sc.writer
+			streamWriter.Size = int64(ctx.Response.Header.ContentLength())
+			_ = ctx.Response.BodyWriteTo(streamWriter)
+			releaseStreamWrite(streamWriter)
+		} else {
+			sc.writeData(strm, ctx.Response.Body())
+		}
 	}
+}
+
+var (
+	copyBufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 1<<14) // max frame size 16384
+		},
+	}
+	streamWritePool = sync.Pool{
+		New: func() interface{} {
+			return &streamWrite{}
+		},
+	}
+)
+
+type streamWrite struct {
+	Size    int64
+	written int64
+	Strm    *Stream
+	Writer  chan *FrameHeader
+}
+
+func acquireStreamWrite() *streamWrite {
+	v := streamWritePool.Get()
+	if v == nil {
+		return &streamWrite{}
+	}
+	return v.(*streamWrite)
+}
+
+func releaseStreamWrite(streamWrite *streamWrite) {
+	streamWrite.Reset()
+	streamWritePool.Put(streamWrite)
+}
+
+func (s *streamWrite) Reset() {
+	s.Size = 0
+	s.written = 0
+	s.Strm = nil
+	s.Writer = nil
+}
+
+func (s *streamWrite) Write(body []byte) (n int, err error) {
+	if (s.Size <= 0 && s.written > 0) || (s.Size > 0 && s.written >= s.Size) {
+		return 0, errors.New("writer closed")
+	}
+	step := 1 << 14 // max frame size 16384
+	n = len(body)
+	s.written += int64(n)
+	end := s.Size < 0 || s.written >= s.Size
+	for i := 0; i < n; i += step {
+		if i+step >= n {
+			step = n - i
+		}
+		fr := AcquireFrameHeader()
+		fr.SetStream(s.Strm.ID())
+
+		data := AcquireFrame(FrameData).(*Data)
+		data.SetEndStream(end && i+step == n)
+		data.SetPadding(false)
+		data.SetData(body[i : step+i])
+
+		fr.SetBody(data)
+		s.Writer <- fr
+	}
+
+	return len(body), nil
+}
+
+func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
+	vbuf := copyBufPool.Get()
+	buf := vbuf.([]byte)
+	if s.Size < 0 {
+		lrSize := limitedReaderSize(r)
+		if lrSize >= 0 {
+			s.Size = lrSize
+		}
+	}
+	var n int
+	for {
+		n, err = r.Read(buf[0:])
+		if n <= 0 && err == nil {
+			err = errors.New("BUG: io.Reader returned 0, nil")
+		}
+
+		fr := AcquireFrameHeader()
+		fr.SetStream(s.Strm.ID())
+
+		data := AcquireFrame(FrameData).(*Data)
+		data.SetEndStream(err != nil || (s.Size >= 0 && num+int64(n) >= s.Size))
+		data.SetPadding(false)
+		data.SetData(buf[:n])
+		fr.SetBody(data)
+		s.Writer <- fr
+		num += int64(n)
+		if err != nil || (s.Size >= 0 && num >= s.Size) {
+			break
+		}
+	}
+	copyBufPool.Put(vbuf)
+	if errors.Is(err, io.EOF) {
+		return num, nil
+	}
+	return num, err
 }
 
 func (sc *serverConn) writeData(strm *Stream, body []byte) {
@@ -575,12 +688,24 @@ func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
 
 	dst.AppendHeaderField(hp, hf, true)
 
-	res.Header.SetContentLength(len(res.Body()))
+	if !res.IsBodyStream() {
+		res.Header.SetContentLength(len(res.Body()))
+	}
 	// Remove the Connection field
 	res.Header.Del("Connection")
+	// Remove the Transfer-Encoding field
+	res.Header.Del("Transfer-Encoding")
 
 	res.Header.VisitAll(func(k, v []byte) {
 		hf.SetBytes(ToLower(k), v)
 		dst.AppendHeaderField(hp, hf, false)
 	})
+}
+
+func limitedReaderSize(r io.Reader) int64 {
+	lr, ok := r.(*io.LimitedReader)
+	if !ok {
+		return -1
+	}
+	return lr.N
 }
