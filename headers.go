@@ -24,6 +24,7 @@ type Headers struct {
 	weight     uint8
 	endStream  bool
 	endHeaders bool
+	priority   bool
 	rawHeaders []byte // this field is used to store uncompleted headers.
 }
 
@@ -33,6 +34,7 @@ func (h *Headers) Reset() {
 	h.weight = 0
 	h.endStream = false
 	h.endHeaders = false
+	h.priority = false
 	h.rawHeaders = h.rawHeaders[:0]
 }
 
@@ -123,6 +125,7 @@ func (h *Headers) Deserialize(frh *FrameHeader) error {
 		if len(payload) < 5 { // 4 (stream) + 1 (weight)
 			return ErrMissingBytes
 		}
+		h.priority = true
 		h.stream = http2utils.BytesToUint32(payload) & (1<<31 - 1)
 		h.weight = payload[4]
 		payload = payload[5:]
@@ -146,12 +149,15 @@ func (h *Headers) Serialize(frh *FrameHeader) {
 			frh.Flags().Add(FlagEndHeaders))
 	}
 
-	if h.stream > 0 && h.weight > 0 {
+	if h.priority {
 		frh.SetFlags(
 			frh.Flags().Add(FlagPriority))
 
-		http2utils.Uint32ToBytes(h.rawHeaders[1:5], frh.stream)
-		h.rawHeaders[5] = h.weight
+		// prepend stream and weight to rawHeaders
+		h.rawHeaders = append(h.rawHeaders, 0, 0, 0, 0, 0)
+		copy(h.rawHeaders[5:], h.rawHeaders)
+		http2utils.Uint32ToBytes(h.rawHeaders[0:4], frh.stream)
+		h.rawHeaders[4] = h.weight
 	}
 
 	if h.hasPadding {
