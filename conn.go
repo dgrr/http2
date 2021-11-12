@@ -267,7 +267,7 @@ func (c *Conn) Handshake() error {
 	}
 
 	if err != nil {
-		_ = c.Close()
+		_ = c.c.Close()
 	} else {
 		ReleaseFrameHeader(fr)
 
