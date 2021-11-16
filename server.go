@@ -621,7 +621,7 @@ func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
 			return num, err
 		}
 		num += int64(n)
-		if err != nil || (s.size >= 0 && num >= s.size) {
+		if s.size >= 0 && num >= s.size {
 			break
 		}
 	}
