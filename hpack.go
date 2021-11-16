@@ -326,7 +326,7 @@ loop:
 			bytePool.Put(dst)
 		}
 
-	// Dynamic Table Size Update
+	// Dynamic Table size Update
 	// Changes the size of the dynamic table.
 	// https://tools.ietf.org/html/rfc7541#section-6.3
 	case c&32 == 32: // 001- ----

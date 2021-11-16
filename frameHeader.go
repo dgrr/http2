@@ -216,7 +216,7 @@ func (f *FrameHeader) readFrom(br *bufio.Reader) (int64, error) {
 	return rn, f.fr.Deserialize(f)
 }
 
-// WriteTo writes frame to the Writer.
+// WriteTo writes frame to the writer.
 //
 // This function returns FrameHeader bytes written and/or error.
 func (f *FrameHeader) WriteTo(w *bufio.Writer) (wb int64, err error) {

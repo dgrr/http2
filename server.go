@@ -38,13 +38,19 @@ type serverConn struct {
 	maxWindow          int32
 	currentWindow      int32
 
-	writer chan *FrameHeader
+	writer *frameHeaderWriter
 	reader chan *FrameHeader
 
 	readTimeout time.Duration
 
 	st      Settings
 	clientS Settings
+}
+
+type frameHeaderWriter struct {
+	Frame
+	w   chan *FrameHeader
+	err chan error
 }
 
 func (s *Server) ServeConn(c net.Conn) error {
@@ -55,14 +61,17 @@ func (s *Server) ServeConn(c net.Conn) error {
 	}
 
 	sc := &serverConn{
-		c:           c,
-		h:           s.s.Handler,
-		br:          bufio.NewReader(c),
-		bw:          bufio.NewWriterSize(c, 1<<14*10),
-		enc:         AcquireHPACK(),
-		dec:         AcquireHPACK(),
-		lastID:      0,
-		writer:      make(chan *FrameHeader, 128),
+		c:      c,
+		h:      s.s.Handler,
+		br:     bufio.NewReader(c),
+		bw:     bufio.NewWriterSize(c, 1<<14*10),
+		enc:    AcquireHPACK(),
+		dec:    AcquireHPACK(),
+		lastID: 0,
+		writer: &frameHeaderWriter{
+			w:   make(chan *FrameHeader, 128),
+			err: make(chan error),
+		},
 		reader:      make(chan *FrameHeader, 128),
 		readTimeout: s.s.ReadTimeout,
 	}
@@ -80,7 +89,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 
 	go func() {
 		sc.handleStreams()
-		close(sc.writer)
+		close(sc.writer.w)
 	}()
 	go sc.writeLoop()
 
@@ -167,7 +176,9 @@ func (sc *serverConn) handlePing(ping *Ping) {
 	ping.SetAck(true)
 	fr.SetBody(ping)
 
-	sc.writer <- fr
+	if err := sc.writer.receive(fr); err != nil {
+		// TODO
+	}
 }
 
 func (sc *serverConn) writePing() {
@@ -178,7 +189,9 @@ func (sc *serverConn) writePing() {
 
 	fr.SetBody(ping)
 
-	sc.writer <- fr
+	if err := sc.writer.receive(fr); err != nil {
+		// TODO
+	}
 }
 
 // handleStreams handles everything related to the streams and the HPACK table synchronously.
@@ -273,7 +286,9 @@ func (sc *serverConn) writeReset(strm uint32, code ErrorCode) {
 
 	r.SetCode(code)
 
-	sc.writer <- fr
+	if err := sc.writer.receive(fr); err != nil {
+		// TODO
+	}
 }
 
 func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode, message string) {
@@ -287,7 +302,9 @@ func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode, message string) {
 
 	fr.SetBody(ga)
 
-	sc.writer <- fr
+	if err := sc.writer.receive(fr); err != nil {
+		// TODO
+	}
 }
 
 func (sc *serverConn) writeError(strm *Stream, err error) {
@@ -485,14 +502,17 @@ func (sc *serverConn) handleEndRequest(strm *Stream) {
 
 	fasthttpResponseHeaders(h, sc.enc, &ctx.Response)
 
-	sc.writer <- fr
+	if err := sc.writer.receive(fr); err != nil {
+		// TODO
+		return
+	}
 
 	if hasBody {
 		if ctx.Response.IsBodyStream() {
 			streamWriter := acquireStreamWrite()
-			streamWriter.Strm = strm
-			streamWriter.Writer = sc.writer
-			streamWriter.Size = int64(ctx.Response.Header.ContentLength())
+			streamWriter.strm = strm
+			streamWriter.writer = sc.writer
+			streamWriter.size = int64(ctx.Response.Header.ContentLength())
 			_ = ctx.Response.BodyWriteTo(streamWriter)
 			releaseStreamWrite(streamWriter)
 		} else {
@@ -515,10 +535,10 @@ var (
 )
 
 type streamWrite struct {
-	Size    int64
+	size    int64
 	written int64
-	Strm    *Stream
-	Writer  chan *FrameHeader
+	strm    *Stream
+	writer  *frameHeaderWriter
 }
 
 func acquireStreamWrite() *streamWrite {
@@ -535,26 +555,26 @@ func releaseStreamWrite(streamWrite *streamWrite) {
 }
 
 func (s *streamWrite) Reset() {
-	s.Size = 0
+	s.size = 0
 	s.written = 0
-	s.Strm = nil
-	s.Writer = nil
+	s.strm = nil
+	s.writer = nil
 }
 
 func (s *streamWrite) Write(body []byte) (n int, err error) {
-	if (s.Size <= 0 && s.written > 0) || (s.Size > 0 && s.written >= s.Size) {
+	if (s.size <= 0 && s.written > 0) || (s.size > 0 && s.written >= s.size) {
 		return 0, errors.New("writer closed")
 	}
 	step := 1 << 14 // max frame size 16384
 	n = len(body)
 	s.written += int64(n)
-	end := s.Size < 0 || s.written >= s.Size
+	end := s.size < 0 || s.written >= s.size
 	for i := 0; i < n; i += step {
 		if i+step >= n {
 			step = n - i
 		}
 		fr := AcquireFrameHeader()
-		fr.SetStream(s.Strm.ID())
+		fr.SetStream(s.strm.ID())
 
 		data := AcquireFrame(FrameData).(*Data)
 		data.SetEndStream(end && i+step == n)
@@ -562,7 +582,10 @@ func (s *streamWrite) Write(body []byte) (n int, err error) {
 		data.SetData(body[i : step+i])
 
 		fr.SetBody(data)
-		s.Writer <- fr
+		if err = s.writer.receive(fr); err != nil {
+			// TODO
+			return i, err
+		}
 	}
 
 	return len(body), nil
@@ -571,10 +594,10 @@ func (s *streamWrite) Write(body []byte) (n int, err error) {
 func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
 	vbuf := copyBufPool.Get()
 	buf := vbuf.([]byte)
-	if s.Size < 0 {
+	if s.size < 0 {
 		lrSize := limitedReaderSize(r)
 		if lrSize >= 0 {
-			s.Size = lrSize
+			s.size = lrSize
 		}
 	}
 	var n int
@@ -585,16 +608,20 @@ func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
 		}
 
 		fr := AcquireFrameHeader()
-		fr.SetStream(s.Strm.ID())
+		fr.SetStream(s.strm.ID())
 
 		data := AcquireFrame(FrameData).(*Data)
-		data.SetEndStream(err != nil || (s.Size >= 0 && num+int64(n) >= s.Size))
+		data.SetEndStream(err != nil || (s.size >= 0 && num+int64(n) >= s.size))
 		data.SetPadding(false)
 		data.SetData(buf[:n])
 		fr.SetBody(data)
-		s.Writer <- fr
+
+		if err = s.writer.receive(fr); err != nil {
+			// TODO
+			return num, err
+		}
 		num += int64(n)
-		if err != nil || (s.Size >= 0 && num >= s.Size) {
+		if err != nil || (s.size >= 0 && num >= s.size) {
 			break
 		}
 	}
@@ -622,26 +649,33 @@ func (sc *serverConn) writeData(strm *Stream, body []byte) {
 		data.SetData(body[i : step+i])
 
 		fr.SetBody(data)
-		sc.writer <- fr
+
+		if err := sc.writer.receive(fr); err != nil {
+			// TODO
+			return
+		}
 	}
 }
 
 func (sc *serverConn) writeLoop() {
 	ticker := time.NewTicker(time.Second * 10)
-	defer ticker.Stop()
+	defer func() {
+		ticker.Stop()
+		close(sc.writer.err)
+	}()
 
 	buffered := 0
 
 loop:
 	for {
 		select {
-		case fr, ok := <-sc.writer:
+		case fr, ok := <-sc.writer.w:
 			if !ok {
 				break loop
 			}
 
 			_, err := fr.WriteTo(sc.bw)
-			if err == nil && (len(sc.writer) == 0 || buffered > 10) {
+			if err == nil && (len(sc.writer.w) == 0 || buffered > 10) {
 				err = sc.bw.Flush()
 				buffered = 0
 			} else if err == nil {
@@ -651,7 +685,7 @@ loop:
 			ReleaseFrameHeader(fr)
 
 			if err != nil {
-				// TODO: handle errors
+				sc.writer.err <- err
 				return
 			}
 		case <-ticker.C:
@@ -672,7 +706,18 @@ func (sc *serverConn) handleSettings(st *Settings) {
 
 	fr.SetBody(stRes)
 
-	sc.writer <- fr
+	if err := sc.writer.receive(fr); err != nil {
+		// TODO
+	}
+}
+
+func (fhw *frameHeaderWriter) receive(fr *FrameHeader) error {
+	select {
+	case fhw.w <- fr:
+		return nil
+	case err := <-fhw.err:
+		return err
+	}
 }
 
 func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
