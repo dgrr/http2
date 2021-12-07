@@ -116,13 +116,18 @@ func (s *Server) ServeConn(c net.Conn) error {
 		fr, err = ReadFrameFromWithSize(sc.br, sc.clientS.frameSize)
 		if err != nil {
 			if errors.Is(err, ErrUnknownFrameType) {
+				sc.writeGoAway(0, ProtocolError, "unknown frame type")
 				err = nil
 				continue
 			}
 			break
 		}
 
-		if fr.Stream() != 0 && fr.Type() != FrameWindowUpdate {
+		if fr.Stream() != 0 {
+			if fr.Type() == FramePing {
+				return errors.New("ping invalid")
+			}
+
 			if fr.Stream()&1 == 0 {
 				sc.writeGoAway(fr.Stream(), ProtocolError, "invalid stream id")
 			} else {
@@ -220,7 +225,7 @@ func (sc *serverConn) handleStreams() {
 				continue
 			}
 
-			if len(strms) >= int(sc.st.maxStreams) {
+			if len(strms)+len(closedStrms) >= int(sc.st.maxStreams) {
 				sc.writeReset(fr.Stream(), RefusedStreamError)
 				continue
 			}
@@ -398,6 +403,10 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 			}
 		}
 
+		if headerFrame, ok := fr.Body().(*Headers); ok && headerFrame.Stream() == strm.ID() {
+			return NewGoAwayError(ProtocolError, "stream that depends on itself")
+		}
+
 		if fr.Flags().Has(FlagEndHeaders) {
 			strm.headersFinished = true
 		}
@@ -468,6 +477,18 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 	case FramePriority:
 		if strm.State() != StreamStateIdle && !strm.headersFinished {
 			return NewGoAwayError(ProtocolError, "stream open")
+		}
+		if priorityFrame, ok := fr.Body().(*Priority); ok && priorityFrame.Stream() == strm.ID() {
+			return NewGoAwayError(ProtocolError, "stream that depends on itself")
+		}
+	case FrameWindowUpdate:
+		if strm.State() == StreamStateIdle {
+			return NewGoAwayError(ProtocolError, "window update on idle stream")
+		}
+		win := int32(fr.Body().(*WindowUpdate).Increment())
+
+		if !atomic.CompareAndSwapInt32(&sc.clientWindow, 0, win) {
+			atomic.AddInt32(&sc.clientWindow, win)
 		}
 	default:
 		return NewGoAwayError(ProtocolError, "invalid frame")
