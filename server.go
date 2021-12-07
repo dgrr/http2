@@ -378,88 +378,25 @@ func (sc *serverConn) createStream(c net.Conn, strm *Stream) {
 	strm.SetData(ctx)
 }
 
-func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
-	ctx := strm.ctx
-
-	switch strm.State() {
-	case StreamStateIdle:
-		if fr.Type() != FrameHeaders && fr.Type() != FramePriority {
-			return NewGoAwayError(ProtocolError, "wrong frame on idle stream")
-		}
-	case StreamStateHalfClosed:
-		if fr.Type() != FrameWindowUpdate && fr.Type() != FramePriority && fr.Type() != FrameResetStream {
-			return NewGoAwayError(StreamClosedError, "wrong frame on half-closed stream")
-		}
-	default:
+func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
+	err := sc.verifyState(strm, fr)
+	if err != nil {
+		return err
 	}
 
 	switch fr.Type() {
 	case FrameHeaders, FrameContinuation:
-		if strm.headersFinished {
-			if fr.Flags().Has(FlagEndStream) && fr.Flags().Has(FlagEndHeaders) && fr.Type() == FrameHeaders {
-				// TODO handle trailers
-			} else {
-				return NewGoAwayError(ProtocolError, "stream not open")
-			}
+		err = sc.handleHeaderFrame(strm, fr)
+		if err != nil {
+			return err
 		}
-
-		if headerFrame, ok := fr.Body().(*Headers); ok && headerFrame.Stream() == strm.ID() {
-			return NewGoAwayError(ProtocolError, "stream that depends on itself")
-		}
-
 		if fr.Flags().Has(FlagEndHeaders) {
 			strm.headersFinished = true
+
+			// calling req.URI() triggers a URL parsing, so because of that we need to delay the URL parsing.
+			strm.ctx.Request.URI().SetSchemeBytes(strm.scheme)
 		}
 
-		b := append(strm.previousHeaderBytes, fr.Body().(FrameWithHeaders).Headers()...)
-		hf := AcquireHeaderField()
-		scheme := []byte("https")
-		req := &ctx.Request
-
-		for len(b) > 0 {
-			pb := b
-			b, err = sc.dec.Next(hf, b)
-			if err != nil {
-				if errors.Is(err, ErrUnexpectedSize) && len(pb) > 0 {
-					err = nil
-					strm.previousHeaderBytes = append(strm.previousHeaderBytes[:0], pb...)
-				} else {
-					err = ErrCompression
-				}
-				break
-			}
-
-			k, v := hf.KeyBytes(), hf.ValueBytes()
-			if !hf.IsPseudo() &&
-				!(bytes.Equal(k, StringUserAgent) ||
-					bytes.Equal(k, StringContentType)) {
-				req.Header.AddBytesKV(k, v)
-				continue
-			}
-
-			if hf.IsPseudo() {
-				k = k[1:]
-			}
-
-			switch k[0] {
-			case 'm': // method
-				req.Header.SetMethodBytes(v)
-			case 'p': // path
-				req.Header.SetRequestURIBytes(v)
-			case 's': // scheme
-				scheme = append(scheme[:0], v...)
-			case 'a': // authority
-				req.Header.SetHostBytes(v)
-				req.Header.AddBytesV("Host", v)
-			case 'u': // user-agent
-				req.Header.SetUserAgentBytes(v)
-			case 'c': // content-type
-				req.Header.SetContentTypeBytes(v)
-			}
-		}
-
-		// calling req.URI() triggers a URL parsing, so because of that we need to delay the URL parsing.
-		req.URI().SetSchemeBytes(scheme)
 	case FrameData:
 		if !strm.headersFinished {
 			return NewGoAwayError(ProtocolError, "stream open")
@@ -468,7 +405,7 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 		if strm.State() >= StreamStateHalfClosed {
 			return NewGoAwayError(StreamClosedError, "stream closed")
 		}
-		ctx.Request.AppendBody(
+		strm.ctx.Request.AppendBody(
 			fr.Body().(*Data).Data())
 	case FrameResetStream:
 		if strm.State() == StreamStateIdle {
@@ -495,6 +432,82 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 	}
 
 	return err
+}
+
+func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
+	if strm.headersFinished && !fr.Flags().Has(FlagEndStream|FlagEndHeaders) {
+		// TODO handle trailers
+		return NewGoAwayError(ProtocolError, "stream not open")
+	}
+
+	if headerFrame, ok := fr.Body().(*Headers); ok && headerFrame.Stream() == strm.ID() {
+		return NewGoAwayError(ProtocolError, "stream that depends on itself")
+	}
+
+	b := append(strm.previousHeaderBytes, fr.Body().(FrameWithHeaders).Headers()...)
+	hf := AcquireHeaderField()
+	req := &strm.ctx.Request
+
+	var err error
+
+	for len(b) > 0 {
+		pb := b
+		b, err = sc.dec.Next(hf, b)
+		if err != nil {
+			if errors.Is(err, ErrUnexpectedSize) && len(pb) > 0 {
+				err = nil
+				strm.previousHeaderBytes = append(strm.previousHeaderBytes[:0], pb...)
+			} else {
+				err = ErrCompression
+			}
+			break
+		}
+
+		k, v := hf.KeyBytes(), hf.ValueBytes()
+		if !hf.IsPseudo() &&
+			!(bytes.Equal(k, StringUserAgent) ||
+				bytes.Equal(k, StringContentType)) {
+			req.Header.AddBytesKV(k, v)
+			continue
+		}
+
+		if hf.IsPseudo() {
+			k = k[1:]
+		}
+
+		switch k[0] {
+		case 'm': // method
+			req.Header.SetMethodBytes(v)
+		case 'p': // path
+			req.Header.SetRequestURIBytes(v)
+		case 's': // scheme
+			strm.scheme = append(strm.scheme[:0], v...)
+		case 'a': // authority
+			req.Header.SetHostBytes(v)
+			req.Header.AddBytesV("Host", v)
+		case 'u': // user-agent
+			req.Header.SetUserAgentBytes(v)
+		case 'c': // content-type
+			req.Header.SetContentTypeBytes(v)
+		}
+	}
+
+	return err
+}
+
+func (sc *serverConn) verifyState(strm *Stream, fr *FrameHeader) error {
+	switch strm.State() {
+	case StreamStateIdle:
+		if fr.Type() != FrameHeaders && fr.Type() != FramePriority {
+			return NewGoAwayError(ProtocolError, "wrong frame on idle stream")
+		}
+	case StreamStateHalfClosed:
+		if fr.Type() != FrameWindowUpdate && fr.Type() != FramePriority && fr.Type() != FrameResetStream {
+			return NewGoAwayError(StreamClosedError, "wrong frame on half-closed stream")
+		}
+	default:
+	}
+	return nil
 }
 
 // handleEndRequest dispatches the finished request to the handler.
