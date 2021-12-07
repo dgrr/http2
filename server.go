@@ -466,6 +466,9 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) (err error) {
 			return NewGoAwayError(ProtocolError, "RST_STREAM on idle stream")
 		}
 	case FramePriority:
+		if strm.State() != StreamStateIdle && !strm.headersFinished {
+			return NewGoAwayError(ProtocolError, "stream open")
+		}
 	default:
 		return NewGoAwayError(ProtocolError, "invalid frame")
 	}
