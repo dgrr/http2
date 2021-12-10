@@ -225,7 +225,7 @@ func (sc *serverConn) handleStreams() {
 				continue
 			}
 
-			if len(strms)+len(closedStrms) >= int(sc.st.maxStreams) {
+			if len(strms) >= int(sc.st.maxStreams) {
 				sc.writeReset(fr.Stream(), RefusedStreamError)
 				continue
 			}
