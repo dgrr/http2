@@ -39,6 +39,7 @@ type Stream struct {
 	window              int32
 	state               StreamState
 	ctx                 *fasthttp.RequestCtx
+	scheme              []byte
 	startedAt           time.Time
 	previousHeaderBytes []byte
 	headersFinished     bool
@@ -59,6 +60,7 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.startedAt = time.Time{}
 	strm.previousHeaderBytes = strm.previousHeaderBytes[:0]
 	strm.ctx = nil
+	strm.scheme = []byte("https")
 
 	return strm
 }
