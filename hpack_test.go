@@ -3,6 +3,7 @@ package http2
 import (
 	"bytes"
 	"fmt"
+	"github.com/dgrr/http2/http2utils"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,12 @@ var hfs = []*HeaderField{
 func TestHeaderFieldsToString(t *testing.T) {
 	http2utils.AssertEqual(t, "0 - context-type: text/plain\n1 - cookie: testcookie\n",
 		headerFieldsToString(hfs, 0))
+}
+
+func TestAcquireHPACKAndReleaseHPACK(t *testing.T) {
+	hp := &HPACK{}
+	ReleaseHPACK(hp)
+	http2utils.AssertEqual(t, hp, AcquireHPACK())
 }
 
 func TestHPACKAppendInt(t *testing.T) {
@@ -120,7 +127,7 @@ func check(t *testing.T, slice []*HeaderField, i int, k, v string) {
 	}
 }
 
-func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []string, tableSize int) {
+func readHPACKAndCheck(t *testing.T, hpack *HPACK, b []byte, fields, table []string, tableSize uint32) {
 	t.Helper()
 
 	var err error
@@ -436,7 +443,7 @@ func compare(b, r []byte) int {
 	return -1
 }
 
-func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []string, tableSize int) {
+func writeHPACKAndCheck(t *testing.T, hpack *HPACK, r []byte, fields, table []string, tableSize uint32) {
 	t.Helper()
 
 	n := 0
