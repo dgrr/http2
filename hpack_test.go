@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+var hfs = []*HeaderField{
+	{key: []byte("cookie"), value: []byte("testcookie")},
+	{key: []byte("context-type"), value: []byte("text/plain")},
+}
+
+func TestHeaderFieldsToString(t *testing.T) {
+	http2utils.AssertEqual(t, "0 - context-type: text/plain\n1 - cookie: testcookie\n",
+		headerFieldsToString(hfs, 0))
+}
+
 func TestHPACKAppendInt(t *testing.T) {
 	n := uint64(15)
 	nn := uint64(1337)
