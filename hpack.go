@@ -34,7 +34,7 @@ type HPACK struct {
 	// dynamic_length - (input_index - 62) - 1
 	dynamic []*HeaderField
 
-	maxTableSize int
+	maxTableSize uint32
 }
 
 func headerFieldsToString(hfs []*HeaderField, indexOffset int) string {
@@ -50,7 +50,7 @@ func headerFieldsToString(hfs []*HeaderField, indexOffset int) string {
 var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPACK{
-			maxTableSize: int(defaultHeaderTableSize),
+			maxTableSize: defaultHeaderTableSize,
 			dynamic:      make([]*HeaderField, 0, 16),
 		}
 	},
@@ -81,19 +81,19 @@ func (hp *HPACK) releaseDynamic() {
 // Reset deletes and releases all dynamic header fields.
 func (hp *HPACK) Reset() {
 	hp.releaseDynamic()
-	hp.maxTableSize = int(defaultHeaderTableSize)
+	hp.maxTableSize = defaultHeaderTableSize
 	hp.DisableCompression = false
 }
 
 // SetMaxTableSize sets the maximum dynamic table size.
-func (hp *HPACK) SetMaxTableSize(size int) {
+func (hp *HPACK) SetMaxTableSize(size uint32) {
 	hp.maxTableSize = size
 }
 
 // DynamicSize returns the size of the dynamic table.
 //
 // https://tools.ietf.org/html/rfc7541#section-4.1
-func (hp *HPACK) DynamicSize() (n int) {
+func (hp *HPACK) DynamicSize() (n uint32) {
 	for _, hf := range hp.dynamic {
 		n += hf.Size()
 	}
@@ -331,7 +331,7 @@ loop:
 	// https://tools.ietf.org/html/rfc7541#section-6.3
 	case c&32 == 32: // 001- ----
 		b, n = readInt(5, b)
-		hp.maxTableSize = int(n)
+		hp.maxTableSize = uint32(n)
 		hp.shrink()
 		goto loop
 	}

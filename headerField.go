@@ -57,8 +57,8 @@ func (hf *HeaderField) AppendBytes(dst []byte) []byte {
 // Size returns the header field size as RFC specifies.
 //
 // https://tools.ietf.org/html/rfc7541#section-4.1
-func (hf *HeaderField) Size() int {
-	return len(hf.key) + len(hf.value) + 32
+func (hf *HeaderField) Size() uint32 {
+	return uint32(len(hf.key) + len(hf.value) + 32)
 }
 
 // CopyTo copies the HeaderField to `other`.
