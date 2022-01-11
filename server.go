@@ -19,6 +19,9 @@ type ServerConfig struct {
 
 	// ...
 	MaxConcurrentStreams int
+
+	// Debug is a flag that will allow the library to print debugging information.
+	Debug bool
 }
 
 func (sc *ServerConfig) defaults() {
@@ -58,6 +61,11 @@ func (s *Server) ServeConn(c net.Conn) error {
 		reader:         make(chan *FrameHeader, 128),
 		maxRequestTime: s.s.ReadTimeout,
 		pingInterval:   s.cnf.PingInterval,
+		logger:         s.s.Logger,
+	}
+
+	if sc.logger == nil {
+		sc.logger = logger
 	}
 
 	sc.enc.Reset()

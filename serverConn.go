@@ -43,6 +43,9 @@ type serverConn struct {
 
 	st      Settings
 	clientS Settings
+
+	pingTimer *time.Timer
+	logger    fasthttp.Logger
 }
 
 func (sc *serverConn) Handshake() error {
@@ -98,7 +101,7 @@ func (sc *serverConn) writePing() {
 func (sc *serverConn) readLoop() (err error) {
 	defer func() {
 		if err := recover(); err != nil {
-			// TODO: debug
+			sc.logger.Printf("readLoop panicked: %s\n", err)
 		}
 	}()
 
@@ -170,7 +173,7 @@ func (sc *serverConn) readLoop() (err error) {
 func (sc *serverConn) handleStreams() {
 	defer func() {
 		if err := recover(); err != nil {
-			// TODO: debug
+			sc.logger.Printf("handleStreams panicked: %s\n", err)
 		}
 	}()
 
@@ -330,7 +333,7 @@ func handleState(fr *FrameHeader, strm *Stream) {
 	}
 }
 
-var logger = log.New(os.Stdout, "", log.LstdFlags)
+var logger = log.New(os.Stdout, "HTTP/2", log.LstdFlags)
 
 var ctxPool = sync.Pool{
 	New: func() interface{} {
@@ -343,7 +346,7 @@ func (sc *serverConn) createStream(c net.Conn, strm *Stream) {
 	ctx.Request.Reset()
 	ctx.Response.Reset()
 
-	ctx.Init2(c, logger, false)
+	ctx.Init2(c, sc.logger, false)
 
 	strm.startedAt = time.Now()
 	strm.SetData(ctx)
@@ -478,6 +481,7 @@ func (sc *serverConn) verifyState(strm *Stream, fr *FrameHeader) error {
 		}
 	default:
 	}
+
 	return nil
 }
 
@@ -487,15 +491,6 @@ func (sc *serverConn) handleEndRequest(strm *Stream) {
 	ctx.Request.Header.SetProtocolBytes(StringHTTP2)
 
 	sc.h(ctx)
-
-	// control the stack after the dispatch
-	//
-	// this recover is here just in case the sc.writer<-fr fails.
-	defer func() {
-		if err := recover(); err != nil {
-			// TODO: idk
-		}
-	}()
 
 	hasBody := ctx.Response.IsBodyStream() || len(ctx.Response.Body()) > 0
 
@@ -570,14 +565,18 @@ func (s *streamWrite) Write(body []byte) (n int, err error) {
 	if (s.size <= 0 && s.written > 0) || (s.size > 0 && s.written >= s.size) {
 		return 0, errors.New("writer closed")
 	}
+
 	step := 1 << 14 // max frame size 16384
+
 	n = len(body)
 	s.written += int64(n)
+
 	end := s.size < 0 || s.written >= s.size
 	for i := 0; i < n; i += step {
 		if i+step >= n {
 			step = n - i
 		}
+
 		fr := AcquireFrameHeader()
 		fr.SetStream(s.strm.ID())
 
@@ -595,19 +594,24 @@ func (s *streamWrite) Write(body []byte) (n int, err error) {
 }
 
 func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
-	vbuf := copyBufPool.Get()
-	buf := vbuf.([]byte)
+	buf := copyBufPool.Get().([]byte)
+
 	if s.size < 0 {
 		lrSize := limitedReaderSize(r)
 		if lrSize >= 0 {
 			s.size = lrSize
 		}
 	}
+
 	var n int
 	for {
 		n, err = r.Read(buf[0:])
 		if n <= 0 && err == nil {
 			err = errors.New("BUG: io.Reader returned 0, nil")
+		}
+
+		if err != nil {
+			break
 		}
 
 		fr := AcquireFrameHeader()
@@ -626,10 +630,12 @@ func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
 			break
 		}
 	}
-	copyBufPool.Put(vbuf)
+
+	copyBufPool.Put(buf)
 	if errors.Is(err, io.EOF) {
 		return num, nil
 	}
+
 	return num, err
 }
 
@@ -655,36 +661,34 @@ func (sc *serverConn) writeData(strm *Stream, body []byte) {
 	}
 }
 
+func (sc *serverConn) sendPingAndSchedule() {
+	sc.writePing()
+
+	sc.pingTimer.Reset(sc.pingInterval)
+}
+
 func (sc *serverConn) writeLoop() {
-	// TODO: use settings
-	ticker := time.NewTicker(time.Second * 10)
-	defer ticker.Stop()
+	if sc.pingInterval > 0 {
+		sc.pingTimer = time.AfterFunc(sc.pingInterval, sc.sendPingAndSchedule)
+	}
 
 	buffered := 0
 
-	for {
-		select {
-		case fr, ok := <-sc.writer:
-			if !ok {
-				return
-			}
+	for fr := range sc.writer {
+		_, err := fr.WriteTo(sc.bw)
+		if err == nil && (len(sc.writer) == 0 || buffered > 10) {
+			err = sc.bw.Flush()
+			buffered = 0
+		} else if err == nil {
+			buffered++
+		}
 
-			_, err := fr.WriteTo(sc.bw)
-			if err == nil && (len(sc.writer) == 0 || buffered > 10) {
-				err = sc.bw.Flush()
-				buffered = 0
-			} else if err == nil {
-				buffered++
-			}
+		ReleaseFrameHeader(fr)
 
-			ReleaseFrameHeader(fr)
-
-			if err != nil {
-				// TODO: sc.writer.err <- err
-				return
-			}
-		case <-ticker.C:
-			sc.writePing()
+		if err != nil {
+			sc.logger.Printf("ERROR: writeLoop: %s\n", err)
+			// TODO: sc.writer.err <- err
+			return
 		}
 	}
 }
