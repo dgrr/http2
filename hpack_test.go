@@ -3,10 +3,11 @@ package http2
 import (
 	"bytes"
 	"fmt"
-	"github.com/dgrr/http2/http2utils"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/dgrr/http2/http2utils"
 )
 
 var hfs = []*HeaderField{
