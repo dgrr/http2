@@ -209,7 +209,12 @@ func (f *FrameHeader) readFrom(br *bufio.Reader) (int64, error) {
 
 		f.payload = http2utils.Resize(f.payload, n)
 
-		n, _ = io.ReadFull(br, f.payload[:n])
+		n, err = io.ReadFull(br, f.payload[:n])
+		if err != nil {
+			ReleaseFrame(f.fr)
+			return 0, err
+		}
+
 		rn += int64(n)
 	}
 

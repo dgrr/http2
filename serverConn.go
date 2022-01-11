@@ -50,8 +50,8 @@ func (sc *serverConn) Handshake() error {
 }
 
 func (sc *serverConn) Serve() error {
-	go sc.handleStreams()
 	go sc.writeLoop()
+	go sc.handleStreams()
 
 	defer func() {
 		close(sc.reader)
@@ -96,6 +96,12 @@ func (sc *serverConn) writePing() {
 }
 
 func (sc *serverConn) readLoop() (err error) {
+	defer func() {
+		if err := recover(); err != nil {
+			// TODO: debug
+		}
+	}()
+
 	var fr *FrameHeader
 
 	for err == nil {
@@ -162,6 +168,12 @@ func (sc *serverConn) readLoop() (err error) {
 // handleStreams handles everything related to the streams
 // and the HPACK table is accessed synchronously.
 func (sc *serverConn) handleStreams() {
+	defer func() {
+		if err := recover(); err != nil {
+			// TODO: debug
+		}
+	}()
+
 	strms := make(map[uint32]*Stream)
 	closedStrms := make(map[uint32]struct{})
 	var currentStrm uint32
@@ -650,12 +662,11 @@ func (sc *serverConn) writeLoop() {
 
 	buffered := 0
 
-loop:
 	for {
 		select {
 		case fr, ok := <-sc.writer:
 			if !ok {
-				break loop
+				return
 			}
 
 			_, err := fr.WriteTo(sc.bw)

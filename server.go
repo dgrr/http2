@@ -16,11 +16,18 @@ type ServerConfig struct {
 	//
 	// To disable pings set the PingInterval to a negative value.
 	PingInterval time.Duration
+
+	// ...
+	MaxConcurrentStreams int
 }
 
 func (sc *ServerConfig) defaults() {
 	if sc.PingInterval == 0 {
 		sc.PingInterval = time.Second * 10
+	}
+
+	if sc.MaxConcurrentStreams <= 0 {
+		sc.MaxConcurrentStreams = 1024
 	}
 }
 
@@ -61,7 +68,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 
 	sc.st.Reset()
 	sc.st.SetMaxWindowSize(uint32(sc.maxWindow))
-	sc.st.SetMaxConcurrentStreams(1024)
+	sc.st.SetMaxConcurrentStreams(uint32(s.cnf.MaxConcurrentStreams))
 
 	if err := sc.Handshake(); err != nil {
 		return err
