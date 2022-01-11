@@ -218,7 +218,7 @@ func launchLocalServer(t *testing.T) int {
 			ctx.Response.AppendBodyString("Test	 HTTP2")
 		},
 	}
-	http2.ConfigureServer(server)
+	http2.ConfigureServer(server, http2.ServerConfig{})
 
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	require.NoError(t, err)

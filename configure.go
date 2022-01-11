@@ -78,9 +78,12 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 // established if the fasthttp server is using TLS.
 //
 // Future implementations may support HTTP/2 through plain TCP.
-func ConfigureServer(s *fasthttp.Server) *Server {
+func ConfigureServer(s *fasthttp.Server, cnf ServerConfig) *Server {
+	cnf.defaults()
+
 	s2 := &Server{
-		s: s,
+		s:   s,
+		cnf: cnf,
 	}
 
 	s.NextProto(H2TLSProto, s2.ServeConn)

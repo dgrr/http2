@@ -32,6 +32,7 @@ type ConnOpts struct {
 // Handshake performs an HTTP/2 handshake. That means, it will send
 // the preface if `preface` is true, send a settings frame and a
 // window update frame (for the connection's window).
+// TODO: explain more
 func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error {
 	if preface {
 		err := WritePreface(bw)
