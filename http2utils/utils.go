@@ -104,7 +104,7 @@ func FastBytesToString(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
 }
 
-// AssertEqual checks if values are equal
+// AssertEqual checks if values are equal.
 func AssertEqual(tb testing.TB, expected, actual interface{}, description ...string) {
 	if tb != nil {
 		tb.Helper()

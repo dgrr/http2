@@ -50,7 +50,7 @@ func headerFieldsToString(hfs []*HeaderField, indexOffset int) string {
 var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPACK{
-			maxTableSize: uint32(defaultHeaderTableSize),
+			maxTableSize: defaultHeaderTableSize,
 			dynamic:      make([]*HeaderField, 0, 16),
 		}
 	},
@@ -81,7 +81,7 @@ func (hp *HPACK) releaseDynamic() {
 // Reset deletes and releases all dynamic header fields.
 func (hp *HPACK) Reset() {
 	hp.releaseDynamic()
-	hp.maxTableSize = uint32(defaultHeaderTableSize)
+	hp.maxTableSize = defaultHeaderTableSize
 	hp.DisableCompression = false
 }
 
