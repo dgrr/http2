@@ -1,4 +1,4 @@
-package maybe_later
+package http2
 
 import (
 	"bufio"
@@ -6,7 +6,6 @@ import (
 	"io"
 	"testing"
 
-	"github.com/dgrr/http2"
 	"github.com/dgrr/http2/http2utils"
 )
 
@@ -15,10 +14,14 @@ const (
 )
 
 func TestFrameWrite(t *testing.T) {
-	fr := http2.AcquireFrameHeader()
-	defer http2.ReleaseFrameHeader(fr)
+	fr := AcquireFrameHeader()
+	defer ReleaseFrameHeader(fr)
 
-	n, err := io.WriteString(fr, testStr)
+	data := AcquireFrame(FrameData).(*Data)
+
+	fr.SetBody(data)
+
+	n, err := io.WriteString(data, testStr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +63,8 @@ func TestFrameRead(t *testing.T) {
 		t.Fatalf("unexpected written bytes %d<>%d", n, len(testStr))
 	}
 
-	fr := http2.AcquireFrame()
-	defer http2.ReleaseFrame(fr)
+	fr := AcquireFrameHeader()
+	defer ReleaseFrameHeader(fr)
 
 	nn, err := fr.ReadFrom(br)
 	if err != nil {
@@ -69,10 +72,16 @@ func TestFrameRead(t *testing.T) {
 	}
 	n = int(nn)
 	if n != len(testStr)+9 {
-		t.Fatalf("unexpected readed bytes %d<>%d", n, len(testStr)+9)
+		t.Fatalf("unexpected read bytes %d<>%d", n, len(testStr)+9)
 	}
 
-	if str := string(fr.Payload()); str != testStr {
+	if fr.Type() != FrameData {
+		t.Fatalf("unexpected frame type: %s. Expected Data", fr.Type())
+	}
+
+	data := fr.Body().(*Data)
+
+	if str := string(data.Data()); str != testStr {
 		t.Fatalf("mismatch %s<>%s", str, testStr)
 	}
 }
