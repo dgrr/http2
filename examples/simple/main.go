@@ -1,6 +1,7 @@
 package main
 
 import (
+	"time"
 	"fmt"
 	"log"
 
@@ -15,6 +16,7 @@ func main() {
 	}
 
 	s := &fasthttp.Server{
+		ReadTimeout: time.Second*3,
 		Handler: requestHandler,
 		Name:    "http2 test",
 	}
@@ -23,7 +25,9 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	http2.ConfigureServer(s)
+	http2.ConfigureServer(s, http2.ServerConfig{
+		Debug: true,
+	})
 
 	err = s.ListenAndServeTLS(":8443", "", "")
 	if err != nil {
@@ -32,8 +36,6 @@ func main() {
 }
 
 func requestHandler(ctx *fasthttp.RequestCtx) {
-	fmt.Printf("IsTLS: %v\n%s\n%s\n", ctx.IsTLS(), ctx.Request.URI(), ctx.Request.Header.Header())
-
 	if ctx.Request.Header.IsPost() {
 		fmt.Fprintf(ctx, "%s\n", ctx.Request.Body())
 		return

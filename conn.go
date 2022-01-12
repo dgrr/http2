@@ -537,7 +537,7 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 		// release headers bc it's going to get replaced by the data frame
 		ReleaseFrame(h)
 
-		err = writeData(c.bw, fr, req.Body())
+		// err = writeData(c.bw, fr, req.Body())
 	}
 
 	if err == nil {

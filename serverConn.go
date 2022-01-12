@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -44,8 +45,12 @@ type serverConn struct {
 	st      Settings
 	clientS Settings
 
-	pingTimer *time.Timer
-	logger    fasthttp.Logger
+	// pingTimer
+	pingTimer       *time.Timer
+	maxRequestTimer *time.Timer
+
+	debug  bool
+	logger fasthttp.Logger
 }
 
 func (sc *serverConn) Handshake() error {
@@ -53,12 +58,25 @@ func (sc *serverConn) Handshake() error {
 }
 
 func (sc *serverConn) Serve() error {
-	go sc.writeLoop()
-	go sc.handleStreams()
+	sc.maxRequestTimer = time.NewTimer(0)
 
 	defer func() {
-		close(sc.reader)
+		if err := recover(); err != nil {
+			sc.logger.Printf("Serve panicked: %s:\n%s\n", err, debug.Stack())
+		}
+	}()
+
+	go sc.writeLoop()
+	go func() {
+		sc.handleStreams()
+		// close the writer here to ensure that no pending requests
+		// are writing to a closed channel
 		close(sc.writer)
+	}()
+
+	defer func() {
+		// close the reader here so we can stop handling stream updates
+		close(sc.reader)
 	}()
 
 	var err error
@@ -75,6 +93,12 @@ func (sc *serverConn) Serve() error {
 	if errors.Is(err, io.EOF) {
 		err = nil
 	}
+
+	if sc.pingTimer != nil {
+		sc.pingTimer.Stop()
+	}
+
+	sc.maxRequestTimer.Stop()
 
 	return err
 }
@@ -119,9 +143,12 @@ func (sc *serverConn) readLoop() (err error) {
 			break
 		}
 
+		// TODO: Reject push promise
+
 		if fr.Stream() != 0 {
 			if fr.Type() == FramePing {
-				return errors.New("ping invalid")
+				sc.writeGoAway(sc.lastID, ProtocolError, "ping is carrying a stream_id")
+				return nil
 			}
 
 			if fr.Stream()&1 == 0 {
@@ -173,89 +200,134 @@ func (sc *serverConn) readLoop() (err error) {
 func (sc *serverConn) handleStreams() {
 	defer func() {
 		if err := recover(); err != nil {
-			sc.logger.Printf("handleStreams panicked: %s\n", err)
+			sc.logger.Printf("handleStreams panicked: %s\n%s\n", err, debug.Stack())
 		}
 	}()
 
-	strms := make(map[uint32]*Stream)
+	var strms Streams
+	var reqTimerArmed bool
+
 	closedStrms := make(map[uint32]struct{})
-	var currentStrm uint32
 
-	for fr := range sc.reader {
-		strm, ok := strms[fr.Stream()]
-		if !ok {
-			// if the stream doesn't exist, create it
-			if fr.Type() == FrameResetStream {
-				// only send go away on idle stream not on an already-closed stream
-				if _, ok = closedStrms[fr.Stream()]; !ok {
-					sc.writeGoAway(fr.Stream(), ProtocolError, "RST_STREAM on idle stream")
+	closeStream := func(strm *Stream) {
+		ctxPool.Put(strm.ctx)
+		closedStrms[strm.ID()] = struct{}{}
+		strms.Del(strm.ID())
+		streamPool.Put(strm)
+	}
+
+	for {
+		select {
+		case <-sc.maxRequestTimer.C:
+			deleteUntil := 0
+			for _, strm := range strms {
+				// the request is due if the startedAt time + maxRequestTime is in the past
+				isDue := time.Now().After(
+					strm.startedAt.Add(sc.maxRequestTime))
+				if !isDue {
+					break
 				}
 
-				continue
+				deleteUntil++
 			}
 
-			// We don't need to check frame WINDOW_UPDATEs because they do not arrive to this function.
-			if _, ok = closedStrms[fr.Stream()]; ok {
-				if fr.Type() != FramePriority {
-					sc.writeGoAway(fr.Stream(), StreamClosedError, "frame on closed stream")
-				}
+			for deleteUntil > 0 {
+				strm := strms[0]
 
-				continue
-			}
+				sc.writeReset(strm.ID(), StreamCanceled)
 
-			if len(strms) >= int(sc.st.maxStreams) {
-				sc.writeReset(fr.Stream(), RefusedStreamError)
-				continue
-			}
-
-			strm = NewStream(fr.Stream(), sc.clientStreamWindow)
-			strms[fr.Stream()] = strm
-
-			if strm.ID() < sc.lastID {
-				sc.writeGoAway(strm.ID(), ProtocolError, "stream id too low")
-				continue
-			}
-
-			if fr.Type() == FrameHeaders {
-				sc.lastID = strm.ID()
-			}
-
-			sc.createStream(sc.c, strm)
-		}
-
-		if currentStrm != 0 && currentStrm != fr.Stream() {
-			sc.writeError(strm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
-			continue
-		}
-
-		if err := sc.handleFrame(strm, fr); err != nil {
-			sc.writeError(strm, err)
-		}
-
-		if strm.headersFinished {
-			currentStrm = 0
-		}
-
-		handleState(fr, strm)
-
-		if strm.State() < StreamStateHalfClosed && sc.maxRequestTime > 0 {
-			if time.Since(strm.startedAt) > sc.maxRequestTime {
-				sc.writeGoAway(strm.ID(), StreamCanceled, "timeout")
+				// set the state to closed in case it comes back to life later
 				strm.SetState(StreamStateClosed)
-			}
-		}
+				closeStream(strm)
 
-		switch strm.State() {
-		case StreamStateHalfClosed:
-			sc.handleEndRequest(strm)
-			fallthrough
-		case StreamStateClosed:
-			ctxPool.Put(strm.ctx)
-			closedStrms[strm.ID()] = struct{}{}
-			delete(strms, strm.ID())
-			streamPool.Put(strm)
-		case StreamStateOpen:
-			currentStrm = strm.ID()
+				deleteUntil--
+			}
+
+			if reqTimerArmed = len(strms) != 0 && sc.maxRequestTime > 0; reqTimerArmed {
+				// try to arm the timer
+				when := strms[0].startedAt.Add(sc.maxRequestTime).Sub(time.Now())
+				sc.maxRequestTimer.Reset(when)
+			}
+		case fr, ok := <-sc.reader:
+			if !ok {
+				return
+			}
+
+			var strm *Stream
+			if fr.Stream() <= sc.lastID {
+				strm = strms.Search(fr.Stream())
+				if strm == nil {
+					// TODO: not found??
+				}
+			}
+
+			if strm == nil {
+				// if the stream doesn't exist, create it
+				if fr.Type() == FrameResetStream {
+					// only send go away on idle stream not on an already-closed stream
+					if _, ok := closedStrms[fr.Stream()]; !ok {
+						sc.writeGoAway(fr.Stream(), ProtocolError, "RST_STREAM on idle stream")
+					}
+
+					continue
+				}
+
+				// We don't need to check frame WINDOW_UPDATEs because they do not arrive to this function.
+				if _, ok := closedStrms[fr.Stream()]; ok {
+					if fr.Type() != FramePriority {
+						sc.writeGoAway(fr.Stream(), StreamClosedError, "frame on closed stream")
+					}
+
+					continue
+				}
+
+				if len(strms) >= int(sc.st.maxStreams) {
+					sc.writeReset(fr.Stream(), RefusedStreamError)
+					continue
+				}
+
+				if fr.Stream() < sc.lastID {
+					sc.writeGoAway(fr.Stream(), ProtocolError, "stream ID is lower than the latest")
+					continue
+				}
+
+				strm = NewStream(fr.Stream(), sc.clientStreamWindow)
+				strms = append(strms, strm)
+
+				sc.lastID = fr.Stream()
+
+				sc.createStream(sc.c, strm)
+
+				if !reqTimerArmed && sc.maxRequestTime > 0 {
+					reqTimerArmed = true
+					sc.maxRequestTimer.Reset(sc.maxRequestTime)
+				}
+			}
+
+			// if we have more than one stream (this one newly created) check if the previous finished sending the headers
+			if fr.Type() == FrameHeaders && len(strms) > 1 && strms[len(strms)-2].State() < StreamStateHalfClosed {
+				for _, strm := range strms {
+					fmt.Println(strm.ID(), strm.State().String())
+				}
+				sc.writeError(strm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
+				continue
+			}
+
+			if err := sc.handleFrame(strm, fr); err != nil {
+				sc.writeError(strm, err)
+			}
+
+			handleState(fr, strm)
+
+			switch strm.State() {
+			case StreamStateHalfClosed:
+				sc.handleEndRequest(strm)
+				// we fallthrough because once we send the response
+				// the stream is already consumed and thus finished
+				fallthrough
+			case StreamStateClosed:
+				closeStream(strm)
+			}
 		}
 	}
 }
@@ -270,6 +342,13 @@ func (sc *serverConn) writeReset(strm uint32, code ErrorCode) {
 	r.SetCode(code)
 
 	sc.writer <- fr
+
+	if sc.debug {
+		sc.logger.Printf(
+			"%s: Reset(stream=%d, code=%s)\n",
+			sc.c.RemoteAddr(), strm, code,
+		)
+	}
 }
 
 func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode, message string) {
@@ -284,6 +363,13 @@ func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode, message string) {
 	fr.SetBody(ga)
 
 	sc.writer <- fr
+
+	if sc.debug {
+		sc.logger.Printf(
+			"%s: GoAway(stream=%d, code=%s): %s\n",
+			sc.c.RemoteAddr(), strm, code, message,
+		)
+	}
 }
 
 func (sc *serverConn) writeError(strm *Stream, err error) {
@@ -322,18 +408,20 @@ func handleState(fr *FrameHeader, strm *Stream) {
 	case StreamStateOpen:
 		if fr.Flags().Has(FlagEndStream) {
 			strm.SetState(StreamStateHalfClosed)
+		} else if fr.Type() == FrameResetStream {
+			strm.SetState(StreamStateClosed)
 		}
 	case StreamStateHalfClosed:
-		if fr.Flags().Has(FlagEndStream) {
-			strm.SetState(StreamStateClosed)
-		} else if fr.Type() == FrameResetStream {
+		// a stream can only go from HalfClosed to Closed if the client
+		// sends a ResetStream frame.
+		if fr.Type() == FrameResetStream {
 			strm.SetState(StreamStateClosed)
 		}
 	case StreamStateClosed:
 	}
 }
 
-var logger = log.New(os.Stdout, "HTTP/2", log.LstdFlags)
+var logger = log.New(os.Stdout, "[HTTP/2] ", log.LstdFlags)
 
 var ctxPool = sync.Pool{
 	New: func() interface{} {
@@ -364,6 +452,7 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 		if err != nil {
 			return err
 		}
+
 		if fr.Flags().Has(FlagEndHeaders) {
 			strm.headersFinished = true
 
@@ -426,6 +515,7 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 
 	for len(b) > 0 {
 		pb := b
+
 		b, err = sc.dec.Next(hf, b)
 		if err != nil {
 			if errors.Is(err, ErrUnexpectedSize) && len(pb) > 0 {

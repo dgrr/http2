@@ -30,6 +30,31 @@ const (
 	HTTP11Required       ErrorCode = 0xd
 )
 
+var errStr = [...]string{
+	NoError:              "NoError",
+	ProtocolError:        "ProtocolError",
+	InternalError:        "InternalError",
+	FlowControlError:     "FlowControlError",
+	SettingsTimeoutError: "SettingsTimeoutError",
+	StreamClosedError:    "StreamClosedError",
+	FrameSizeError:       "FrameSizeError",
+	RefusedStreamError:   "RefusedStreamError",
+	StreamCanceled:       "StreamCanceled",
+	CompressionError:     "CompressionError",
+	ConnectionError:      "ConnectionError",
+	EnhanceYourCalm:      "EnhanceYourCalm",
+	InadequateSecurity:   "InadequateSecurity",
+	HTTP11Required:       "HTTP11Required",
+}
+
+func (e ErrorCode) String() string {
+	if int(e) >= len(errStr) {
+		return "Unknown"
+	}
+
+	return errStr[e]
+}
+
 // Error implements the error interface.
 func (e ErrorCode) Error() string {
 	if int(e) < len(errParser) {

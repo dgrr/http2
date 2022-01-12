@@ -62,6 +62,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 		maxRequestTime: s.s.ReadTimeout,
 		pingInterval:   s.cnf.PingInterval,
 		logger:         s.s.Logger,
+		debug:          s.cnf.Debug,
 	}
 
 	if sc.logger == nil {
