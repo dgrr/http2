@@ -122,6 +122,19 @@ func (sc *serverConn) writePing() {
 	sc.writer <- fr
 }
 
+func (sc *serverConn) checkFrameWithStream(fr *FrameHeader) error {
+	if fr.Stream()&1 == 0 {
+		return NewGoAwayError(ProtocolError, "invalid stream id")
+	}
+
+	switch fr.Type() {
+	case FramePing:
+		return NewGoAwayError(ProtocolError, "ping is carrying a stream id")
+	}
+
+	return nil
+}
+
 func (sc *serverConn) readLoop() (err error) {
 	defer func() {
 		if err := recover(); err != nil {
@@ -143,16 +156,10 @@ func (sc *serverConn) readLoop() (err error) {
 			break
 		}
 
-		// TODO: Reject push promise
-
 		if fr.Stream() != 0 {
-			if fr.Type() == FramePing {
-				sc.writeGoAway(sc.lastID, ProtocolError, "ping is carrying a stream_id")
-				return nil
-			}
-
-			if fr.Stream()&1 == 0 {
-				sc.writeGoAway(fr.Stream(), ProtocolError, "invalid stream id")
+			err := sc.checkFrameWithStream(fr)
+			if err != nil {
+				sc.writeError(nil, err)
 			} else {
 				sc.reader <- fr
 			}
@@ -382,7 +389,11 @@ func (sc *serverConn) writeError(strm *Stream, err error) {
 
 	switch streamErr.frameType {
 	case FrameGoAway:
-		sc.writeGoAway(strm.ID(), streamErr.Code(), streamErr.Error())
+		if strm == nil {
+			sc.writeGoAway(0, streamErr.Code(), streamErr.Error())
+		} else {
+			sc.writeGoAway(strm.ID(), streamErr.Code(), streamErr.Error())
+		}
 	case FrameResetStream:
 		sc.writeReset(strm.ID(), streamErr.Code())
 	}
@@ -459,15 +470,15 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 			// calling req.URI() triggers a URL parsing, so because of that we need to delay the URL parsing.
 			strm.ctx.Request.URI().SetSchemeBytes(strm.scheme)
 		}
-
 	case FrameData:
 		if !strm.headersFinished {
-			return NewGoAwayError(ProtocolError, "stream open")
+			return NewGoAwayError(ProtocolError, "stream didn't end the headers")
 		}
 
 		if strm.State() >= StreamStateHalfClosed {
 			return NewGoAwayError(StreamClosedError, "stream closed")
 		}
+
 		strm.ctx.Request.AppendBody(
 			fr.Body().(*Data).Data())
 	case FrameResetStream:
