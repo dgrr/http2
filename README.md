@@ -31,7 +31,7 @@ func main() {
         Name:    "HTTP2 test",
     }
 
-    http2.ConfigureServer(s)
+    http2.ConfigureServer(s, http2.ServerConfig{})
     
     s.ListenAndServeTLS(...)
 }
