@@ -15,7 +15,7 @@ If you need any help to set up, contributing or understanding this repo, you can
 # How to use the server?
 
 The server can only be used if your server supports TLS.
-Then, you can call [ConfigureServer](https://pkg.go.dev/github.com/dgrr/http2@v0.1.1/http2#ConfigureServer).
+Then, you can call [ConfigureServer](https://pkg.go.dev/github.com/dgrr/http2#ConfigureServer).
 
 ```go
 package main
