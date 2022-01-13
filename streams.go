@@ -2,8 +2,8 @@ package http2
 
 type Streams []*Stream
 
-func (s *Streams) Search(id uint32) *Stream {
-	for _, strm := range *s {
+func (strms *Streams) Search(id uint32) *Stream {
+	for _, strm := range *strms {
 		if strm.ID() == id {
 			return strm
 		}
@@ -11,26 +11,35 @@ func (s *Streams) Search(id uint32) *Stream {
 	return nil
 }
 
-func (s *Streams) Del(id uint32) {
-	if len(*s) == 1 && (*s)[0].ID() == id {
-		*s = (*s)[:0]
+func (strms *Streams) Del(id uint32) {
+	if len(*strms) == 1 && (*strms)[0].ID() == id {
+		*strms = (*strms)[:0]
 		return
 	}
 
-	for i, strm := range *s {
+	for i, strm := range *strms {
 		if strm.ID() == id {
-			*s = append((*s)[:i], (*s)[i+1:]...)
+			*strms = append((*strms)[:i], (*strms)[i+1:]...)
 			return
 		}
 	}
 }
 
-func (s Streams) getPrevious(streamType FrameType) *Stream {
+func (strms Streams) GetFirstOf(frameType FrameType) *Stream {
+	for _, strm := range strms {
+		if strm.origType == frameType {
+			return strm
+		}
+	}
+	return nil
+}
+
+func (strms Streams) getPrevious(frameType FrameType) *Stream {
 	cnt := 0
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i].origType == streamType {
+	for i := len(strms) - 1; i >= 0; i-- {
+		if strms[i].origType == frameType {
 			if cnt != 0 {
-				return s[i]
+				return strms[i]
 			}
 			cnt++
 		}

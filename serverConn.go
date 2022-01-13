@@ -134,6 +134,8 @@ func (sc *serverConn) checkFrameWithStream(fr *FrameHeader) error {
 	switch fr.Type() {
 	case FramePing:
 		return NewGoAwayError(ProtocolError, "ping is carrying a stream id")
+	case FramePushPromise:
+		return NewGoAwayError(ProtocolError, "clients can't send push_promise frames")
 	}
 
 	return nil
@@ -222,13 +224,19 @@ func (sc *serverConn) handleStreams() {
 
 	var strms Streams
 	var reqTimerArmed bool
+	var openStreams int
 
 	closedStrms := make(map[uint32]struct{})
 
 	closeStream := func(strm *Stream) {
-		ctxPool.Put(strm.ctx)
+		if strm.origType == FrameHeaders {
+			openStreams--
+		}
+
 		closedStrms[strm.ID()] = struct{}{}
 		strms.Del(strm.ID())
+
+		ctxPool.Put(strm.ctx)
 		streamPool.Put(strm)
 	}
 
@@ -259,10 +267,16 @@ func (sc *serverConn) handleStreams() {
 				deleteUntil--
 			}
 
-			if reqTimerArmed = len(strms) != 0 && sc.maxRequestTime > 0; reqTimerArmed {
-				// try to arm the timer
-				when := strms[0].startedAt.Add(sc.maxRequestTime).Sub(time.Now())
-				sc.maxRequestTimer.Reset(when)
+			if len(strms) != 0 && sc.maxRequestTime > 0 {
+				// the first in the stream list might have started with a PushPromise
+				strm := strms.GetFirstOf(FrameHeaders)
+				if strm != nil {
+					reqTimerArmed = true
+					// try to arm the timer
+					when := strm.startedAt.Add(sc.maxRequestTime).Sub(time.Now())
+					// if the time is negative or zero it triggers imm
+					sc.maxRequestTimer.Reset(when)
+				}
 			}
 		case fr, ok := <-sc.reader:
 			if !ok {
@@ -279,6 +293,7 @@ func (sc *serverConn) handleStreams() {
 
 			if strm == nil {
 				// if the stream doesn't exist, create it
+
 				if fr.Type() == FrameResetStream {
 					// only send go away on idle stream not on an already-closed stream
 					if _, ok := closedStrms[fr.Stream()]; !ok {
@@ -296,7 +311,7 @@ func (sc *serverConn) handleStreams() {
 					continue
 				}
 
-				if len(strms) >= int(sc.st.maxStreams) {
+				if openStreams >= int(sc.st.maxStreams) {
 					sc.writeReset(fr.Stream(), RefusedStreamError)
 					continue
 				}
@@ -309,7 +324,14 @@ func (sc *serverConn) handleStreams() {
 				strm = NewStream(fr.Stream(), int32(sc.clientWindow))
 				strms = append(strms, strm)
 
-				if fr.Type() == FrameHeaders || fr.Type() == FramePushPromise {
+				// RFC(5.1.1):
+				//
+				// The identifier of a newly established stream MUST be numerically
+				// greater than all streams that the initiating endpoint has opened
+				// or reserved. This governs streams that are opened using a
+				// HEADERS frame and streams that are reserved using PUSH_PROMISE.
+				if fr.Type() == FrameHeaders {
+					openStreams++
 					sc.lastID = fr.Stream()
 				}
 
@@ -323,15 +345,42 @@ func (sc *serverConn) handleStreams() {
 
 			// if we have more than one stream (this one newly created) check if the previous finished sending the headers
 			if fr.Type() == FrameHeaders {
-				strm := strms.getPrevious(FrameHeaders)
-				if strm != nil && strm.State() < StreamStateHalfClosed {
-					sc.writeError(strm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
+				if strm.origType == FramePushPromise {
+					strm.origType = fr.Type()
+				}
+
+				nstrm := strms.getPrevious(FrameHeaders)
+				if nstrm != nil && nstrm.State() < StreamStateHalfClosed {
+					sc.writeError(nstrm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
 					continue
+				}
+
+				for len(strms) != 0 {
+					nstrm := strms[0]
+					// RFC(5.1.1):
+					//
+					// The first use of a new stream identifier implicitly
+					// closes all streams in the "idle" state that might
+					// have been initiated by that peer with a lower-valued stream identifier
+					if nstrm.ID() < strm.ID() &&
+						nstrm.State() == StreamStateIdle &&
+						nstrm.origType == FrameHeaders {
+
+						nstrm.SetState(StreamStateClosed)
+						closeStream(strm)
+
+						sc.writeReset(strm.ID(), StreamCanceled)
+
+						continue
+					}
+
+					break
 				}
 			}
 
 			if err := sc.handleFrame(strm, fr); err != nil {
 				sc.writeError(strm, err)
+				strm.SetState(StreamStateClosed)
 			}
 
 			handleState(fr, strm)
@@ -472,6 +521,10 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 
 	switch fr.Type() {
 	case FrameHeaders, FrameContinuation:
+		if strm.State() >= StreamStateHalfClosed {
+			return NewGoAwayError(ProtocolError, "received headers on a finished stream")
+		}
+
 		err = sc.handleHeaderFrame(strm, fr)
 		if err != nil {
 			return err
@@ -500,7 +553,7 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 		}
 	case FramePriority:
 		if strm.State() != StreamStateIdle && !strm.headersFinished {
-			return NewGoAwayError(ProtocolError, "stream open")
+			return NewGoAwayError(ProtocolError, "frame priority on an open stream")
 		}
 
 		if priorityFrame, ok := fr.Body().(*Priority); ok && priorityFrame.Stream() == strm.ID() {
