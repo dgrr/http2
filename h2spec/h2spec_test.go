@@ -159,6 +159,9 @@ func TestH2Spec(t *testing.T) {
 		{desc: "http2/6.10/6"},
 		{desc: "http2/7/1"},
 		{desc: "http2/7/2"},
+		// About(dario): Sends a HEADERS frame that contains the header
+		//               field name in uppercase letters.
+		//               In this case, fasthttp is case-insensitive, so we can ignore it.
 		// {desc: "http2/8.1.2.1/1"},
 		// {desc: "http2/8.1.2.1/2"},
 		{desc: "http2/8.1.2.1/3"},
