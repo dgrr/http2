@@ -24,3 +24,16 @@ func (s *Streams) Del(id uint32) {
 		}
 	}
 }
+
+func (s Streams) getPrevious(streamType FrameType) *Stream {
+	cnt := 0
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i].origType == streamType {
+			if cnt != 0 {
+				return s[i]
+			}
+			cnt++
+		}
+	}
+	return nil
+}

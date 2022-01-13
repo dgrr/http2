@@ -103,6 +103,14 @@ func NewGoAwayError(e ErrorCode, debug string) Error {
 	}
 }
 
+func NewResetStreamError(e ErrorCode, debug string) Error {
+	return Error{
+		code:      e,
+		debug:     debug,
+		frameType: FrameResetStream,
+	}
+}
+
 // Error implements the error interface.
 func (e Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.code, e.debug)

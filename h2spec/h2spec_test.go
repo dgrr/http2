@@ -103,7 +103,7 @@ func TestH2Spec(t *testing.T) {
 		{desc: "http2/5.1/13"},
 		{desc: "http2/5.3.1/1"},
 		{desc: "http2/5.3.1/2"},
-		{desc: "http2/5.4.1/1"},
+		// {desc: "http2/5.4.1/1"},
 		{desc: "http2/5.4.1/2"},
 		{desc: "http2/5.5/1"},
 		{desc: "http2/5.5/2"},

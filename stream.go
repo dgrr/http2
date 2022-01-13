@@ -36,13 +36,16 @@ func (ss StreamState) String() string {
 
 type Stream struct {
 	id                  uint32
-	window              int32
+	window              int64
 	state               StreamState
 	ctx                 *fasthttp.RequestCtx
 	scheme              []byte
-	startedAt           time.Time
 	previousHeaderBytes []byte
-	headersFinished     bool
+
+	// original type
+	origType        FrameType
+	startedAt       time.Time
+	headersFinished bool
 }
 
 var streamPool = sync.Pool{
@@ -54,7 +57,7 @@ var streamPool = sync.Pool{
 func NewStream(id uint32, win int32) *Stream {
 	strm := streamPool.Get().(*Stream)
 	strm.id = id
-	strm.window = win
+	strm.window = int64(win)
 	strm.state = StreamStateIdle
 	strm.headersFinished = false
 	strm.startedAt = time.Time{}
@@ -82,15 +85,15 @@ func (s *Stream) SetState(state StreamState) {
 }
 
 func (s *Stream) Window() int32 {
-	return s.window
+	return int32(s.window)
 }
 
 func (s *Stream) SetWindow(win int32) {
-	s.window = win
+	s.window = int64(win)
 }
 
 func (s *Stream) IncrWindow(win int32) {
-	s.window += win
+	s.window += int64(win)
 }
 
 func (s *Stream) Ctx() *fasthttp.RequestCtx {

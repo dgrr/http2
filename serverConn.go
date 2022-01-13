@@ -30,10 +30,13 @@ type serverConn struct {
 
 	lastID uint32
 
-	clientWindow       int32
-	clientStreamWindow int32
-	maxWindow          int32
-	currentWindow      int32
+	// client's window
+	// should be int64 because the user can try to overflow it
+	clientWindow int64
+
+	// our values
+	maxWindow     int32
+	currentWindow int32
 
 	writer chan *FrameHeader
 	reader chan *FrameHeader
@@ -59,6 +62,7 @@ func (sc *serverConn) Handshake() error {
 
 func (sc *serverConn) Serve() error {
 	sc.maxRequestTimer = time.NewTimer(0)
+	sc.clientWindow = int64(sc.clientS.MaxWindowSize())
 
 	defer func() {
 		if err := recover(); err != nil {
@@ -138,7 +142,7 @@ func (sc *serverConn) checkFrameWithStream(fr *FrameHeader) error {
 func (sc *serverConn) readLoop() (err error) {
 	defer func() {
 		if err := recover(); err != nil {
-			sc.logger.Printf("readLoop panicked: %s\n", err)
+			sc.logger.Printf("readLoop panicked: %s\n%s\n", err, debug.Stack())
 		}
 	}()
 
@@ -175,10 +179,15 @@ func (sc *serverConn) readLoop() (err error) {
 				sc.handleSettings(st)
 			}
 		case FrameWindowUpdate:
-			win := int32(fr.Body().(*WindowUpdate).Increment())
+			win := int64(fr.Body().(*WindowUpdate).Increment())
+			if win == 0 {
+				sc.writeGoAway(0, ProtocolError, "window increment of 0")
+				// return
+				continue
+			}
 
-			if !atomic.CompareAndSwapInt32(&sc.clientWindow, 0, win) {
-				atomic.AddInt32(&sc.clientWindow, win)
+			if atomic.AddInt64(&sc.clientWindow, win) >= 1<<31-1 {
+				sc.writeGoAway(0, FlowControlError, "window is above limits")
 			}
 		case FramePing:
 			ping := fr.Body().(*Ping)
@@ -279,7 +288,6 @@ func (sc *serverConn) handleStreams() {
 					continue
 				}
 
-				// We don't need to check frame WINDOW_UPDATEs because they do not arrive to this function.
 				if _, ok := closedStrms[fr.Stream()]; ok {
 					if fr.Type() != FramePriority {
 						sc.writeGoAway(fr.Stream(), StreamClosedError, "frame on closed stream")
@@ -298,12 +306,14 @@ func (sc *serverConn) handleStreams() {
 					continue
 				}
 
-				strm = NewStream(fr.Stream(), sc.clientStreamWindow)
+				strm = NewStream(fr.Stream(), int32(sc.clientWindow))
 				strms = append(strms, strm)
 
-				sc.lastID = fr.Stream()
+				if fr.Type() == FrameHeaders || fr.Type() == FramePushPromise {
+					sc.lastID = fr.Stream()
+				}
 
-				sc.createStream(sc.c, strm)
+				sc.createStream(sc.c, fr.Type(), strm)
 
 				if !reqTimerArmed && sc.maxRequestTime > 0 {
 					reqTimerArmed = true
@@ -312,12 +322,12 @@ func (sc *serverConn) handleStreams() {
 			}
 
 			// if we have more than one stream (this one newly created) check if the previous finished sending the headers
-			if fr.Type() == FrameHeaders && len(strms) > 1 && strms[len(strms)-2].State() < StreamStateHalfClosed {
-				for _, strm := range strms {
-					fmt.Println(strm.ID(), strm.State().String())
+			if fr.Type() == FrameHeaders {
+				strm := strms.getPrevious(FrameHeaders)
+				if strm != nil && strm.State() < StreamStateHalfClosed {
+					sc.writeError(strm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
+					continue
 				}
-				sc.writeError(strm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
-				continue
 			}
 
 			if err := sc.handleFrame(strm, fr); err != nil {
@@ -398,7 +408,9 @@ func (sc *serverConn) writeError(strm *Stream, err error) {
 		sc.writeReset(strm.ID(), streamErr.Code())
 	}
 
-	strm.SetState(StreamStateClosed)
+	if strm != nil {
+		strm.SetState(StreamStateClosed)
+	}
 }
 
 func handleState(fr *FrameHeader, strm *Stream) {
@@ -440,13 +452,14 @@ var ctxPool = sync.Pool{
 	},
 }
 
-func (sc *serverConn) createStream(c net.Conn, strm *Stream) {
+func (sc *serverConn) createStream(c net.Conn, frameType FrameType, strm *Stream) {
 	ctx := ctxPool.Get().(*fasthttp.RequestCtx)
 	ctx.Request.Reset()
 	ctx.Response.Reset()
 
 	ctx.Init2(c, sc.logger, false)
 
+	strm.origType = frameType
 	strm.startedAt = time.Now()
 	strm.SetData(ctx)
 }
@@ -489,6 +502,7 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 		if strm.State() != StreamStateIdle && !strm.headersFinished {
 			return NewGoAwayError(ProtocolError, "stream open")
 		}
+
 		if priorityFrame, ok := fr.Body().(*Priority); ok && priorityFrame.Stream() == strm.ID() {
 			return NewGoAwayError(ProtocolError, "stream that depends on itself")
 		}
@@ -496,10 +510,14 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 		if strm.State() == StreamStateIdle {
 			return NewGoAwayError(ProtocolError, "window update on idle stream")
 		}
-		win := int32(fr.Body().(*WindowUpdate).Increment())
 
-		if !atomic.CompareAndSwapInt32(&sc.clientWindow, 0, win) {
-			atomic.AddInt32(&sc.clientWindow, win)
+		win := int64(fr.Body().(*WindowUpdate).Increment())
+		if win == 0 {
+			return NewGoAwayError(ProtocolError, "window increment of 0")
+		}
+
+		if atomic.AddInt64(&strm.window, win) >= 1<<31-1 {
+			return NewResetStreamError(FlowControlError, "window is above limits")
 		}
 	default:
 		return NewGoAwayError(ProtocolError, "invalid frame")
@@ -742,6 +760,9 @@ func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
 
 func (sc *serverConn) writeData(strm *Stream, body []byte) {
 	step := 1 << 14 // max frame size 16384
+	if strm.window > 0 && step > int(strm.window) {
+		step = int(strm.window)
+	}
 
 	for i := 0; i < len(body); i += step {
 		if i+step >= len(body) {
@@ -797,7 +818,8 @@ func (sc *serverConn) writeLoop() {
 func (sc *serverConn) handleSettings(st *Settings) {
 	st.CopyTo(&sc.clientS)
 
-	atomic.StoreInt32(&sc.clientStreamWindow, int32(sc.clientS.MaxWindowSize()))
+	// atomically update the new window
+	atomic.StoreInt64(&sc.clientWindow, int64(sc.clientS.MaxWindowSize()))
 
 	fr := AcquireFrameHeader()
 

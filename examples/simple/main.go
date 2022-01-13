@@ -1,9 +1,9 @@
 package main
 
 import (
-	"time"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/dgrr/http2"
 	"github.com/valyala/fasthttp"
@@ -16,9 +16,9 @@ func main() {
 	}
 
 	s := &fasthttp.Server{
-		ReadTimeout: time.Second*3,
-		Handler: requestHandler,
-		Name:    "http2 test",
+		ReadTimeout: time.Second * 3,
+		Handler:     requestHandler,
+		Name:        "http2 test",
 	}
 	err = s.AppendCertEmbed(cert, priv)
 	if err != nil {
