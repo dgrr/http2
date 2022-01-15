@@ -93,6 +93,9 @@ type Conn struct {
 	current Settings
 	serverS Settings
 
+	state    connState
+	closeRef uint32
+
 	reqQueued sync.Map
 
 	in  chan *Ctx
@@ -229,6 +232,16 @@ func (c *Conn) LastErr() error {
 // Handshake will perform the necessary handshake to establish the connection
 // with the server. If an error is returned you can assume the TCP connection has been closed.
 func (c *Conn) Handshake() error {
+	err := c.doHandshake()
+	if err == nil {
+		go c.writeLoop()
+		go c.readLoop()
+	}
+
+	return err
+}
+
+func (c *Conn) doHandshake() error {
 	var err error
 
 	if err = Handshake(true, c.bw, &c.current, c.maxWindow-65535); err != nil {
@@ -271,9 +284,6 @@ func (c *Conn) Handshake() error {
 		_ = c.c.Close()
 	} else {
 		ReleaseFrameHeader(fr)
-
-		go c.writeLoop()
-		go c.readLoop()
 	}
 
 	return err
@@ -408,12 +418,8 @@ loop:
 				break loop
 			}
 
-			if _, err := fr.WriteTo(c.bw); err == nil {
-				if err = c.bw.Flush(); err != nil {
-					lastErr = WriteError{err}
-					break loop
-				}
-			} else {
+			err := c.writeFrame(fr)
+			if err != nil {
 				lastErr = WriteError{err}
 				break loop
 			}
@@ -431,6 +437,17 @@ loop:
 			break loop
 		}
 	}
+}
+
+func (c *Conn) writeFrame(fr *FrameHeader) error {
+	_, err := fr.WriteTo(c.bw)
+	if err == nil {
+		if err = c.bw.Flush(); err != nil {
+			return err
+		}
+	}
+
+	return err
 }
 
 func (c *Conn) finish(r *Ctx, stream uint32, err error) {
@@ -468,6 +485,12 @@ func (c *Conn) readLoop() {
 				fmt.Fprintf(os.Stderr, "%s. payload=%v\n", err, fr.payload)
 
 				if errors.Is(err, FlowControlError) {
+					break
+				}
+			}
+
+			if c.state == connStateClosed {
+				if fr.Stream() == c.closeRef {
 					break
 				}
 			}
@@ -580,6 +603,7 @@ func writeData(bw *bufio.Writer, fh *FrameHeader, body []byte) (err error) {
 }
 
 func (c *Conn) readNext() (fr *FrameHeader, err error) {
+loop:
 	for err == nil {
 		fr, err = ReadFrameFrom(c.br)
 		if err != nil {
@@ -608,8 +632,17 @@ func (c *Conn) readNext() (fr *FrameHeader, err error) {
 				c.unacks--
 			}
 		case FrameGoAway:
-			err = fr.Body().(*GoAway)
-			_ = c.Close()
+			ga := fr.Body().(*GoAway)
+			if ga.stream == 0 {
+				_ = c.c.Close()
+				err = ga
+			} else {
+				// wait for the streams to complete
+				c.closeRef = ga.stream
+				c.state = connStateClosed
+			}
+
+			break loop
 		}
 
 		ReleaseFrameHeader(fr)

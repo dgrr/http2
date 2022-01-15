@@ -18,6 +18,13 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+type connState int32
+
+const (
+	connStateOpen connState = iota
+	connStateClosed
+)
+
 type serverConn struct {
 	c net.Conn
 	h fasthttp.RequestHandler
@@ -28,6 +35,7 @@ type serverConn struct {
 	enc HPACK
 	dec HPACK
 
+	// last valid ID used as a reference for new IDs
 	lastID uint32
 
 	// client's window
@@ -40,6 +48,12 @@ type serverConn struct {
 
 	writer chan *FrameHeader
 	reader chan *FrameHeader
+
+	state connState
+	// closeRef stores the last stream that was valid before sending a GOAWAY.
+	// Thus, the number stored in closeRef is used to complete all the requests that were sent before
+	// to gracefully close the connection with a GOAWAY.
+	closeRef uint32
 
 	// maxRequestTime is the max time of a request over one single stream
 	maxRequestTime time.Duration
@@ -70,7 +84,15 @@ func (sc *serverConn) Serve() error {
 		}
 	}()
 
-	go sc.writeLoop()
+	go func() {
+		// defer closing the connection in the writeLoop in case the writeLoop panics
+		defer func() {
+			_ = sc.c.Close()
+		}()
+
+		sc.writeLoop()
+	}()
+
 	go func() {
 		sc.handleStreams()
 		// close the writer here to ensure that no pending requests
@@ -233,13 +255,20 @@ func (sc *serverConn) handleStreams() {
 			openStreams--
 		}
 
+		strmID := strm.ID()
+
 		closedStrms[strm.ID()] = struct{}{}
 		strms.Del(strm.ID())
 
 		ctxPool.Put(strm.ctx)
 		streamPool.Put(strm)
+
+		if sc.debug {
+			sc.logger.Printf("Stream destroyed %d\n", strmID)
+		}
 	}
 
+loop:
 	for {
 		select {
 		case <-sc.maxRequestTimer.C:
@@ -258,6 +287,9 @@ func (sc *serverConn) handleStreams() {
 			for deleteUntil > 0 {
 				strm := strms[0]
 
+				if sc.debug {
+					sc.logger.Printf("Stream timed out: %d\n", strm.ID())
+				}
 				sc.writeReset(strm.ID(), StreamCanceled)
 
 				// set the state to closed in case it comes back to life later
@@ -283,12 +315,11 @@ func (sc *serverConn) handleStreams() {
 				return
 			}
 
+			isClosing := atomic.LoadInt32((*int32)(&sc.state)) == int32(connStateClosed)
+
 			var strm *Stream
 			if fr.Stream() <= sc.lastID {
 				strm = strms.Search(fr.Stream())
-				if strm == nil {
-					// TODO: not found??
-				}
 			}
 
 			if strm == nil {
@@ -311,8 +342,20 @@ func (sc *serverConn) handleStreams() {
 					continue
 				}
 
-				if openStreams >= int(sc.st.maxStreams) {
+				// if the client has more open streams than the maximum allowed OR
+				//   the connection is closing, then refuse the stream
+				if openStreams >= int(sc.st.maxStreams) || isClosing {
+					if sc.debug {
+						if isClosing {
+							sc.logger.Printf("Closing the connection. Rejecting stream %d\n", fr.Stream())
+						} else {
+							sc.logger.Printf("Max open streams reached: %d >= %d\n",
+								openStreams, sc.st.maxStreams)
+						}
+					}
+
 					sc.writeReset(fr.Stream(), RefusedStreamError)
+
 					continue
 				}
 
@@ -345,12 +388,8 @@ func (sc *serverConn) handleStreams() {
 
 			// if we have more than one stream (this one newly created) check if the previous finished sending the headers
 			if fr.Type() == FrameHeaders {
-				if strm.origType == FramePushPromise {
-					strm.origType = fr.Type()
-				}
-
 				nstrm := strms.getPrevious(FrameHeaders)
-				if nstrm != nil && nstrm.State() < StreamStateHalfClosed {
+				if nstrm != nil && !nstrm.headersFinished {
 					sc.writeError(nstrm, NewGoAwayError(ProtocolError, "previous stream headers not ended"))
 					continue
 				}
@@ -369,7 +408,11 @@ func (sc *serverConn) handleStreams() {
 						nstrm.SetState(StreamStateClosed)
 						closeStream(strm)
 
-						sc.writeReset(strm.ID(), StreamCanceled)
+						if sc.debug {
+							sc.logger.Printf("Cancelling stream in idle state: %d\n", nstrm.ID())
+						}
+
+						sc.writeReset(nstrm.ID(), StreamCanceled)
 
 						continue
 					}
@@ -393,6 +436,24 @@ func (sc *serverConn) handleStreams() {
 				fallthrough
 			case StreamStateClosed:
 				closeStream(strm)
+			}
+
+			if isClosing {
+				ref := atomic.LoadUint32(&sc.closeRef)
+				// if there's no reference, then just close the connection
+				if ref == 0 {
+					break
+				}
+
+				// if we have a ref, then check that all streams previous to that ref are closed
+				for _, strm := range strms {
+					// if the stream is here, then it's not closed yet
+					if strm.origType == FrameHeaders && strm.ID() <= ref {
+						continue loop
+					}
+				}
+
+				break loop
 			}
 		}
 	}
@@ -429,6 +490,12 @@ func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode, message string) {
 	fr.SetBody(ga)
 
 	sc.writer <- fr
+
+	if strm != 0 {
+		atomic.StoreUint32(&sc.closeRef, sc.lastID)
+	}
+
+	atomic.StoreInt32((*int32)(&sc.state), int32(connStateClosed))
 
 	if sc.debug {
 		sc.logger.Printf(
@@ -611,8 +678,9 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 
 		k, v := hf.KeyBytes(), hf.ValueBytes()
 		if !hf.IsPseudo() &&
-			!(bytes.Equal(k, StringUserAgent) ||
-				bytes.Equal(k, StringContentType)) {
+			!bytes.Equal(k, StringUserAgent) &&
+			!bytes.Equal(k, StringContentType) {
+
 			req.Header.AddBytesKV(k, v)
 			continue
 		}
@@ -627,6 +695,10 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 		case 'p': // path
 			req.Header.SetRequestURIBytes(v)
 		case 's': // scheme
+			if !bytes.Equal(k, StringScheme[1:]) {
+				return NewGoAwayError(ProtocolError, "invalid pseudoheader")
+			}
+
 			strm.scheme = append(strm.scheme[:0], v...)
 		case 'a': // authority
 			req.Header.SetHostBytes(v)
@@ -635,6 +707,8 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 			req.Header.SetUserAgentBytes(v)
 		case 'c': // content-type
 			req.Header.SetContentTypeBytes(v)
+		default:
+			return NewGoAwayError(ProtocolError, fmt.Sprintf("unknown header field %s", k))
 		}
 	}
 
