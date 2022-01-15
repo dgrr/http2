@@ -264,7 +264,7 @@ func (sc *serverConn) handleStreams() {
 		streamPool.Put(strm)
 
 		if sc.debug {
-			sc.logger.Printf("Stream destroyed %d\n", strmID)
+			sc.logger.Printf("Stream destroyed %d. Open streams: %d\n", strmID, openStreams)
 		}
 	}
 
@@ -272,6 +272,8 @@ loop:
 	for {
 		select {
 		case <-sc.maxRequestTimer.C:
+			reqTimerArmed = false
+
 			deleteUntil := 0
 			for _, strm := range strms {
 				// the request is due if the startedAt time + maxRequestTime is in the past
@@ -308,6 +310,10 @@ loop:
 					when := strm.startedAt.Add(sc.maxRequestTime).Sub(time.Now())
 					// if the time is negative or zero it triggers imm
 					sc.maxRequestTimer.Reset(when)
+
+					if sc.debug {
+						sc.logger.Printf("Next request will timeout in %f seconds\n", when.Seconds())
+					}
 				}
 			}
 		case fr, ok := <-sc.reader:
@@ -380,9 +386,17 @@ loop:
 
 				sc.createStream(sc.c, fr.Type(), strm)
 
+				if sc.debug {
+					sc.logger.Printf("Stream %d created. Open streams: %d\n", strm.ID(), openStreams)
+				}
+
 				if !reqTimerArmed && sc.maxRequestTime > 0 {
 					reqTimerArmed = true
 					sc.maxRequestTimer.Reset(sc.maxRequestTime)
+
+					if sc.debug {
+						sc.logger.Printf("Next request will timeout in %f seconds\n", sc.maxRequestTime.Seconds())
+					}
 				}
 			}
 

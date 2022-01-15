@@ -39,7 +39,7 @@ func getConn(s *Server) (*Conn, net.Listener, error) {
 	return nc, ln, nc.doHandshake()
 }
 
-func makeHeaders(id uint32, enc *HPACK, endStream bool, hs map[string]string) *FrameHeader {
+func makeHeaders(id uint32, enc *HPACK, endHeaders, endStream bool, hs map[string]string) *FrameHeader {
 	fr := AcquireFrameHeader()
 
 	fr.SetStream(id)
@@ -56,7 +56,7 @@ func makeHeaders(id uint32, enc *HPACK, endStream bool, hs map[string]string) *F
 
 	h.SetPadding(false)
 	h.SetEndStream(endStream)
-	h.SetEndHeaders(true)
+	h.SetEndHeaders(endHeaders)
 
 	return fr
 }
@@ -89,21 +89,21 @@ func testIssue52(t *testing.T) {
 
 	msg := []byte("Hello world, how are you doing?")
 
-	h1 := makeHeaders(3, c.enc, false, map[string]string{
+	h1 := makeHeaders(3, c.enc, true, false, map[string]string{
 		string(StringAuthority): "localhost",
 		string(StringMethod):    "POST",
 		string(StringPath):      "/hello/world",
 		string(StringScheme):    "https",
 		"Content-Length":        strconv.Itoa(len(msg)),
 	})
-	h2 := makeHeaders(9, c.enc, false, map[string]string{
+	h2 := makeHeaders(9, c.enc, true, false, map[string]string{
 		string(StringAuthority): "localhost",
 		string(StringMethod):    "POST",
 		string(StringPath):      "/hello/world",
 		string(StringScheme):    "https",
 		"Content-Length":        strconv.Itoa(len(msg)),
 	})
-	h3 := makeHeaders(7, c.enc, true, map[string]string{
+	h3 := makeHeaders(7, c.enc, true, true, map[string]string{
 		string(StringAuthority): "localhost",
 		string(StringMethod):    "GET",
 		string(StringPath):      "/hello/world",
@@ -151,5 +151,80 @@ func testIssue52(t *testing.T) {
 
 	if err != io.EOF {
 		t.Fatalf("expected EOF, got %s", err)
+	}
+}
+
+func TestIssue27(t *testing.T) {
+	s := &Server{
+		s: &fasthttp.Server{
+			Handler: func(ctx *fasthttp.RequestCtx) {
+				io.WriteString(ctx, "Hello world")
+			},
+			ReadTimeout: time.Second * 1,
+		},
+		cnf: ServerConfig{
+			Debug: false,
+		},
+	}
+
+	c, ln, err := getConn(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	defer ln.Close()
+
+	msg := []byte("Hello world, how are you doing?")
+
+	h1 := makeHeaders(3, c.enc, true, false, map[string]string{
+		string(StringAuthority): "localhost",
+		string(StringMethod):    "POST",
+		string(StringPath):      "/hello/world",
+		string(StringScheme):    "https",
+		"Content-Length":        strconv.Itoa(len(msg)),
+	})
+	h2 := makeHeaders(5, c.enc, true, false, map[string]string{
+		string(StringAuthority): "localhost",
+		string(StringMethod):    "POST",
+		string(StringPath):      "/hello/world",
+		string(StringScheme):    "https",
+		"Content-Length":        strconv.Itoa(len(msg)),
+	})
+	h3 := makeHeaders(7, c.enc, false, false, map[string]string{
+		string(StringAuthority): "localhost",
+		string(StringMethod):    "GET",
+		string(StringPath):      "/hello/world",
+		string(StringScheme):    "https",
+		"Content-Length":        strconv.Itoa(len(msg)),
+	})
+
+	c.writeFrame(h1)
+	c.writeFrame(h2)
+
+	time.Sleep(time.Second)
+	c.writeFrame(h3)
+
+	id := uint32(3)
+
+	for i := 0; i < 3; i++ {
+		fr, err := c.readNext()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if fr.Stream() != id {
+			t.Fatalf("Expecting update on stream %d, got %d", id, fr.Stream())
+		}
+
+		if fr.Type() != FrameResetStream {
+			t.Fatalf("Expecting Reset, got %s", fr.Type())
+		}
+
+		rst := fr.Body().(*RstStream)
+		if rst.Code() != StreamCanceled {
+			t.Fatalf("Expecting StreamCanceled, got %s", rst.Code())
+		}
+
+		id += 2
 	}
 }
