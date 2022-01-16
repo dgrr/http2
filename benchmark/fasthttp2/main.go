@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/dgrr/http2"
+	"github.com/dgrr/http2/benchmark/common"
 	"github.com/valyala/fasthttp"
 )
 
@@ -14,7 +15,7 @@ func main() {
 	debug := flag.Bool("debug", true, "Debug mode")
 	flag.Parse()
 
-	cert, priv, err := GenerateTestCertificate("localhost:8443")
+	cert, priv, err := common.GenerateTestCertificate("localhost:8443")
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -45,11 +46,5 @@ func requestHandler(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if ctx.FormValue("long") == nil {
-		fmt.Fprintf(ctx, "Hello 21th century!\n")
-	} else {
-		for i := 0; i < 1<<16; i++ {
-			ctx.Response.AppendBodyString("A")
-		}
-	}
+	fmt.Fprintf(ctx, "Hello 21th century!\n")
 }
