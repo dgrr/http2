@@ -2,17 +2,17 @@
 
 http2 is an implementation of HTTP/2 protocol for [fasthttp](https://github.com/valyala/fasthttp).
 
-# Download
+## Download
 
 ```bash
-go get github.com/dgrr/http2@v0.2.12
+go get github.com/dgrr/http2@v0.3.3
 ```
 
-# Help
+## Help
 
 If you need any help to set up, contributing or understanding this repo, you can contact me on [gofiber's Discord](https://gofiber.io/discord).
 
-# How to use the server?
+## How to use the server?
 
 The server can only be used if your server supports TLS.
 Then, you can call [ConfigureServer](https://pkg.go.dev/github.com/dgrr/http2#ConfigureServer).
@@ -37,7 +37,7 @@ func main() {
 }
 ```
 
-# How to use the client?
+## How to use the client?
 
 The HTTP/2 client only works with the HostClient.
 
@@ -72,10 +72,12 @@ func main() {
 
 ## Benchmarks
 
-Command: `h2load --duration=10 -c10 -m1000 -t 4`
+Benchmark code [here](https://github.com/dgrr/http2/tree/master/benchmark).
 
-# fasthttp2
+### fasthttp2
 ```
+$  h2load --duration=10 -c10 -m1000 -t 4 https://localhost:8443
+[...]
 finished in 10.01s, 533808.90 req/s, 33.09MB/s
 requests: 5338089 total, 5348089 started, 5338089 done, 5338089 succeeded, 0 failed, 0 errored, 0 timeout
 status codes: 5338089 2xx, 0 3xx, 0 4xx, 0 5xx
@@ -87,9 +89,10 @@ time to 1st byte:    11.32ms     35.27ms     18.84ms      6.85ms    80.00%
 req/s           :   48976.50    59084.92    53359.02     3657.52    60.00%
 ```
 
-# net/http2
-
+### net/http2
 ```
+$  h2load --duration=10 -c10 -m1000 -t 4 https://localhost:8443
+[...]
 finished in 10.01s, 124812.90 req/s, 5.00MB/s
 requests: 1248129 total, 1258129 started, 1248129 done, 1248129 succeeded, 0 failed, 0 errored, 0 timeout
 status codes: 1248247 2xx, 0 3xx, 0 4xx, 0 5xx
