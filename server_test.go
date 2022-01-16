@@ -109,10 +109,17 @@ func testIssue52(t *testing.T) {
 		string(StringPath):      "/hello/world",
 		string(StringScheme):    "https",
 	})
+	h4 := makeHeaders(11, c.enc, true, true, map[string]string{
+		string(StringAuthority): "localhost",
+		string(StringMethod):    "GET",
+		string(StringPath):      "/hello/world",
+		string(StringScheme):    "https",
+	})
 
 	c.writeFrame(h1)
 	c.writeFrame(h2)
 	c.writeFrame(h3)
+	c.writeFrame(h4)
 
 	for _, h := range []*FrameHeader{h1, h2} {
 		err = writeData(c.bw, h, msg)
@@ -123,10 +130,10 @@ func testIssue52(t *testing.T) {
 		c.bw.Flush()
 	}
 
-	// expect [GOAWAY, HEADERS, DATA, HEADERS, DATA]
+	// expect [GOAWAY, RESET, HEADERS, DATA, HEADERS, DATA]
 	expect := []FrameType{
-		FrameGoAway, FrameHeaders, FrameData,
-		FrameHeaders, FrameData,
+		FrameGoAway, FrameResetStream, FrameHeaders,
+		FrameData, FrameHeaders, FrameData,
 	}
 
 	for len(expect) != 0 {
@@ -139,6 +146,13 @@ func testIssue52(t *testing.T) {
 
 		if fr.Type() != next {
 			t.Fatalf("unexpected frame type: %s <> %s", next, fr.Type())
+		}
+
+		if fr.Type() == FrameResetStream {
+			rst := fr.Body().(*RstStream)
+			if rst.Code() != RefusedStreamError {
+				t.Fatalf("expected RefusedStreamError, got %s", rst.Code())
+			}
 		}
 
 		expect = expect[1:]
