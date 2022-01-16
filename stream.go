@@ -42,6 +42,9 @@ type Stream struct {
 	scheme              []byte
 	previousHeaderBytes []byte
 
+	// keeps track of the number of header blocks received
+	headerBlockNum int
+
 	// original type
 	origType        FrameType
 	startedAt       time.Time
@@ -64,6 +67,8 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.previousHeaderBytes = strm.previousHeaderBytes[:0]
 	strm.ctx = nil
 	strm.scheme = []byte("https")
+	strm.origType = 0
+	strm.headerBlockNum = 0
 
 	return strm
 }

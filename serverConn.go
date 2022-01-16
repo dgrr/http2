@@ -612,7 +612,11 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 		}
 
 		if fr.Flags().Has(FlagEndHeaders) {
-			strm.headersFinished = true
+			// headers are only finished if there's no previousHeaderBytes
+			strm.headersFinished = len(strm.previousHeaderBytes) == 0
+			if !strm.headersFinished {
+				return NewGoAwayError(ProtocolError, "END_HEADERS received on an incomplete stream")
+			}
 
 			// calling req.URI() triggers a URL parsing, so because of that we need to delay the URL parsing.
 			strm.ctx.Request.URI().SetSchemeBytes(strm.scheme)
@@ -676,17 +680,21 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 
 	var err error
 
+	strm.previousHeaderBytes = strm.previousHeaderBytes[:0]
+	fieldsProcessed := 0
+
 	for len(b) > 0 {
 		pb := b
 
-		b, err = sc.dec.Next(hf, b)
+		b, err = sc.dec.nextField(hf, strm.headerBlockNum, fieldsProcessed, b)
 		if err != nil {
 			if errors.Is(err, ErrUnexpectedSize) && len(pb) > 0 {
 				err = nil
-				strm.previousHeaderBytes = append(strm.previousHeaderBytes[:0], pb...)
+				strm.previousHeaderBytes = append(strm.previousHeaderBytes, pb...)
 			} else {
-				err = ErrCompression
+				err = NewGoAwayError(CompressionError, err.Error())
 			}
+
 			break
 		}
 
@@ -724,7 +732,11 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 		default:
 			return NewGoAwayError(ProtocolError, fmt.Sprintf("unknown header field %s", k))
 		}
+
+		fieldsProcessed++
 	}
+
+	strm.headerBlockNum++
 
 	return err
 }
@@ -958,6 +970,7 @@ func (sc *serverConn) writeLoop() {
 
 func (sc *serverConn) handleSettings(st *Settings) {
 	st.CopyTo(&sc.clientS)
+	sc.enc.SetMaxTableSize(sc.clientS.HeaderTableSize())
 
 	// atomically update the new window
 	atomic.StoreInt64(&sc.clientWindow, int64(sc.clientS.MaxWindowSize()))

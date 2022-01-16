@@ -35,6 +35,8 @@ type HPACK struct {
 	dynamic []*HeaderField
 
 	maxTableSize uint32
+	// maxTableSize comming from the settings frame
+	maxTableSizeSettings uint32
 }
 
 func headerFieldsToString(hfs []*HeaderField, indexOffset int) string {
@@ -50,8 +52,9 @@ func headerFieldsToString(hfs []*HeaderField, indexOffset int) string {
 var hpackPool = sync.Pool{
 	New: func() interface{} {
 		return &HPACK{
-			maxTableSize: defaultHeaderTableSize,
-			dynamic:      make([]*HeaderField, 0, 16),
+			maxTableSize:         defaultHeaderTableSize,
+			maxTableSizeSettings: defaultHeaderTableSize,
+			dynamic:              make([]*HeaderField, 0, 16),
 		}
 	},
 }
@@ -82,11 +85,13 @@ func (hp *HPACK) releaseDynamic() {
 func (hp *HPACK) Reset() {
 	hp.releaseDynamic()
 	hp.maxTableSize = defaultHeaderTableSize
+	hp.maxTableSizeSettings = defaultHeaderTableSize
 	hp.DisableCompression = false
 }
 
 // SetMaxTableSize sets the maximum dynamic table size.
 func (hp *HPACK) SetMaxTableSize(size uint32) {
+	hp.maxTableSizeSettings = size
 	hp.maxTableSize = size
 }
 
@@ -206,6 +211,10 @@ var bytePool = sync.Pool{
 // This function returns the next byte slice that should be read.
 // `b` must be a valid payload coming from a Header frame.
 func (hp *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
+	return hp.nextField(hf, 0, 0, b)
+}
+
+func (hp *HPACK) nextField(hf *HeaderField, headerBlockNum, fieldsProcessed int, b []byte) ([]byte, error) {
 	var (
 		n   uint64
 		c   byte
@@ -331,8 +340,20 @@ loop:
 	// https://tools.ietf.org/html/rfc7541#section-6.3
 	case c&32 == 32: // 001- ----
 		b, n = readInt(5, b)
+		// Dynamic table size
+		// update MUST occur at the beginning of the first header block
+		// following the change to the dynamic table size.
+		if headerBlockNum != 0 || fieldsProcessed > 0 {
+			return nil, ErrDynamicUpdate
+		}
+
+		if n > uint64(hp.maxTableSizeSettings) {
+			return nil, ErrDynamicUpdateMaxTableSize
+		}
+
 		hp.maxTableSize = uint32(n)
 		hp.shrink()
+
 		goto loop
 	}
 
@@ -345,7 +366,7 @@ func readInt(n int, b []byte) ([]byte, uint64) {
 	// 1<<7 - 1 = 0111 1111
 	b0 := byte(1<<n - 1)
 	// if b[0] = 0111 1111 then continue reading the int
-	// if not, then we are finished
+	// if not, then we are done
 	// if b0 is 0011 1111, then b0&b[0] != b0 = false
 	if b0&b[0] != b0 {
 		return b[1:], uint64(b[0] & b0)
@@ -358,6 +379,7 @@ func readInt(n int, b []byte) ([]byte, uint64) {
 		if b[i]&128 != 128 {
 			break
 		}
+
 		i++
 	}
 
@@ -410,10 +432,15 @@ func readString(dst, b []byte) ([]byte, []byte, error) {
 		return b, dst, ErrUnexpectedSize
 	}
 
+	var err error
 	if mustDecode {
-		dst = HuffmanDecode(dst, b[:n])
+		dst, err = HuffmanDecode(dst, b[:n])
 	} else {
 		dst = append(dst, b[:n]...)
+	}
+
+	if err != nil {
+		return b, nil, err
 	}
 
 	b = b[n:]
@@ -421,7 +448,11 @@ func readString(dst, b []byte) ([]byte, []byte, error) {
 	return b, dst, nil
 }
 
-var ErrUnexpectedSize = errors.New("unexpected size")
+var (
+	ErrUnexpectedSize            = errors.New("unexpected size")
+	ErrDynamicUpdate             = errors.New("dynamic update received after the first header block")
+	ErrDynamicUpdateMaxTableSize = errors.New("dynamic update is over the max table")
+)
 
 // appendString writes bytes slice to dst and returns it.
 // https://tools.ietf.org/html/rfc7541#section-5.2

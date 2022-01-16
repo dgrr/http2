@@ -1,5 +1,10 @@
 package http2
 
+import (
+	"errors"
+	"fmt"
+)
+
 // HuffmanEncode encodes src into dst using Huffman algorithm.
 //
 // src and dst must not point to the same address.
@@ -32,34 +37,51 @@ func HuffmanEncode(dst, src []byte) []byte {
 // HuffmanDecode decodes src into dst using Huffman codes.
 //
 // src and dst must not point to the same address.
-func HuffmanDecode(dst, src []byte) []byte {
-	var cum uint32
+func HuffmanDecode(dst, src []byte) ([]byte, error) {
+	var accBits uint32
 	var bits uint8
+	var bitsLeft uint8
 
 	root := rootHuffmanNode
 	for _, b := range src {
-		cum = cum<<8 | uint32(b)
+		// accumulate bits until having more than or equal to 8
+		accBits = accBits<<8 | uint32(b)
 		bits += 8
+		bitsLeft += 8
+
 		for bits >= 8 {
-			root = root.sub[byte(cum>>(bits-8))]
+			// take the bits that were added first
+			idx := byte(accBits >> (bits - 8))
+
+			root = root.sub[idx]
 			if root == nil {
-				return dst
+				return nil, fmt.Errorf("invalid huffman index: %x", idx)
 			}
 
+			// if we have more to read, then just continue
 			if root.sub != nil {
 				bits -= 8
 			} else {
 				bits -= root.codeLen
 				dst = append(dst, root.sym)
 				root = rootHuffmanNode
+				bitsLeft = bits
 			}
+
+			// not needed:
+			// accBits &= 1<<bits - 1
 		}
 	}
 
+	// if we have bits left
 	for bits > 0 {
-		root = root.sub[byte(cum<<(8-bits))]
+		// as the last byte can contain some padding, we need to remove the padding
+		// by just shifting 8 - bits
+		idx := byte(accBits << (8 - bits))
+
+		root = root.sub[idx]
 		if root == nil {
-			break
+			return nil, fmt.Errorf("invalid huffman index: %x", idx)
 		}
 
 		if root.sub != nil || root.codeLen > bits {
@@ -69,9 +91,18 @@ func HuffmanDecode(dst, src []byte) []byte {
 		dst = append(dst, root.sym)
 		bits -= root.codeLen
 		root = rootHuffmanNode
+		bitsLeft = bits
 	}
 
-	return dst
+	if bitsLeft > 7 {
+		return nil, errors.New("bits left decoding huffman bytes")
+	}
+
+	if mask := uint32(1<<bits - 1); accBits&mask != mask {
+		return nil, errors.New("bits has a zero prefix")
+	}
+
+	return dst, nil
 }
 
 var rootHuffmanNode = func() *huffmanNode {
@@ -92,7 +123,14 @@ type huffmanNode struct {
 	sym     byte
 }
 
+// This function is going to create a list of tables of 256 elements.
+//
+// If an element in the Huffman table takes more than 8 bits it'll be stored
+// in the `sub` table recursively, that means, if an element is 18 bits long,
+// 3 tables will be needed, the main table, a sub table and a sub-sub table.
 func (node *huffmanNode) add(sym byte, code uint32, length uint8) {
+	// if length is more than 8, then we need to recursively look for the table
+	// where we are going to insert the element.
 	for length > 8 {
 		length -= 8
 		i := uint8(code >> length)
@@ -106,13 +144,15 @@ func (node *huffmanNode) add(sym byte, code uint32, length uint8) {
 	}
 
 	n := 8 - length
+	// use a range to fill 8 bits because later we are going to index based on 8 bit index numbers.
 	start, end := int(uint8(code<<n)), 1<<n
+
 	for i := start; i < start+end; i++ {
 		node.sub[i] = &huffmanNode{sym: sym, codeLen: length}
 	}
 }
 
-// huffmanCodes have been copied from https://github.com/golang/net/blob/master/http2/hpack/tables.go#L203
+// huffmanCodes has been copied from https://github.com/golang/net/blob/master/http2/hpack/tables.go#L203
 var huffmanCodes = [256]uint32{
 	0x1ff8, 0x7fffd8, 0xfffffe2, 0xfffffe3,
 	0xfffffe4, 0xfffffe5, 0xfffffe6, 0xfffffe7,

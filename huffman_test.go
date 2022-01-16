@@ -28,7 +28,7 @@ func compareBytes(b, bb []byte) error {
 func decodeHuffman(t *testing.T, b, bb, toCompare []byte) {
 	t.Helper()
 
-	b = HuffmanDecode(b[:0], bb)
+	b, _ = HuffmanDecode(b[:0], bb)
 	if err := compareBytes(b, toCompare); err != nil {
 		t.Fatal(err)
 	}
