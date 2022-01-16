@@ -72,12 +72,12 @@ func main() {
 
 ## Benchmarks
 
-Command: `h2load --duration=10 -c10 -m1000 -t 4`
-
 Benchmark code [here](https://github.com/dgrr/http2/tree/master/benchmark).
 
 ### fasthttp2
 ```
+$  h2load --duration=10 -c10 -m1000 -t 4 https://localhost:8443
+[...]
 finished in 10.01s, 533808.90 req/s, 33.09MB/s
 requests: 5338089 total, 5348089 started, 5338089 done, 5338089 succeeded, 0 failed, 0 errored, 0 timeout
 status codes: 5338089 2xx, 0 3xx, 0 4xx, 0 5xx
@@ -90,8 +90,9 @@ req/s           :   48976.50    59084.92    53359.02     3657.52    60.00%
 ```
 
 ### net/http2
-
 ```
+$  h2load --duration=10 -c10 -m1000 -t 4 https://localhost:8443
+[...]
 finished in 10.01s, 124812.90 req/s, 5.00MB/s
 requests: 1248129 total, 1258129 started, 1248129 done, 1248129 succeeded, 0 failed, 0 errored, 0 timeout
 status codes: 1248247 2xx, 0 3xx, 0 4xx, 0 5xx
