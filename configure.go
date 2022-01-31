@@ -39,10 +39,9 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 	emptyServerName := c.TLSConfig != nil && c.TLSConfig.ServerName == ""
 
 	d := &Dialer{
-		Addr:         c.Addr,
-		TLSConfig:    c.TLSConfig,
-		PingInterval: opts.PingInterval,
-		NetDial:      c.Dial,
+		Addr:      c.Addr,
+		TLSConfig: c.TLSConfig,
+		NetDial:   c.Dial,
 	}
 
 	cl := createClient(d, opts)

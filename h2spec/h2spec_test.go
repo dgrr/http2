@@ -180,11 +180,11 @@ func TestH2Spec(t *testing.T) {
 		// {desc: "http2/8.1.2/1"},
 		{desc: "http2/8.1/1"},
 		{desc: "http2/8.2/1"},
-		{desc:"hpack/2.3.3"},
-		{desc:"hpack/4.2"},
-		{desc:"hpack/5.2"},
-		{desc:"hpack/6.1"},
-		{desc:"hpack/6.3"},
+		{desc: "hpack/2.3.3"},
+		{desc: "hpack/4.2"},
+		{desc: "hpack/5.2"},
+		{desc: "hpack/6.1"},
+		{desc: "hpack/6.3"},
 	}
 
 	// Disable logs from h2spec

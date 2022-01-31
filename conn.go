@@ -21,10 +21,12 @@ import (
 type ConnOpts struct {
 	// PingInterval defines the interval in which the client will ping the server.
 	//
-	// An interval of 0 will make the library to use DefaultPingInterval. Because ping intervals can't be disabled
+	// An interval of <=0 will make the library to use DefaultPingInterval. Because ping intervals can't be disabled
 	PingInterval time.Duration
+
 	// DisablePingChecking ...
 	DisablePingChecking bool
+
 	// OnDisconnect is a callback that fires when the Conn disconnects.
 	OnDisconnect func(c *Conn)
 }
@@ -338,6 +340,19 @@ func (c *Conn) Write(r *Ctx) {
 	c.in <- r
 }
 
+func (c *Conn) cancel(ctx *Ctx) {
+	h := AcquireFrameHeader()
+	h.SetStream( // TODO: use atomic here??
+		atomic.LoadUint32(&ctx.streamID))
+
+	fr := AcquireFrame(FrameResetStream).(*RstStream)
+	fr.SetCode(StreamCanceled)
+
+	h.SetBody(fr)
+
+	c.out <- h
+}
+
 type WriteError struct {
 	err error
 }
@@ -381,7 +396,8 @@ func (c *Conn) writeLoop() {
 
 		c.reqQueued.Range(func(_, v interface{}) bool {
 			r := v.(*Ctx)
-			r.Err <- lastErr
+			r.resolve(lastErr)
+
 			return true
 		})
 	}()
@@ -403,7 +419,7 @@ loop:
 
 			err := c.writeRequest(ctx)
 			if err != nil {
-				ctx.Err <- err
+				ctx.resolve(err)
 
 				if errors.Is(err, ErrNotAvailableStreams) {
 					continue
@@ -453,11 +469,9 @@ func (c *Conn) writeFrame(fr *FrameHeader) error {
 func (c *Conn) finish(r *Ctx, stream uint32, err error) {
 	atomic.AddInt32(&c.openStreams, -1)
 
-	r.Err <- err
+	r.resolve(err)
 
 	c.reqQueued.Delete(stream)
-
-	close(r.Err)
 }
 
 func (c *Conn) readLoop() {
@@ -553,6 +567,7 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 	h.SetEndHeaders(true)
 
 	// store the ctx before sending the request
+	atomic.StoreUint32(&ctx.streamID, id)
 	c.reqQueued.Store(id, ctx)
 
 	_, err := fr.WriteTo(c.bw)
