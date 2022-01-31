@@ -340,6 +340,21 @@ func (c *Conn) Write(r *Ctx) {
 	c.in <- r
 }
 
+var ErrStreamNotReady = errors.New("stream hasn't been created")
+
+// Cancel will try to cancel the request.
+//
+// Cancel can only return ErrStreamNotReady when the cancel is performed before the stream is created.
+func (c *Conn) Cancel(ctx *Ctx) error {
+	if atomic.LoadUint32(&ctx.streamID) == 0 {
+		return ErrStreamNotReady
+	}
+
+	c.cancel(ctx)
+
+	return nil
+}
+
 func (c *Conn) cancel(ctx *Ctx) {
 	h := AcquireFrameHeader()
 	h.SetStream( // TODO: use atomic here??
