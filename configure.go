@@ -87,6 +87,7 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 //   To disable the option you can set it to zero. No value is taken by default,
 //   which means that by default ALL connections are open until either endpoint
 //   closes the connection.
+// - Logger: It will only be used when debugging is enabled.
 func ConfigureServer(s *fasthttp.Server, cnf ServerConfig) *Server {
 	cnf.defaults()
 

@@ -59,6 +59,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 		lastID:         0,
 		writer:         make(chan *FrameHeader, 128),
 		reader:         make(chan *FrameHeader, 128),
+		done:           make(chan *Stream, 128),
 		maxRequestTime: s.s.ReadTimeout,
 		maxIdleTime:    s.s.IdleTimeout,
 		pingInterval:   s.cnf.PingInterval,

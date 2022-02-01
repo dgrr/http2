@@ -48,6 +48,7 @@ type serverConn struct {
 
 	writer chan *FrameHeader
 	reader chan *FrameHeader
+	done   chan *Stream
 
 	state connState
 	// closeRef stores the last stream that was valid before sending a GOAWAY.
@@ -297,6 +298,24 @@ func (sc *serverConn) handleStreams() {
 		}
 	}
 
+	hasToClose := func(strm *Stream) bool {
+		ref := atomic.LoadUint32(&sc.closeRef)
+		// if there's no reference, then just close the connection
+		if ref == 0 {
+			return true
+		}
+
+		// if we have a ref, then check that all streams previous to that ref are closed
+		for _, strm := range strms {
+			// if the stream is here, then it's not closed yet
+			if strm.origType == FrameHeaders && strm.ID() <= ref {
+				return false
+			}
+		}
+
+		return true
+	}
+
 loop:
 	for {
 		select {
@@ -379,6 +398,15 @@ loop:
 					continue
 				}
 
+				if fr.Type() == FramePriority {
+					// just ignore the priority frame on a non-existing Stream.
+					if priorityFrame, ok := fr.Body().(*Priority); ok && priorityFrame.Stream() == fr.Stream() {
+						sc.writeGoAway(0, ProtocolError, "stream that depends on itself")
+					}
+
+					continue
+				}
+
 				// if the client has more open streams than the maximum allowed OR
 				//   the connection is closing, then refuse the stream
 				if openStreams >= int(sc.st.maxStreams) || isClosing {
@@ -398,6 +426,7 @@ loop:
 
 				if fr.Stream() < sc.lastID {
 					sc.writeGoAway(fr.Stream(), ProtocolError, "stream ID is lower than the latest")
+
 					continue
 				}
 
@@ -479,29 +508,21 @@ loop:
 
 			switch strm.State() {
 			case StreamStateHalfClosed:
-				sc.handleEndRequest(strm)
-				// we fallthrough because once we send the response
-				// the stream is already consumed and thus finished
-				fallthrough
+				sc.dispatchStream(strm)
 			case StreamStateClosed:
 				closeStream(strm)
 			}
 
-			if isClosing {
-				ref := atomic.LoadUint32(&sc.closeRef)
-				// if there's no reference, then just close the connection
-				if ref == 0 {
-					break
-				}
+			if isClosing && hasToClose(strm) {
+				break loop
+			}
+		case strm := <-sc.done:
+			sc.serializeAndSend(strm)
+			closeStream(strm)
 
-				// if we have a ref, then check that all streams previous to that ref are closed
-				for _, strm := range strms {
-					// if the stream is here, then it's not closed yet
-					if strm.origType == FrameHeaders && strm.ID() <= ref {
-						continue loop
-					}
-				}
+			isClosing := atomic.LoadInt32((*int32)(&sc.state)) == int32(connStateClosed)
 
+			if isClosing && hasToClose(strm) {
 				break loop
 			}
 		}
@@ -793,12 +814,19 @@ func (sc *serverConn) verifyState(strm *Stream, fr *FrameHeader) error {
 }
 
 // handleEndRequest dispatches the finished request to the handler.
-func (sc *serverConn) handleEndRequest(strm *Stream) {
+func (sc *serverConn) dispatchStream(strm *Stream) {
 	ctx := strm.ctx
 	ctx.Request.Header.SetProtocolBytes(StringHTTP2)
 
-	sc.h(ctx)
+	go func() {
+		sc.h(ctx)
 
+		sc.done <- strm
+	}()
+}
+
+func (sc *serverConn) serializeAndSend(strm *Stream) {
+	ctx := strm.ctx
 	hasBody := ctx.Response.IsBodyStream() || len(ctx.Response.Body()) > 0
 
 	fr := AcquireFrameHeader()
