@@ -60,6 +60,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 		writer:         make(chan *FrameHeader, 128),
 		reader:         make(chan *FrameHeader, 128),
 		maxRequestTime: s.s.ReadTimeout,
+		maxIdleTime:    s.s.IdleTimeout,
 		pingInterval:   s.cnf.PingInterval,
 		logger:         s.s.Logger,
 		debug:          s.cnf.Debug,

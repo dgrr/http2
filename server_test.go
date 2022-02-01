@@ -242,3 +242,65 @@ func TestIssue27(t *testing.T) {
 		id += 2
 	}
 }
+
+func TestIdleConnection(t *testing.T) {
+	s := &Server{
+		s: &fasthttp.Server{
+			Handler: func(ctx *fasthttp.RequestCtx) {
+				io.WriteString(ctx, "Hello world")
+			},
+			ReadTimeout: time.Second * 5,
+			IdleTimeout: time.Second * 2,
+		},
+		cnf: ServerConfig{
+			Debug: false,
+		},
+	}
+
+	c, ln, err := getConn(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	defer ln.Close()
+
+	h1 := makeHeaders(3, c.enc, true, true, map[string]string{
+		string(StringAuthority): "localhost",
+		string(StringMethod):    "GET",
+		string(StringPath):      "/hello/world",
+		string(StringScheme):    "https",
+	})
+
+	c.writeFrame(h1)
+
+	expect := []FrameType{
+		FrameHeaders, FrameData,
+	}
+
+	for i := 0; i < 2; i++ {
+		fr, err := c.readNext()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if fr.Stream() != 3 {
+			t.Fatalf("Expecting update on stream %d, got %d", 3, fr.Stream())
+		}
+
+		if fr.Type() != expect[i] {
+			t.Fatalf("Expecting %s, got %s", expect[i], fr.Type())
+		}
+	}
+
+	_, err = c.readNext()
+	if err != nil {
+		if _, ok := err.(*GoAway); !ok {
+			t.Fatal(err)
+		}
+	}
+
+	_, err = c.readNext()
+	if err == nil {
+		t.Fatal("Expecting error")
+	}
+}

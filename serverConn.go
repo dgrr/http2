@@ -58,6 +58,11 @@ type serverConn struct {
 	// maxRequestTime is the max time of a request over one single stream
 	maxRequestTime time.Duration
 	pingInterval   time.Duration
+	// maxIdleTime is the max time a client can be connected without sending any REQUEST.
+	// As highlighted, PING/PONG frames are completely excluded.
+	//
+	// Therefore, a client that didn't send a request for more than `maxIdleTime` will see it's connection closed.
+	maxIdleTime time.Duration
 
 	st      Settings
 	clientS Settings
@@ -65,9 +70,20 @@ type serverConn struct {
 	// pingTimer
 	pingTimer       *time.Timer
 	maxRequestTimer *time.Timer
+	maxIdleTimer    *time.Timer
+
+	closer chan struct{}
 
 	debug  bool
 	logger fasthttp.Logger
+}
+
+func (sc *serverConn) closeIdleConn() {
+	sc.writeGoAway(0, NoError, "connection has been idle for a long time")
+	if sc.debug {
+		sc.logger.Printf("Connection is idle. Closing\n")
+	}
+	close(sc.closer)
 }
 
 func (sc *serverConn) Handshake() error {
@@ -75,8 +91,13 @@ func (sc *serverConn) Handshake() error {
 }
 
 func (sc *serverConn) Serve() error {
+	sc.closer = make(chan struct{}, 1)
 	sc.maxRequestTimer = time.NewTimer(0)
 	sc.clientWindow = int64(sc.clientS.MaxWindowSize())
+
+	if sc.maxIdleTime > 0 {
+		sc.maxIdleTimer = time.AfterFunc(sc.maxIdleTime, sc.closeIdleConn)
+	}
 
 	defer func() {
 		if err := recover(); err != nil {
@@ -120,13 +141,21 @@ func (sc *serverConn) Serve() error {
 		err = nil
 	}
 
+	sc.close()
+
+	return err
+}
+
+func (sc *serverConn) close() {
 	if sc.pingTimer != nil {
 		sc.pingTimer.Stop()
 	}
 
-	sc.maxRequestTimer.Stop()
+	if sc.maxIdleTimer != nil {
+		sc.maxIdleTimer.Stop()
+	}
 
-	return err
+	sc.maxRequestTimer.Stop()
 }
 
 func (sc *serverConn) handlePing(ping *Ping) {
@@ -271,6 +300,8 @@ func (sc *serverConn) handleStreams() {
 loop:
 	for {
 		select {
+		case <-sc.closer:
+			break loop
 		case <-sc.maxRequestTimer.C:
 			reqTimerArmed = false
 
@@ -432,6 +463,10 @@ loop:
 					}
 
 					break
+				}
+
+				if sc.maxIdleTimer != nil {
+					sc.maxIdleTimer.Reset(sc.maxIdleTime)
 				}
 			}
 
