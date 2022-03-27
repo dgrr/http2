@@ -818,12 +818,11 @@ func (sc *serverConn) dispatchStream(strm *Stream) {
 	ctx := strm.ctx
 	ctx.Request.Header.SetProtocolBytes(StringHTTP2)
 
-	// do we need to capture it?
-	go func(ctx *fasthttp.RequestCtx, strm *Stream) {
+	go func() {
 		sc.h(ctx)
 
 		sc.done <- strm
-	}(ctx, strm)
+	}()
 }
 
 func (sc *serverConn) serializeAndSend(strm *Stream) {
