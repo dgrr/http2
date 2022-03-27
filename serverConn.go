@@ -116,6 +116,8 @@ func (sc *serverConn) Serve() error {
 
 	go func() {
 		sc.handleStreams()
+		// Fix #55: The pingTimer fired while we were closing the connection.
+		sc.pingTimer.Stop()
 		// close the writer here to ensure that no pending requests
 		// are writing to a closed channel
 		close(sc.writer)
