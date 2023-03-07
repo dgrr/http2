@@ -8,6 +8,6 @@ require (
 	github.com/summerwind/h2spec v2.2.1+incompatible
 	github.com/valyala/fasthttp v1.34.0
 	github.com/valyala/fastrand v1.0.0
-	golang.org/x/crypto v0.0.0-20220214200702-86341886e292
-	golang.org/x/net v0.0.0-20220225172249-27dd8689420f
+	golang.org/x/crypto v0.1.0
+	golang.org/x/net v0.1.0
 )
