@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dgrr/http2"
+	"github.com/domsolutions/http2"
 	"github.com/stretchr/testify/require"
 	"github.com/summerwind/h2spec/config"
 	"github.com/summerwind/h2spec/generic"

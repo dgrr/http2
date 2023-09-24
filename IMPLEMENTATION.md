@@ -14,12 +14,12 @@ Connections are stored in a list because it's the easiest way to keep elements.
 When a connection is created 2 goroutines are spawned. One for reading
 and dispatching events, and another for writing (either frames and requests).
 
-The [read loop](https://github.com/dgrr/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/conn.go#L357)
+The [read loop](https://github.com/domsolutions/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/conn.go#L357)
 will read all the frames and handling only the ones carrying a StreamID.
 Lower layers will handle everything related to Settings, WindowUpdate, Ping
 and/or disconnection.
 
-The [write loop](https://github.com/dgrr/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/conn.go#L290)
+The [write loop](https://github.com/domsolutions/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/conn.go#L290)
 will write the requests and frames. I like to separate both terms because the request
 comes from fasthttp, and the `frames` is a term related to http2.
 
@@ -32,19 +32,19 @@ synchronously.
 ### How sending a request works?
 
 When we send a request we write to a channel to the writeLoop coroutine with
-all the data required, in this case we make use of the [Ctx](https://github.com/dgrr/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/client.go#L26-L33)
+all the data required, in this case we make use of the [Ctx](https://github.com/domsolutions/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/client.go#L26-L33)
 structure.
 
 That being sent, it gets received by the writeLoop coroutine, and then
-it proceeds to [serialize and write](https://github.com/dgrr/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/conn.go#L385)
-into the connection the required frames, and after that [registers](https://github.com/dgrr/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/conn.go#L321)
+it proceeds to [serialize and write](https://github.com/domsolutions/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/conn.go#L385)
+into the connection the required frames, and after that [registers](https://github.com/domsolutions/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/conn.go#L321)
 the StreamID into a shared map. This map is shared among the 'write' and 'read' loops.
 
-In the meantime, the client [waits on a channel](https://github.com/dgrr/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/client.go#L102)
+In the meantime, the client [waits on a channel](https://github.com/domsolutions/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/client.go#L102)
 for any error.
 
 When we receive the response from the server, the readLoop will check if the StreamID
-is on the shared map, and if so, it will [handle the response](https://github.com/dgrr/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/conn.go#L559).
+is on the shared map, and if so, it will [handle the response](https://github.com/domsolutions/http2/blob/8cb32376c36f056fca0ec30854f3522005a777ac/conn.go#L559).
 After the server finished sending the request, the readLoop will end the request
 sending the result to the client. That result might be an error or just a `nil`
 over the channel provided by the client.

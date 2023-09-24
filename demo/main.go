@@ -15,8 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dgrr/http2"
 	"github.com/dgrr/websocket"
+	"github.com/domsolutions/http2"
 	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
 )

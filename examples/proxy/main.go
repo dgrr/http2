@@ -10,7 +10,7 @@ import (
 	"net"
 	"net/http"
 
-	fasthttp2 "github.com/dgrr/http2"
+	fasthttp2 "github.com/domsolutions/http2"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/net/http2"
 )

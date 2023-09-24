@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dgrr/http2"
+	"github.com/domsolutions/http2"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"

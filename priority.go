@@ -1,7 +1,7 @@
 package http2
 
 import (
-	"github.com/dgrr/http2/http2utils"
+	"github.com/domsolutions/http2/http2utils"
 )
 
 const FramePriority FrameType = 0x2

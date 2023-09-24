@@ -5,7 +5,7 @@ http2 is an implementation of HTTP/2 protocol for [fasthttp](https://github.com/
 ## Download
 
 ```bash
-go get github.com/dgrr/http2@v0.3.5
+go get github.com/domsolutions/http2@v0.3.5
 ```
 
 ## Help
@@ -15,14 +15,14 @@ If you need any help to set up, contributing or understanding this repo, you can
 ## How to use the server?
 
 The server can only be used if your server supports TLS.
-Then, you can call [ConfigureServer](https://pkg.go.dev/github.com/dgrr/http2#ConfigureServer).
+Then, you can call [ConfigureServer](https://pkg.go.dev/github.com/domsolutions/http2#ConfigureServer).
 
 ```go
 package main
 
 import (
 	"github.com/valyala/fasthttp"
-	"github.com/dgrr/http2"
+	"github.com/domsolutions/http2"
 )
 
 func main() {
@@ -48,7 +48,7 @@ import (
         "fmt"
         "log"
 
-        "github.com/dgrr/http2"
+        "github.com/domsolutions/http2"
         "github.com/valyala/fasthttp"
 )
 
@@ -72,7 +72,7 @@ func main() {
 
 ## Benchmarks
 
-Benchmark code [here](https://github.com/dgrr/http2/tree/master/benchmark).
+Benchmark code [here](https://github.com/domsolutions/http2/tree/master/benchmark).
 
 ### fasthttp2
 ```

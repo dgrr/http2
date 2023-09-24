@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"github.com/dgrr/http2"
+	"github.com/domsolutions/http2"
 	"github.com/valyala/fasthttp"
 )
 
