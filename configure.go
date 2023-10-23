@@ -67,7 +67,7 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 	c.IsTLS = true
 	c.TLSConfig = d.TLSConfig
 
-	c.Transport = cl.Do
+	c.Transport = cl
 
 	return nil
 }
@@ -79,14 +79,14 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 // Future implementations may support HTTP/2 through plain TCP.
 //
 // This package currently supports the following fasthttp.Server settings:
-// - Handler: Obviously, the handler is taken from the Server.
-// - ReadTimeout: Will cancel a stream if the client takes more than ReadTimeout
-//   to send a request. This option NEVER closes the connection.
-// - IdleTimeout: Will close the connection if the client doesn't send a request
-//   within the IdleTimeout. This option ignores any PING/PONG mechanism.
-//   To disable the option you can set it to zero. No value is taken by default,
-//   which means that by default ALL connections are open until either endpoint
-//   closes the connection.
+//   - Handler: Obviously, the handler is taken from the Server.
+//   - ReadTimeout: Will cancel a stream if the client takes more than ReadTimeout
+//     to send a request. This option NEVER closes the connection.
+//   - IdleTimeout: Will close the connection if the client doesn't send a request
+//     within the IdleTimeout. This option ignores any PING/PONG mechanism.
+//     To disable the option you can set it to zero. No value is taken by default,
+//     which means that by default ALL connections are open until either endpoint
+//     closes the connection.
 func ConfigureServer(s *fasthttp.Server, cnf ServerConfig) *Server {
 	cnf.defaults()
 
