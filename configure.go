@@ -11,17 +11,6 @@ import (
 // ErrServerSupport indicates whether the server supports HTTP/2 or not.
 var ErrServerSupport = errors.New("server doesn't support HTTP/2")
 
-// clientAdapter adapts a Client.Do method to implement fasthttp.RoundTripper
-type clientAdapter struct {
-	client *Client
-}
-
-// RoundTrip implements fasthttp.RoundTripper by calling the wrapped client's Do method
-func (ca *clientAdapter) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Request, resp *fasthttp.Response) (retry bool, err error) {
-	err = ca.client.Do(req, resp)
-	return false, err
-}
-
 func configureDialer(d *Dialer) {
 	if d.TLSConfig == nil {
 		d.TLSConfig = &tls.Config{
@@ -78,7 +67,7 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 	c.IsTLS = true
 	c.TLSConfig = d.TLSConfig
 
-	c.Transport = &clientAdapter{client: cl}
+	c.Transport = cl
 
 	return nil
 }
@@ -90,14 +79,14 @@ func ConfigureClient(c *fasthttp.HostClient, opts ClientOpts) error {
 // Future implementations may support HTTP/2 through plain TCP.
 //
 // This package currently supports the following fasthttp.Server settings:
-// - Handler: Obviously, the handler is taken from the Server.
-// - ReadTimeout: Will cancel a stream if the client takes more than ReadTimeout
-//   to send a request. This option NEVER closes the connection.
-// - IdleTimeout: Will close the connection if the client doesn't send a request
-//   within the IdleTimeout. This option ignores any PING/PONG mechanism.
-//   To disable the option you can set it to zero. No value is taken by default,
-//   which means that by default ALL connections are open until either endpoint
-//   closes the connection.
+//   - Handler: Obviously, the handler is taken from the Server.
+//   - ReadTimeout: Will cancel a stream if the client takes more than ReadTimeout
+//     to send a request. This option NEVER closes the connection.
+//   - IdleTimeout: Will close the connection if the client doesn't send a request
+//     within the IdleTimeout. This option ignores any PING/PONG mechanism.
+//     To disable the option you can set it to zero. No value is taken by default,
+//     which means that by default ALL connections are open until either endpoint
+//     closes the connection.
 func ConfigureServer(s *fasthttp.Server, cnf ServerConfig) *Server {
 	cnf.defaults()
 
