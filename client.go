@@ -57,7 +57,7 @@ type Ctx struct {
 	// is free to release them the instant RoundTrip returns. The connection
 	// reads Request on the write loop and fills Response on the read loop, so
 	// both have to take ownership before touching either, and RoundTrip has to
-	// take it back before it returns. Without this a cancelled request is a use
+	// take it back before it returns. Without this a canceled request is a use
 	// after free: the write loop reads a Request the caller has already put
 	// back in a pool.
 	lck  sync.Mutex
@@ -316,7 +316,7 @@ func (cl *Client) createConn() (*Conn, *list.Element, error) {
 
 var ErrRequestCanceled = errors.New("request timed out")
 
-// pickConn returns a connection with room for another stream, dialling one if
+// pickConn returns a connection with room for another stream, dialing one if
 // none of the connections the client holds has any.
 func (cl *Client) pickConn() (*Conn, error) {
 	cl.lck.Lock()
@@ -329,7 +329,7 @@ func (cl *Client) pickConn() (*Conn, error) {
 	// Walk what we have, dropping the connections that have closed, and dial at
 	// most one replacement. The old form of this loop went back to the start of
 	// the list after every failed candidate, so a server that advertises no
-	// concurrent streams kept the client dialling for ever.
+	// concurrent streams kept the client dialing for ever.
 	var next *list.Element
 
 	for e := cl.conns.Front(); e != nil; e = next {

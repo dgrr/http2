@@ -138,7 +138,7 @@ func TestRetryableClassification(t *testing.T) {
 }
 
 // TestClientDoesNotDialForever checks a server that will never accept a stream
-// is reported as an error rather than dialled at until something gives.
+// is reported as an error rather than dialed at until something gives.
 func TestClientDoesNotDialForever(t *testing.T) {
 	addr := newRawServerSettings(t, func(st *Settings) {
 		st.SetMaxConcurrentStreams(0)
@@ -175,7 +175,7 @@ func TestClientDoesNotDialForever(t *testing.T) {
 }
 
 // TestTimedOutRequestsDoNotPoisonTheConnection covers what happens after a
-// request gives up waiting. Cancelling used to leave the stream in the
+// request gives up waiting. Canceling used to leave the stream in the
 // connection's table with openStreams still counting it, so a connection that
 // saw enough timeouts stopped accepting requests for good while looking
 // perfectly healthy.

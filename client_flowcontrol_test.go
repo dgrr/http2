@@ -90,7 +90,7 @@ func TestClientStopsAtConnectionWindow(t *testing.T) {
 }
 
 // TestClientStopsAtStreamWindow checks SETTINGS_INITIAL_WINDOW_SIZE is applied
-// per stream, not ignored in favour of the connection window.
+// per stream, not ignored in favor of the connection window.
 func TestClientStopsAtStreamWindow(t *testing.T) {
 	const streamWindow = 4096
 

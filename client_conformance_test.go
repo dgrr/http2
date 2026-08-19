@@ -210,7 +210,7 @@ func (p *peer) writeRST(id uint32, code ErrorCode) {
 	p.writeRaw(byte(FrameResetStream), 0, id, payload[:])
 }
 
-func (p *peer) writeWindowUpdate(id uint32, inc uint32) {
+func (p *peer) writeWindowUpdate(id, inc uint32) {
 	var payload [4]byte
 
 	binary.BigEndian.PutUint32(payload[:], inc)

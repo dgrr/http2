@@ -806,7 +806,7 @@ func (c *Conn) dispatch(fr *FrameHeader) bool {
 		return false
 	}
 
-	// A cancelled or finished request has taken its Response back, so there is
+	// A canceled or finished request has taken its Response back, so there is
 	// nowhere to put this frame. Drop the stream and carry on.
 	if !r.acquireFor(c, fr.Stream()) {
 		c.dequeueReq(fr.Stream())
@@ -839,7 +839,7 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 		return ErrNotAvailableStreams
 	}
 
-	// The request may have been cancelled while it sat in the queue, in which
+	// The request may have been canceled while it sat in the queue, in which
 	// case its Request no longer belongs to us. Ownership is handed back
 	// explicitly rather than deferred: sending the body takes it again, and the
 	// lock is not reentrant.
@@ -1088,7 +1088,7 @@ func (c *Conn) sendPending(id uint32) error {
 	}
 
 	// body points into the caller's Request, which stops being ours the moment
-	// the request is cancelled.
+	// the request is canceled.
 	if !pb.ctx.acquireFor(c, id) {
 		c.deletePending(id)
 		return nil

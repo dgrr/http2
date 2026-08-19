@@ -175,29 +175,6 @@ func (a *attacker) writeSettings() error {
 	return a.write(fr)
 }
 
-// readUntilGoAway drains frames until the server sends GOAWAY or the
-// connection dies. It returns the GOAWAY code, or an error if the connection
-// ended without one.
-func (a *attacker) readUntilGoAway(timeout time.Duration) (ErrorCode, error) {
-	_ = a.c.SetReadDeadline(time.Now().Add(timeout))
-
-	for {
-		fr, err := ReadFrameFrom(a.br)
-		if err != nil {
-			return 0, err
-		}
-
-		if ga, ok := fr.Body().(*GoAway); ok {
-			code := ga.Code()
-			ReleaseFrameHeader(fr)
-
-			return code, nil
-		}
-
-		ReleaseFrameHeader(fr)
-	}
-}
-
 func isClosedConn(err error) bool {
 	return err != nil && (errors.Is(err, net.ErrClosed) ||
 		errors.Is(err, io.EOF) ||
@@ -330,7 +307,7 @@ func (d *drainer) wait(timeout time.Duration) bool {
 // can become a request, over and over. The classic amplification is bypassing
 // MAX_CONCURRENT_STREAMS to get unbounded work in flight at once. This server
 // calls the handler inline from the single handleStreams goroutine, so requests
-// are serialised per connection whatever the client does. What the test checks
+// are serialized per connection whatever the client does. What the test checks
 // is that the churn does not accumulate state.
 func TestRapidReset(t *testing.T) {
 	const attempts = 20000
@@ -369,7 +346,7 @@ func TestRapidReset(t *testing.T) {
 		d.wait(2 * time.Second)
 	})
 
-	t.Logf("cancelled %d/%d streams, handler ran %d times, heap grew %.1f MiB, goaway=%v code=%s",
+	t.Logf("canceled %d/%d streams, handler ran %d times, heap grew %.1f MiB, goaway=%v code=%s",
 		sent, attempts, handled.Load(), float64(grew)/(1<<20),
 		d.gotGoAway.Load(), ErrorCode(d.goaway.Load()))
 
@@ -378,7 +355,7 @@ func TestRapidReset(t *testing.T) {
 	}
 
 	if grew > 8<<20 {
-		t.Errorf("heap grew %d bytes over %d cancelled streams, want the churn to leave nothing behind", grew, sent)
+		t.Errorf("heap grew %d bytes over %d canceled streams, want the churn to leave nothing behind", grew, sent)
 	}
 }
 
