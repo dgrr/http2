@@ -154,7 +154,10 @@ func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *
 
 	if cl.opts.MaxResponseTime > 0 {
 		cancelTimer = time.AfterFunc(cl.opts.MaxResponseTime, func() {
-			ch <- ErrRequestCanceled
+			// resolve rather than a bare send: the stream may have been
+			// answered already, in which case the buffer is full and a send
+			// would block this timer goroutine forever.
+			ctx.resolve(ErrRequestCanceled)
 			c.cancel(ctx)
 		})
 	}
@@ -167,7 +170,9 @@ func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *
 		cancelTimer.Stop()
 	}
 
-	close(ch)
+	// ch is deliberately left open. The connection can still resolve this Ctx
+	// after we return (a late frame on the stream, or the cancel timer racing
+	// Stop), and resolving a closed channel panics.
 
 	return false, err
 }

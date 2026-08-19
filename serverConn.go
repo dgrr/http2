@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"os"
 	"runtime/debug"
@@ -17,6 +18,10 @@ import (
 
 	"github.com/valyala/fasthttp"
 )
+
+// timerDisarmed is far enough in the future that a timer created with it will
+// not fire before it gets Reset to a real interval.
+const timerDisarmed = time.Duration(math.MaxInt64)
 
 // errConnClosed signals that the read loop terminated the connection on
 // purpose, typically after sending a connection-level GOAWAY. It is handled
@@ -109,8 +114,13 @@ func (sc *serverConn) Serve() error {
 	// Create the ping timer here, before spawning the read/write goroutines, so
 	// the field is written once and read (Stop) from other goroutines without a
 	// data race. The writer channel is buffered, so an early tick does not block.
+	//
+	// sendPingAndSchedule rearms sc.pingTimer, so the callback must not be able
+	// to run before the assignment lands: create the timer disarmed and arm it
+	// afterwards.
 	if sc.pingInterval > 0 {
-		sc.pingTimer = time.AfterFunc(sc.pingInterval, sc.sendPingAndSchedule)
+		sc.pingTimer = time.AfterFunc(timerDisarmed, sc.sendPingAndSchedule)
+		sc.pingTimer.Reset(sc.pingInterval)
 	}
 
 	defer func() {
@@ -131,7 +141,10 @@ func (sc *serverConn) Serve() error {
 	go func() {
 		sc.handleStreams()
 		// Fix #55: The pingTimer fired while we were closing the connection.
-		sc.pingTimer.Stop()
+		// It is nil when pings are disabled with a negative PingInterval.
+		if sc.pingTimer != nil {
+			sc.pingTimer.Stop()
+		}
 		// close the writer here to ensure that no pending requests
 		// are writing to a closed channel
 		close(sc.writer)
@@ -177,9 +190,16 @@ func (sc *serverConn) close() {
 }
 
 func (sc *serverConn) handlePing(ping *Ping) {
+	// ping belongs to the frame header the read loop releases as soon as this
+	// returns, so echo the payload on a frame of our own. Forwarding the
+	// borrowed one puts the same Ping in the pool twice, and two connections
+	// then get handed the same object.
+	ack := AcquireFrame(FramePing).(*Ping)
+	ack.SetAck(true)
+	ack.SetData(ping.Data())
+
 	fr := AcquireFrameHeader()
-	ping.SetAck(true)
-	fr.SetBody(ping)
+	fr.SetBody(ack)
 
 	sc.writer <- fr
 }
@@ -1295,7 +1315,12 @@ func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
 	res.Header.Del("Transfer-Encoding")
 
 	for k, v := range res.Header.All() {
-		hf.SetBytes(ToLower(k), v)
+		// Lowercase hf's own copy of the name. k can point straight at
+		// fasthttp's package level header name constants, which every
+		// connection in the process shares.
+		hf.SetBytes(k, v)
+		ToLower(hf.key)
+
 		dst.AppendHeaderField(hp, hf, false)
 	}
 }

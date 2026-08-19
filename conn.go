@@ -104,7 +104,9 @@ type Conn struct {
 
 	pingInterval time.Duration
 
-	unacks      int
+	// unacks counts pings sent without a matching ack. The write loop bumps it
+	// and the read loop clears it, so it has to be touched atomically.
+	unacks      int32
 	disableAcks bool
 
 	lastErr      error
@@ -462,7 +464,7 @@ loop:
 			}
 		}
 
-		if !c.disableAcks && c.unacks >= 3 {
+		if !c.disableAcks && atomic.LoadInt32(&c.unacks) >= 3 {
 			lastErr = ErrTimeout
 			break loop
 		}
@@ -570,7 +572,11 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 			continue
 		}
 
-		hf.SetBytes(ToLower(k), v)
+		// Lowercase hf's own copy of the name: k may point at fasthttp's
+		// shared header name constants.
+		hf.SetBytes(k, v)
+		ToLower(hf.key)
+
 		enc.AppendHeaderField(h, hf, false)
 	}
 
@@ -656,7 +662,7 @@ loop:
 			if !ping.IsAck() {
 				c.handlePing(ping)
 			} else {
-				c.unacks--
+				atomic.AddInt32(&c.unacks, -1)
 			}
 		case FrameGoAway:
 			ga := fr.Body().(*GoAway)
@@ -693,7 +699,7 @@ func (c *Conn) writePing() error {
 	if err == nil {
 		err = c.bw.Flush()
 		if err == nil {
-			c.unacks++
+			atomic.AddInt32(&c.unacks, 1)
 		}
 	}
 
@@ -718,12 +724,15 @@ func (c *Conn) handleSettings(st *Settings) {
 }
 
 func (c *Conn) handlePing(ping *Ping) {
-	// reply back
+	// Reply back on a frame of our own: ping belongs to the frame header that
+	// readNext releases right after this call, and reusing it would release the
+	// same Ping into the pool twice.
+	ack := AcquireFrame(FramePing).(*Ping)
+	ack.SetAck(true)
+	ack.SetData(ping.Data())
+
 	fr := AcquireFrameHeader()
-
-	ping.SetAck(true)
-
-	fr.SetBody(ping)
+	fr.SetBody(ack)
 
 	c.out <- fr
 }
