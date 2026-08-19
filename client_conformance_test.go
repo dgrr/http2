@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -30,6 +31,12 @@ type peer struct {
 // newRawServer starts a TLS listener that hands each accepted connection to
 // handle after the HTTP/2 preface and the SETTINGS exchange.
 func newRawServer(t *testing.T, handle func(p *peer)) string {
+	return newRawServerSettings(t, nil, handle)
+}
+
+// newRawServerSettings is newRawServer with a say in the SETTINGS the peer
+// opens with, which is how a test pins the client's send windows.
+func newRawServerSettings(t *testing.T, tune func(*Settings), handle func(p *peer)) string {
 	t.Helper()
 
 	certPEM, keyPEM := testKeyPair(t)
@@ -78,7 +85,7 @@ func newRawServer(t *testing.T, handle func(p *peer)) string {
 					return
 				}
 
-				p.writeSettings()
+				p.writeSettings(tune)
 
 				handle(p)
 			}()
@@ -88,11 +95,15 @@ func newRawServer(t *testing.T, handle func(p *peer)) string {
 	return ln.Addr().String()
 }
 
-func (p *peer) writeSettings() {
+func (p *peer) writeSettings(tune func(*Settings)) {
 	fr := AcquireFrameHeader()
 
 	st := AcquireFrame(FrameSettings).(*Settings)
 	st.Reset()
+
+	if tune != nil {
+		tune(st)
+	}
 
 	fr.SetBody(st)
 
@@ -199,6 +210,14 @@ func (p *peer) writeRST(id uint32, code ErrorCode) {
 	p.writeRaw(byte(FrameResetStream), 0, id, payload[:])
 }
 
+func (p *peer) writeWindowUpdate(id uint32, inc uint32) {
+	var payload [4]byte
+
+	binary.BigEndian.PutUint32(payload[:], inc)
+
+	p.writeRaw(byte(FrameWindowUpdate), 0, id, payload[:])
+}
+
 func (p *peer) writeGoAway(lastID uint32, code ErrorCode) {
 	var payload [8]byte
 
@@ -281,15 +300,36 @@ func TestClientAgainstGoAway(t *testing.T) {
 }
 
 func TestClientAgainstRstStream(t *testing.T) {
+	// The connection stays up after the reset. Closing it would end the request
+	// too, so the test would pass without the client ever reading the frame.
+	release := make(chan struct{})
+
 	addr := newRawServer(t, func(p *peer) {
 		id := p.waitForRequest()
 		p.writeRST(id, StreamCanceled)
+
+		<-release
 	})
+
+	t.Cleanup(func() { close(release) })
 
 	hc := clientFor(t, addr)
 
-	if _, err := doWithin(t, hc, addr, 10*time.Second); err == nil {
-		t.Error("request reported success after the server reset the stream")
+	start := time.Now()
+
+	_, err := doWithin(t, hc, addr, 10*time.Second)
+	if err == nil {
+		t.Fatal("request reported success after the server reset the stream")
+	}
+
+	// clientFor allows 3s before it cancels the stream itself. Reacting to the
+	// frame is immediate; falling back to the timeout is the bug.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("RST_STREAM took %s to surface, so it timed out instead", elapsed)
+	}
+
+	if !errors.Is(err, StreamCanceled) {
+		t.Errorf("err = %v, want the code the server sent", err)
 	}
 }
 
@@ -426,4 +466,107 @@ func TestClientAgainstFrameOnIdleStream(t *testing.T) {
 	hc := clientFor(t, addr)
 
 	_, _ = doWithin(t, hc, addr, 10*time.Second)
+}
+
+// writeHeaderBlock sends a HEADERS frame carrying exactly the fields given, so
+// a test can put a response together that the encoder side would never build.
+func (p *peer) writeHeaderBlock(id uint32, endStream bool, fields []hdr) {
+	fr := AcquireFrameHeader()
+	fr.SetStream(id)
+
+	h := AcquireFrame(FrameHeaders).(*Headers)
+	fr.SetBody(h)
+
+	hf := AcquireHeaderField()
+	defer ReleaseHeaderField(hf)
+
+	for _, f := range fields {
+		hf.Set(f.key, f.value)
+		h.AppendHeaderField(p.enc, hf, false)
+	}
+
+	h.SetPadding(false)
+	h.SetEndHeaders(true)
+	h.SetEndStream(endStream)
+
+	_, _ = fr.WriteTo(p.bw)
+
+	ReleaseFrameHeader(fr)
+
+	_ = p.bw.Flush()
+}
+
+// TestClientRejectsMalformedResponseHeaders covers RFC 7540 8.1.2.x from the
+// client's side. Each of these used to be either accepted silently or, for the
+// one byte pseudo-header name, a panic on the read loop.
+func TestClientRejectsMalformedResponseHeaders(t *testing.T) {
+	cases := []struct {
+		name   string
+		fields []hdr
+	}{
+		{
+			// The name is shorter than the offset the status check indexed.
+			name:   "one byte pseudo-header name",
+			fields: []hdr{{":", "200"}},
+		},
+		{
+			name:   "request pseudo-header in a response",
+			fields: []hdr{{":status", "200"}, {":method", "GET"}},
+		},
+		{
+			name:   "pseudo-header after a regular field",
+			fields: []hdr{{"x-thing", "1"}, {":status", "200"}},
+		},
+		{
+			name:   "status that is not a number",
+			fields: []hdr{{":status", "abc"}},
+		},
+		{
+			name:   "status outside the three digit range",
+			fields: []hdr{{":status", "7"}},
+		},
+		{
+			name:   "uppercase field name",
+			fields: []hdr{{":status", "200"}, {"X-Thing", "1"}},
+		},
+		{
+			name:   "connection-specific field",
+			fields: []hdr{{":status", "200"}, {"connection", "keep-alive"}},
+		},
+		{
+			name:   "content-length that is not a number",
+			fields: []hdr{{":status", "200"}, {"content-length", "many"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			release := make(chan struct{})
+
+			addr := newRawServer(t, func(p *peer) {
+				id := p.waitForRequest()
+				if id == 0 {
+					return
+				}
+
+				p.writeHeaderBlock(id, true, tc.fields)
+
+				<-release
+			})
+
+			t.Cleanup(func() { close(release) })
+
+			hc := clientFor(t, addr)
+
+			start := time.Now()
+
+			if _, err := doWithin(t, hc, addr, 10*time.Second); err == nil {
+				t.Error("request reported success on a malformed response")
+			}
+
+			if elapsed := time.Since(start); elapsed > time.Second {
+				t.Errorf("took %s to fail, so it timed out rather than rejecting the headers", elapsed)
+			}
+		})
+	}
 }

@@ -950,7 +950,10 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 	}
 
 	b := append(strm.previousHeaderBytes, fr.Body().(FrameWithHeaders).Headers()...)
+
 	hf := AcquireHeaderField()
+	defer ReleaseHeaderField(hf)
+
 	req := &strm.ctx.Request
 
 	var err error

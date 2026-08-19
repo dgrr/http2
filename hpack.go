@@ -37,6 +37,13 @@ type HPACK struct {
 	maxTableSize uint32
 	// maxTableSize coming from the settings frame
 	maxTableSizeSettings uint32
+
+	// pendingSizeUpdate is set when the maximum table size changed and the peer
+	// has not been told yet. Shrinking the table without saying so leaves the
+	// peer's decoder with entries we no longer have, which shows up later as a
+	// COMPRESSION_ERROR on a header that indexed one of them.
+	// https://tools.ietf.org/html/rfc7541#section-6.3
+	pendingSizeUpdate bool
 }
 
 func headerFieldsToString(hfs []*HeaderField, indexOffset int) string {
@@ -86,13 +93,24 @@ func (hp *HPACK) Reset() {
 	hp.releaseDynamic()
 	hp.maxTableSize = defaultHeaderTableSize
 	hp.maxTableSizeSettings = defaultHeaderTableSize
+	hp.pendingSizeUpdate = false
 	hp.DisableCompression = false
 }
 
 // SetMaxTableSize sets the maximum dynamic table size.
+//
+// On an encoder the change is announced to the peer at the start of the next
+// header block, as the RFC requires.
 func (hp *HPACK) SetMaxTableSize(size uint32) {
+	if hp.maxTableSize == size && hp.maxTableSizeSettings == size {
+		return
+	}
+
 	hp.maxTableSizeSettings = size
 	hp.maxTableSize = size
+	hp.pendingSizeUpdate = true
+
+	hp.shrink()
 }
 
 // DynamicSize returns the size of the dynamic table.
@@ -538,6 +556,14 @@ func (hp *HPACK) AppendHeader(dst []byte, hf *HeaderField, store bool) []byte {
 		index     uint64
 		fullMatch bool
 	)
+
+	// A dynamic table size update has to be the first thing in the block that
+	// follows the change.
+	if hp.pendingSizeUpdate {
+		hp.pendingSizeUpdate = false
+
+		dst = appendInt(append(dst, 0x20), 5, uint64(hp.maxTableSize))
+	}
 
 	c = !hp.DisableCompression
 	bits = 6

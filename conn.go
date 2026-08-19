@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,6 +70,14 @@ func Handshake(preface bool, bw *bufio.Writer, st *Settings, maxWin int32) error
 	return err
 }
 
+// pendingBody is the tail of a request body that flow control has not let out
+// yet. The write loop owns it; the read loop only grows its window.
+type pendingBody struct {
+	ctx    *Ctx
+	body   []byte
+	window int32
+}
+
 // Conn represents a raw HTTP/2 connection over TLS + TCP.
 type Conn struct {
 	c net.Conn
@@ -83,19 +90,45 @@ type Conn struct {
 
 	nextID uint32
 
-	serverWindow       int32
-	serverStreamWindow int32
-
 	maxWindow     int32
 	currentWindow int32
 
 	openStreams int32
 
+	// Flow control for the data we send. The read loop grows the windows as
+	// WINDOW_UPDATE arrives, the write loop spends them.
+	// https://httpwg.org/specs/rfc7540.html#rfc.section.6.9
+	sendLck      sync.Mutex
+	connWindow   int32
+	streamWindow int32
+	pending      map[uint32]*pendingBody
+
+	// winCh wakes the write loop when a send window has opened.
+	winCh chan struct{}
+
+	// The server's settings are read on the write loop and on whatever
+	// goroutine calls CanOpenStream, but a SETTINGS frame can arrive at any
+	// point, so the values the other goroutines need are kept as atomics
+	// rather than read straight out of serverS.
+	maxStreams   uint32
+	maxFrameSize uint32
+
+	// encTableSize is the header table size the server last asked for. The
+	// read loop records it and the write loop, which owns the encoder, applies
+	// it. encTableSizeSeen belongs to the write loop alone.
+	encTableSize     uint32
+	encTableSizeSeen uint32
+
 	current Settings
+
+	// serverS belongs to the read loop once the handshake is over.
 	serverS Settings
 
 	state    connState
 	closeRef uint32
+
+	// goAway is set once the server has told us not to open more streams.
+	goAway uint32
 
 	reqQueued sync.Map
 
@@ -114,10 +147,49 @@ type Conn struct {
 	unacks      int32
 	disableAcks bool
 
-	lastErr      error
+	// lastErrLck guards lastErr. Both loops write it and LastErr reads it from
+	// whatever goroutine the caller happens to be on.
+	lastErrLck sync.Mutex
+	lastErr    error
+
 	onDisconnect func(*Conn)
 
+	// done is closed by Close. Every send into in and out selects on it: once
+	// the write loop is gone a bare send blocks forever, and closing in instead
+	// would panic any Write that is running concurrently.
+	done chan struct{}
+
 	closed uint64
+}
+
+// setLastErr records the error that ended the connection, keeping the first one
+// seen: it is the one that explains the rest.
+func (c *Conn) setLastErr(err error) {
+	if err == nil {
+		return
+	}
+
+	c.lastErrLck.Lock()
+
+	if c.lastErr == nil {
+		c.lastErr = err
+	}
+
+	c.lastErrLck.Unlock()
+}
+
+// ErrConnectionClosed is returned for requests handed to a connection that has
+// already been closed.
+var ErrConnectionClosed = errors.New("connection is closed")
+
+// closeErr returns the reason the connection ended, for resolving requests that
+// never made it onto the wire.
+func (c *Conn) closeErr() error {
+	if err := c.LastErr(); err != nil {
+		return err
+	}
+
+	return ErrConnectionClosed
 }
 
 // NewConn returns a new HTTP/2 connection.
@@ -132,8 +204,15 @@ func NewConn(c net.Conn, opts ConnOpts) *Conn {
 		nextID:        1,
 		maxWindow:     1 << 20,
 		currentWindow: 1 << 20,
+		connWindow:    int32(defaultWindowSize),
+		streamWindow:  int32(defaultWindowSize),
+		maxStreams:    defaultConcurrentStreams,
+		maxFrameSize:  defaultDataFrameSize,
+		pending:       make(map[uint32]*pendingBody),
+		winCh:         make(chan struct{}, 1),
 		in:            make(chan *Ctx, 128),
 		out:           make(chan *FrameHeader, 128),
+		done:          make(chan struct{}),
 		pingInterval:  opts.PingInterval,
 		disableAcks:   opts.DisablePingChecking,
 		onDisconnect:  opts.OnDisconnect,
@@ -234,6 +313,9 @@ func (c *Conn) SetOnDisconnect(cb func(*Conn)) {
 
 // LastErr returns the last registered error in case the connection was closed by the server.
 func (c *Conn) LastErr() error {
+	c.lastErrLck.Lock()
+	defer c.lastErrLck.Unlock()
+
 	return c.lastErr
 }
 
@@ -267,9 +349,15 @@ func (c *Conn) doHandshake() error {
 		if !st.IsAck() {
 			st.CopyTo(&c.serverS)
 
-			c.serverStreamWindow += int32(c.serverS.MaxWindowSize())
+			// Nothing else is running yet, so these can be set directly.
+			c.streamWindow = int32(c.serverS.MaxWindowSize())
+			c.maxStreams = c.serverS.MaxConcurrentStreams()
+			c.maxFrameSize = c.serverS.MaxFrameSize()
+
 			if st.HeaderTableSize() <= defaultHeaderTableSize {
 				c.enc.SetMaxTableSize(st.HeaderTableSize())
+				c.encTableSize = st.HeaderTableSize()
+				c.encTableSizeSeen = st.HeaderTableSize()
 			}
 
 			// reply back
@@ -297,9 +385,26 @@ func (c *Conn) doHandshake() error {
 	return err
 }
 
+// maxStreamID is the largest stream identifier the protocol allows. A client
+// that runs out has to open a new connection.
+// https://httpwg.org/specs/rfc7540.html#rfc.section.5.1.1
+const maxStreamID = uint32(1)<<31 - 1
+
 // CanOpenStream returns whether the client will be able to open a new stream or not.
+//
+// It reports false once the server has told us to stop (GOAWAY) and once the
+// stream identifiers on this connection have run out, so the caller moves on to
+// a fresh connection instead of writing frames the server will reject.
 func (c *Conn) CanOpenStream() bool {
-	return atomic.LoadInt32(&c.openStreams) < int32(c.serverS.maxStreams)
+	if atomic.LoadUint32(&c.goAway) != 0 {
+		return false
+	}
+
+	if atomic.LoadUint32(&c.nextID) > maxStreamID {
+		return false
+	}
+
+	return atomic.LoadInt32(&c.openStreams) < int32(atomic.LoadUint32(&c.maxStreams))
 }
 
 // Closed indicates whether the connection is closed or not.
@@ -314,7 +419,9 @@ func (c *Conn) Close() error {
 		return io.EOF
 	}
 
-	close(c.in)
+	// in is deliberately not closed: Write can be running on any goroutine, and
+	// a send on a closed channel panics. Closing done tells it to stop instead.
+	close(c.done)
 
 	fr := AcquireFrameHeader()
 	defer ReleaseFrameHeader(fr)
@@ -345,12 +452,43 @@ func (c *Conn) Close() error {
 
 // Write queues the request to be sent to the server.
 //
-// Check if `c` has been previously closed before accessing this function.
+// If the connection is closed before the request reaches the write loop, the
+// Ctx is resolved with the reason instead of being left to time out.
 func (c *Conn) Write(r *Ctx) {
-	c.in <- r
+	select {
+	case c.in <- r:
+	case <-c.done:
+		r.resolve(c.closeErr())
+
+		return
+	}
+
+	// The write loop may have gone away between the send and now, in which case
+	// it has already drained the queue and nobody will ever pick this Ctx up.
+	// Resolving twice is harmless: Err is buffered and read once.
+	select {
+	case <-c.done:
+		r.resolve(c.closeErr())
+	default:
+	}
+}
+
+// writeOut queues a connection-level frame. It drops the frame rather than
+// blocking forever when the write loop has already exited.
+func (c *Conn) writeOut(fr *FrameHeader) {
+	select {
+	case c.out <- fr:
+	case <-c.done:
+		ReleaseFrameHeader(fr)
+	}
 }
 
 var ErrStreamNotReady = errors.New("stream hasn't been created")
+
+// ErrNoMoreStreamIDs is returned once a connection has used up the stream
+// identifier space. The connection stays usable for the streams already on it,
+// but no new request can be started: the caller needs a new connection.
+var ErrNoMoreStreamIDs = errors.New("no more stream ids available on this connection")
 
 // Cancel will try to cancel the request.
 //
@@ -366,16 +504,21 @@ func (c *Conn) Cancel(ctx *Ctx) error {
 }
 
 func (c *Conn) cancel(ctx *Ctx) {
+	id := atomic.LoadUint32(&ctx.streamID)
+
+	// Whatever is left of the body is not going out on a stream we are
+	// resetting, and the buffer stops being ours as soon as RoundTrip returns.
+	c.deletePending(id)
+
 	h := AcquireFrameHeader()
-	h.SetStream( // TODO: use atomic here??
-		atomic.LoadUint32(&ctx.streamID))
+	h.SetStream(id)
 
 	fr := AcquireFrame(FrameResetStream).(*RstStream)
 	fr.SetCode(StreamCanceled)
 
 	h.SetBody(fr)
 
-	c.out <- h
+	c.writeOut(h)
 }
 
 type WriteError struct {
@@ -399,10 +542,37 @@ func (we WriteError) As(target interface{}) bool {
 }
 
 func (c *Conn) writeLoop() {
-	var lastErr error
+	lastErr := c.runWriteLoop()
+	if lastErr == nil {
+		lastErr = io.ErrUnexpectedEOF
+	}
 
-	defer func() { _ = c.Close() }()
+	c.setLastErr(lastErr)
 
+	// Close before draining, not after. Closing is what stops Write from
+	// handing us requests, so anything that lands in the queue from here on
+	// sees a closed connection and resolves itself.
+	_ = c.Close()
+
+	c.reqQueued.Range(func(_, v interface{}) bool {
+		v.(*Ctx).resolve(lastErr)
+
+		return true
+	})
+
+	for {
+		select {
+		case ctx := <-c.in:
+			ctx.resolve(lastErr)
+		case fr := <-c.out:
+			ReleaseFrameHeader(fr)
+		default:
+			return
+		}
+	}
+}
+
+func (c *Conn) runWriteLoop() (lastErr error) {
 	defer func() {
 		if err := recover(); err != nil {
 			if lastErr == nil {
@@ -411,20 +581,11 @@ func (c *Conn) writeLoop() {
 					lastErr = errn
 				case string:
 					lastErr = errors.New(errn)
+				default:
+					lastErr = fmt.Errorf("%v", errn)
 				}
 			}
 		}
-
-		if lastErr == nil {
-			lastErr = io.ErrUnexpectedEOF
-		}
-
-		c.reqQueued.Range(func(_, v interface{}) bool {
-			r := v.(*Ctx)
-			r.resolve(lastErr)
-
-			return true
-		})
 	}()
 
 	if c.pingInterval <= 0 {
@@ -434,14 +595,11 @@ func (c *Conn) writeLoop() {
 	ticker := time.NewTicker(c.pingInterval)
 	defer ticker.Stop()
 
-loop:
 	for {
 		select {
-		case ctx, ok := <-c.in: // sending requests
-			if !ok {
-				break loop
-			}
-
+		case <-c.done:
+			return lastErr
+		case ctx := <-c.in: // sending requests
 			err := c.writeRequest(ctx)
 			if err != nil {
 				ctx.resolve(err)
@@ -450,32 +608,28 @@ loop:
 					continue
 				}
 
-				lastErr = WriteError{err}
-
-				break loop
+				return WriteError{err}
 			}
-		case fr, ok := <-c.out: // generic output
-			if !ok {
-				break loop
-			}
-
+		case fr := <-c.out: // generic output
 			err := c.writeFrame(fr)
-			if err != nil {
-				lastErr = WriteError{err}
-				break loop
-			}
 
 			ReleaseFrameHeader(fr)
+
+			if err != nil {
+				return WriteError{err}
+			}
+		case <-c.winCh: // a send window opened
+			if err := c.flushPending(); err != nil {
+				return WriteError{err}
+			}
 		case <-ticker.C: // ping
 			if err := c.writePing(); err != nil {
-				lastErr = WriteError{err}
-				break loop
+				return WriteError{err}
 			}
 		}
 
 		if !c.disableAcks && atomic.LoadInt32(&c.unacks) >= 3 {
-			lastErr = ErrTimeout
-			break loop
+			return ErrTimeout
 		}
 	}
 }
@@ -500,6 +654,7 @@ func (c *Conn) finish(r *Ctx, stream uint32, err error) {
 	r.resolve(err)
 
 	c.reqQueued.Delete(stream)
+	c.deletePending(stream)
 }
 
 func (c *Conn) readLoop() {
@@ -519,7 +674,7 @@ func (c *Conn) readLoop() {
 			perr = fmt.Errorf("%v", err)
 		}
 
-		c.lastErr = perr
+		c.setLastErr(perr)
 
 		c.reqQueued.Range(func(_, v interface{}) bool {
 			v.(*Ctx).resolve(perr)
@@ -531,47 +686,64 @@ func (c *Conn) readLoop() {
 	for {
 		fr, err := c.readNext()
 		if err != nil {
-			c.lastErr = err
+			c.setLastErr(err)
 			break
 		}
 
-		// TODO: panic otherwise?
-		if ri, ok := c.reqQueued.Load(fr.Stream()); ok {
-			r := ri.(*Ctx)
-
-			// A cancelled request has taken its Response back, so there is
-			// nowhere to put this frame. Drop the stream and carry on.
-			if !r.acquire() {
-				c.reqQueued.Delete(fr.Stream())
-				ReleaseFrameHeader(fr)
-
-				continue
-			}
-
-			err := c.readStream(fr, r.Response)
-			if err == nil {
-				if fr.Flags().Has(FlagEndStream) {
-					c.finish(r, fr.Stream(), nil)
-				}
-			} else {
-				c.finish(r, fr.Stream(), err)
-			}
-
-			r.release()
-
-			if err != nil && errors.Is(err, FlowControlError) {
-				break
-			}
-
-			if c.state == connStateClosed {
-				if fr.Stream() == c.closeRef {
-					break
-				}
-			}
+		// A stream-level WINDOW_UPDATE has to be applied whether or not a
+		// request is still waiting on the stream, so it is handled before the
+		// lookup in dispatch.
+		if fr.Type() == FrameWindowUpdate {
+			c.addWindow(fr.Stream(), int32(fr.Body().(*WindowUpdate).Increment()))
 		}
 
+		stop := c.dispatch(fr)
+
 		ReleaseFrameHeader(fr)
+
+		if stop {
+			break
+		}
 	}
+}
+
+// dispatch hands a stream frame to the request waiting on it. It reports
+// whether the read loop should stop.
+func (c *Conn) dispatch(fr *FrameHeader) bool {
+	ri, ok := c.reqQueued.Load(fr.Stream())
+	if !ok {
+		// TODO: panic otherwise?
+		return false
+	}
+
+	r := ri.(*Ctx)
+
+	// A cancelled request has taken its Response back, so there is nowhere to
+	// put this frame. Drop the stream and carry on.
+	if !r.acquire() {
+		c.reqQueued.Delete(fr.Stream())
+
+		return false
+	}
+
+	// Released on the way out even if readStream panics: leaving the Ctx locked
+	// would wedge the RoundTrip that is waiting to take it back.
+	defer r.release()
+
+	err := c.readStream(fr, r.Response)
+	if err == nil {
+		if fr.Flags().Has(FlagEndStream) {
+			c.finish(r, fr.Stream(), nil)
+		}
+	} else {
+		c.finish(r, fr.Stream(), err)
+	}
+
+	if err != nil && errors.Is(err, FlowControlError) {
+		return true
+	}
+
+	return c.state == connStateClosed && fr.Stream() == c.closeRef
 }
 
 func (c *Conn) writeRequest(ctx *Ctx) error {
@@ -580,21 +752,45 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 	}
 
 	// The request may have been cancelled while it sat in the queue, in which
-	// case its Request no longer belongs to us.
+	// case its Request no longer belongs to us. Ownership is handed back
+	// explicitly rather than deferred: sending the body takes it again, and the
+	// lock is not reentrant.
 	if !ctx.acquire() {
 		return nil
 	}
 
-	defer ctx.release()
+	released := false
+
+	release := func() {
+		if !released {
+			released = true
+
+			ctx.release()
+		}
+	}
+
+	defer release()
 
 	req := ctx.Request
 
 	hasBody := len(req.Body()) != 0
 
+	// The server may have changed the header table size since the last request.
+	// The encoder is the write loop's, so this is the only safe place to apply
+	// it, and the encoder signals the change to the peer's decoder itself.
+	if size := atomic.LoadUint32(&c.encTableSize); size != c.encTableSizeSeen {
+		c.encTableSizeSeen = size
+		c.enc.SetMaxTableSize(size)
+	}
+
 	enc := c.enc
 
-	id := c.nextID
-	c.nextID += 2
+	id := atomic.LoadUint32(&c.nextID)
+	if id > maxStreamID {
+		return ErrNoMoreStreamIDs
+	}
+
+	atomic.StoreUint32(&c.nextID, id+2)
 
 	fr := AcquireFrameHeader()
 	defer ReleaseFrameHeader(fr)
@@ -642,38 +838,198 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 	atomic.StoreUint32(&ctx.streamID, id)
 	c.reqQueued.Store(id, ctx)
 
+	if hasBody {
+		c.sendLck.Lock()
+		c.pending[id] = &pendingBody{
+			ctx:    ctx,
+			body:   req.Body(),
+			window: c.streamWindow,
+		}
+		c.sendLck.Unlock()
+	}
+
 	c.bwLck.Lock()
 
 	_, err := fr.WriteTo(c.bw)
-	if err == nil && hasBody {
-		// release headers bc it's going to get replaced by the data frame
-		ReleaseFrame(h)
-
-		err = writeData(c.bw, fr, req.Body())
-	}
-
 	if err == nil {
 		err = c.bw.Flush()
-		if err == nil {
-			atomic.AddInt32(&c.openStreams, 1)
-		}
 	}
 
 	c.bwLck.Unlock()
 
+	ReleaseHeaderField(hf)
+
 	if err != nil {
-		c.lastErr = err
+		c.setLastErr(err)
 		// if we had any error, remove it from the reqQueued.
 		c.reqQueued.Delete(id)
+		c.deletePending(id)
+
+		return err
 	}
 
-	ReleaseHeaderField(hf)
+	atomic.AddInt32(&c.openStreams, 1)
+
+	if hasBody {
+		release()
+
+		// The body goes out under flow control, so the tail of a large one may
+		// have to wait for the server to open its window.
+		return c.sendPending(id)
+	}
+
+	return nil
+}
+
+// applyInitialWindow adjusts every stream we are still sending on by the change
+// in SETTINGS_INITIAL_WINDOW_SIZE.
+func (c *Conn) applyInitialWindow(size int32) {
+	c.sendLck.Lock()
+
+	delta := size - c.streamWindow
+	c.streamWindow = size
+
+	for _, pb := range c.pending {
+		pb.window += delta
+	}
+
+	c.sendLck.Unlock()
+
+	c.signalWindow()
+}
+
+// addWindow grows a send window. Stream 0 is the connection window.
+func (c *Conn) addWindow(streamID uint32, inc int32) {
+	c.sendLck.Lock()
+
+	if streamID == 0 {
+		c.connWindow += inc
+	} else if pb, ok := c.pending[streamID]; ok {
+		pb.window += inc
+	}
+
+	c.sendLck.Unlock()
+
+	c.signalWindow()
+}
+
+// signalWindow nudges the write loop. The channel holds one token: the loop
+// only needs to know that something changed, not how many times.
+func (c *Conn) signalWindow() {
+	select {
+	case c.winCh <- struct{}{}:
+	default:
+	}
+}
+
+func (c *Conn) deletePending(id uint32) {
+	c.sendLck.Lock()
+	delete(c.pending, id)
+	c.sendLck.Unlock()
+}
+
+// pendingIDs snapshots the streams with a body still to send.
+func (c *Conn) pendingIDs() []uint32 {
+	c.sendLck.Lock()
+	defer c.sendLck.Unlock()
+
+	if len(c.pending) == 0 {
+		return nil
+	}
+
+	ids := make([]uint32, 0, len(c.pending))
+	for id := range c.pending {
+		ids = append(ids, id)
+	}
+
+	return ids
+}
+
+// flushPending writes whatever the send windows now allow. It runs on the write
+// loop, which is the only place request bodies go out.
+func (c *Conn) flushPending() error {
+	for _, id := range c.pendingIDs() {
+		if err := c.sendPending(id); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// sendPending writes as much of one blocked body as the connection and stream
+// windows allow, and forgets the stream once the body is out.
+func (c *Conn) sendPending(id uint32) error {
+	c.sendLck.Lock()
+
+	pb, ok := c.pending[id]
+	if !ok {
+		c.sendLck.Unlock()
+		return nil
+	}
+
+	n := len(pb.body)
+	if int(pb.window) < n {
+		n = int(pb.window)
+	}
+
+	if int(c.connWindow) < n {
+		n = int(c.connWindow)
+	}
+
+	if n < 0 {
+		n = 0
+	}
+
+	pb.window -= int32(n)
+	c.connWindow -= int32(n)
+
+	body := pb.body[:n]
+	pb.body = pb.body[n:]
+
+	end := len(pb.body) == 0
+	if end {
+		delete(c.pending, id)
+	}
+
+	c.sendLck.Unlock()
+
+	if n == 0 && !end {
+		return nil
+	}
+
+	// body points into the caller's Request, which stops being ours the moment
+	// the request is cancelled.
+	if !pb.ctx.acquire() {
+		c.deletePending(id)
+		return nil
+	}
+
+	defer pb.ctx.release()
+
+	c.bwLck.Lock()
+	defer c.bwLck.Unlock()
+
+	err := c.writeData(id, body, end)
+	if err == nil {
+		err = c.bw.Flush()
+	}
 
 	return err
 }
 
-func writeData(bw *bufio.Writer, fh *FrameHeader, body []byte) (err error) {
-	step := 1 << 14
+// writeData splits body into DATA frames no larger than the server is willing
+// to receive. The caller holds bwLck.
+func (c *Conn) writeData(id uint32, body []byte, end bool) (err error) {
+	step := int(atomic.LoadUint32(&c.maxFrameSize))
+	if step <= 0 || step > int(maxFrameSize) {
+		step = int(defaultDataFrameSize)
+	}
+
+	fh := AcquireFrameHeader()
+	defer ReleaseFrameHeader(fh)
+
+	fh.SetStream(id)
 
 	data := AcquireFrame(FrameData).(*Data)
 	fh.SetBody(data)
@@ -683,11 +1039,11 @@ func writeData(bw *bufio.Writer, fh *FrameHeader, body []byte) (err error) {
 			step = len(body) - i
 		}
 
-		data.SetEndStream(i+step == len(body))
+		data.SetEndStream(end && i+step == len(body))
 		data.SetPadding(false)
 		data.SetData(body[i : step+i])
 
-		_, err = fh.WriteTo(bw)
+		_, err = fh.WriteTo(c.bw)
 	}
 
 	return err
@@ -722,9 +1078,7 @@ loop:
 				c.handleSettings(st)
 			}
 		case FrameWindowUpdate:
-			win := int32(fr.Body().(*WindowUpdate).Increment())
-
-			atomic.AddInt32(&c.serverWindow, win)
+			c.addWindow(0, int32(fr.Body().(*WindowUpdate).Increment()))
 		case FramePing:
 			ping := fr.Body().(*Ping)
 			if !ping.IsAck() {
@@ -734,6 +1088,11 @@ loop:
 			}
 		case FrameGoAway:
 			ga := fr.Body().(*GoAway)
+
+			// Either way the server has stopped accepting new streams on this
+			// connection, so the client must move to a fresh one.
+			atomic.StoreUint32(&c.goAway, 1)
+
 			if ga.stream == 0 {
 				_ = c.c.Close()
 				err = ga
@@ -780,8 +1139,19 @@ func (c *Conn) writePing() error {
 func (c *Conn) handleSettings(st *Settings) {
 	st.CopyTo(&c.serverS)
 
-	c.serverStreamWindow += int32(c.serverS.MaxWindowSize())
-	c.enc.SetMaxTableSize(st.HeaderTableSize())
+	atomic.StoreUint32(&c.maxStreams, c.serverS.MaxConcurrentStreams())
+	atomic.StoreUint32(&c.maxFrameSize, c.serverS.MaxFrameSize())
+
+	// The encoder belongs to the write loop, so the new table size is handed
+	// over rather than applied here.
+	atomic.StoreUint32(&c.encTableSize, st.HeaderTableSize())
+
+	// A change to SETTINGS_INITIAL_WINDOW_SIZE applies to every stream that is
+	// already open, as a delta on what it has left.
+	// https://httpwg.org/specs/rfc7540.html#rfc.section.6.9.2
+	if st.hasWindowSize {
+		c.applyInitialWindow(int32(st.MaxWindowSize()))
+	}
 
 	// reply back
 	fr := AcquireFrameHeader()
@@ -791,7 +1161,7 @@ func (c *Conn) handleSettings(st *Settings) {
 
 	fr.SetBody(stRes)
 
-	c.out <- fr
+	c.writeOut(fr)
 }
 
 func (c *Conn) handlePing(ping *Ping) {
@@ -805,7 +1175,7 @@ func (c *Conn) handlePing(ping *Ping) {
 	fr := AcquireFrameHeader()
 	fr.SetBody(ack)
 
-	c.out <- fr
+	c.writeOut(fr)
 }
 
 func (c *Conn) readStream(fr *FrameHeader, res *fasthttp.Response) (err error) {
@@ -813,11 +1183,14 @@ func (c *Conn) readStream(fr *FrameHeader, res *fasthttp.Response) (err error) {
 	case FrameHeaders, FrameContinuation:
 		h := fr.Body().(FrameWithHeaders)
 		err = c.readHeader(h.Headers(), res)
+	case FrameResetStream:
+		// The server gave up on the stream. Without this the request would sit
+		// there until MaxResponseTime, or forever if that check is disabled.
+		err = NewResetStreamError(
+			fr.Body().(*RstStream).Code(), "stream reset by the server")
 	case FrameData:
 		c.currentWindow -= int32(fr.Len())
 		currentWin := c.currentWindow
-
-		c.serverWindow -= int32(fr.Len())
 
 		data := fr.Body().(*Data)
 		if data.Len() != 0 {
@@ -849,7 +1222,7 @@ func (c *Conn) updateWindow(streamID uint32, size int) {
 
 	fr.SetBody(wu)
 
-	c.out <- fr
+	c.writeOut(fr)
 }
 
 func (c *Conn) readHeader(b []byte, res *fasthttp.Response) error {
@@ -859,26 +1232,52 @@ func (c *Conn) readHeader(b []byte, res *fasthttp.Response) error {
 
 	dec := c.dec
 
+	var regularSeen bool
+
 	for len(b) > 0 {
 		b, err = dec.Next(hf, b)
 		if err != nil {
 			return err
 		}
 
+		// A response carries exactly one pseudo-header, :status, and it must
+		// come before any regular field.
+		// https://httpwg.org/specs/rfc7540.html#rfc.section.8.1.2.4
 		if hf.IsPseudo() {
-			if hf.KeyBytes()[1] == 's' { // status
-				n, err := strconv.ParseInt(hf.Value(), 10, 64)
-				if err != nil {
-					return err
-				}
-
-				res.SetStatusCode(int(n))
-				continue
+			if regularSeen {
+				return errPseudoAfterRegular
 			}
+
+			if !bytes.Equal(hf.KeyBytes(), StringStatus) {
+				return fmt.Errorf("invalid response pseudo-header %q", hf.KeyBytes())
+			}
+
+			n, err := parseUint(hf.ValueBytes())
+			if err != nil || n < 100 || n > 999 {
+				return errInvalidStatus
+			}
+
+			res.SetStatusCode(n)
+
+			continue
+		}
+
+		regularSeen = true
+
+		if hasUpperCase(hf.KeyBytes()) {
+			return errUpperCaseHeader
+		}
+
+		if isConnectionSpecific(hf.KeyBytes()) {
+			return errConnectionSpecific
 		}
 
 		if bytes.Equal(hf.KeyBytes(), StringContentLength) {
-			n, _ := strconv.Atoi(hf.Value())
+			n, err := parseUint(hf.ValueBytes())
+			if err != nil {
+				return errInvalidContentLength
+			}
+
 			res.Header.SetContentLength(n)
 		} else {
 			res.Header.AddBytesKV(hf.KeyBytes(), hf.ValueBytes())
@@ -887,3 +1286,11 @@ func (c *Conn) readHeader(b []byte, res *fasthttp.Response) error {
 
 	return nil
 }
+
+var (
+	errPseudoAfterRegular   = errors.New("pseudo-header field after regular header field")
+	errInvalidStatus        = errors.New("invalid :status pseudo-header")
+	errUpperCaseHeader      = errors.New("header field name contains uppercase characters")
+	errConnectionSpecific   = errors.New("connection-specific header field")
+	errInvalidContentLength = errors.New("invalid content-length")
+)

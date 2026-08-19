@@ -133,7 +133,7 @@ func testIssue52(t *testing.T) {
 	c.writeFrame(h4)
 
 	for _, h := range []*FrameHeader{h1, h2} {
-		err = writeData(c.bw, h, msg)
+		err = c.writeData(h.Stream(), msg, true)
 		if err != nil {
 			t.Fatal(err)
 		}

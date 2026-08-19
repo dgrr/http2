@@ -343,7 +343,7 @@ func TestHPACKReadResponseWithoutHuffman(t *testing.T) {
 		0x2e, 0x63, 0x6f, 0x6d,
 	}
 	hpack := AcquireHPACK()
-	hpack.SetMaxTableSize(256)
+	establishTableSize(hpack, 256)
 
 	readHPACKAndCheck(t, hpack, b, []string{
 		":status", "302",
@@ -420,7 +420,7 @@ func TestHPACKReadResponseWithHuffman(t *testing.T) {
 		0xe9, 0xae, 0x82, 0xae, 0x43, 0xd3,
 	}
 	hpack := AcquireHPACK()
-	hpack.SetMaxTableSize(256)
+	establishTableSize(hpack, 256)
 
 	readHPACKAndCheck(t, hpack, b, []string{
 		":status", "302",
@@ -632,6 +632,16 @@ func TestHPACKWriteRequestWithHuffman(t *testing.T) {
 	ReleaseHPACK(hpack)
 }
 
+// establishTableSize sets the encoder's table size the way the RFC 7541 C.5 and
+// C.6 examples assume it was set: agreed before the exchange starts, so the
+// first block carries no dynamic table size update. Outside the examples a size
+// change has to be announced, which is what SetMaxTableSize does.
+func establishTableSize(hp *HPACK, size uint32) {
+	hp.maxTableSize = size
+	hp.maxTableSizeSettings = size
+	hp.pendingSizeUpdate = false
+}
+
 func TestHPACKWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 	r := []byte{
 		0x48, 0x03, 0x33, 0x30, 0x32, 0x58,
@@ -649,7 +659,7 @@ func TestHPACKWriteResponseWithoutHuffman(t *testing.T) { // without huffman
 	}
 	hpack := AcquireHPACK()
 	hpack.DisableCompression = true
-	hpack.SetMaxTableSize(256)
+	establishTableSize(hpack, 256)
 
 	writeHPACKAndCheck(t, hpack, r, []string{
 		":status", "302",
@@ -726,7 +736,7 @@ func TestHPACKWriteResponseWithHuffman(t *testing.T) { // WithHuffman
 	}
 
 	hpack := AcquireHPACK()
-	hpack.SetMaxTableSize(256)
+	establishTableSize(hpack, 256)
 	writeHPACKAndCheck(t, hpack, r, []string{
 		":status", "302",
 		"cache-control", "private",
@@ -793,4 +803,87 @@ func hexComparison(b, r []byte) (s string) {
 		s += fmt.Sprintf("%x", r[i]) + " "
 	}
 	return s
+}
+
+// TestHPACKAnnouncesTableSizeChange covers RFC 7541 4.2 and 6.3: an encoder
+// that changes its dynamic table size must say so at the start of the next
+// header block. Shrinking silently drops entries the peer's decoder still
+// holds, and every index after that resolves to the wrong field.
+func TestHPACKAnnouncesTableSizeChange(t *testing.T) {
+	enc := AcquireHPACK()
+	dec := AcquireHPACK()
+
+	defer ReleaseHPACK(enc)
+	defer ReleaseHPACK(dec)
+
+	hf := AcquireHeaderField()
+	defer ReleaseHeaderField(hf)
+
+	// Fill the encoder's dynamic table.
+	var block []byte
+
+	for _, f := range []hdr{
+		{"x-one", "first value"},
+		{"x-two", "second value"},
+	} {
+		hf.Set(f.key, f.value)
+		block = enc.AppendHeader(block, hf, true)
+	}
+
+	if err := decodeAll(dec, block); err != nil {
+		t.Fatalf("decoding the first block: %v", err)
+	}
+
+	if enc.DynamicSize() != dec.DynamicSize() {
+		t.Fatalf("tables diverged before the size change: %d != %d", enc.DynamicSize(), dec.DynamicSize())
+	}
+
+	// The peer asks for a table small enough that entries have to go.
+	enc.SetMaxTableSize(64)
+
+	if enc.DynamicSize() > 64 {
+		t.Errorf("encoder table is %d bytes, over the new maximum", enc.DynamicSize())
+	}
+
+	block = block[:0]
+	hf.Set("x-three", "third value")
+	block = enc.AppendHeader(block, hf, true)
+
+	if len(block) == 0 || block[0]&0xe0 != 0x20 {
+		t.Fatalf("the block does not start with a dynamic table size update: % x", block)
+	}
+
+	if err := decodeAll(dec, block); err != nil {
+		t.Fatalf("decoding after the size change: %v", err)
+	}
+
+	if enc.DynamicSize() != dec.DynamicSize() {
+		t.Errorf("tables diverged after the size change: %d != %d", enc.DynamicSize(), dec.DynamicSize())
+	}
+
+	// Only the first block after the change carries the update.
+	block = block[:0]
+	hf.Set("x-four", "fourth value")
+	block = enc.AppendHeader(block, hf, true)
+
+	if len(block) > 0 && block[0]&0xe0 == 0x20 {
+		t.Errorf("the update was repeated on a later block: % x", block)
+	}
+}
+
+// decodeAll runs a whole header block through a decoder.
+func decodeAll(hp *HPACK, block []byte) error {
+	hf := AcquireHeaderField()
+	defer ReleaseHeaderField(hf)
+
+	var err error
+
+	for len(block) > 0 {
+		block, err = hp.Next(hf, block)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
