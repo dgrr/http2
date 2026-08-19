@@ -48,7 +48,9 @@ func (pp *PushPromise) Deserialize(fr *FrameHeader) error {
 		}
 	}
 
-	if len(fr.payload) < 4 {
+	// payload, not fr.payload: cutting the padding shortens it, and the bytes
+	// read below come from the shortened slice.
+	if len(payload) < 4 {
 		return ErrMissingBytes
 	}
 

@@ -193,7 +193,9 @@ func (f *FrameHeader) readFrom(br *bufio.Reader) (int64, error) {
 		return 0, err
 	}
 
-	if f.kind > FrameContinuation {
+	// FrameType is signed, so a type byte of 0x80 or above arrives negative.
+	// Both ends have to be checked before it is used to index the frame pools.
+	if f.kind < FrameData || f.kind > FrameContinuation {
 		_, _ = br.Discard(f.length)
 		return 0, ErrUnknownFrameType
 	}

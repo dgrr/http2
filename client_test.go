@@ -92,7 +92,7 @@ func TestClientServerRoundTrip(t *testing.T) {
 	}
 }
 
-func testKeyPair(t *testing.T) ([]byte, []byte) {
+func testKeyPair(t testing.TB) ([]byte, []byte) {
 	t.Helper()
 
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)

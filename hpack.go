@@ -158,7 +158,9 @@ func (hp *HPACK) peek(n uint64) *HeaderField {
 		index, table = nn, hp.dynamic
 	}
 
-	if index < 0 {
+	// n comes off the wire, so the computed index can land anywhere. Callers
+	// turn a nil result into a decoding error.
+	if index < 0 || index >= len(table) {
 		return nil
 	}
 
@@ -233,7 +235,10 @@ loop:
 	// The value must be indexed in the static or the dynamic table.
 	// https://httpwg.org/specs/rfc7541.html#indexed.header.representation
 	case c&indexByte == indexByte: // 1000 0000
-		b, n = readInt(7, b)
+		if b, n, err = readInt(7, b); err != nil {
+			return b, err
+		}
+
 		hf2 := hp.peek(n)
 		if hf2 == nil {
 			return b, NewError(FlowControlError, fmt.Sprintf("index field not found: %d. table:\n%s", n,
@@ -248,7 +253,9 @@ loop:
 	case c&literalByte == literalByte: // 0100 0000
 		// Reading key
 		if c != 64 { // Read key as index
-			b, n = readInt(6, b)
+			if b, n, err = readInt(6, b); err != nil {
+				return b, err
+			}
 
 			hf2 := hp.peek(n)
 			if hf2 == nil {
@@ -271,6 +278,12 @@ loop:
 
 		// Reading value
 		if err == nil {
+			if len(b) == 0 {
+				// The field is cut short: its value is in the bytes that have
+				// not arrived yet.
+				return b, ErrUnexpectedSize
+			}
+
 			if b[0] == c {
 				b = b[1:]
 			}
@@ -299,7 +312,10 @@ loop:
 	case c&noIndexByte == 0: // 0000 0000
 		// Reading key
 		if c&15 != 0 { // Reading key as index
-			b, n = readInt(4, b)
+			if b, n, err = readInt(4, b); err != nil {
+				return b, err
+			}
+
 			hf2 := hp.peek(n)
 			if hf2 == nil {
 				return b, NewError(FlowControlError, fmt.Sprintf("non indexed field not found: %d. table:\n%s", n,
@@ -321,6 +337,12 @@ loop:
 
 		// Reading value
 		if err == nil {
+			if len(b) == 0 {
+				// The field is cut short: its value is in the bytes that have
+				// not arrived yet.
+				return b, ErrUnexpectedSize
+			}
+
 			if b[0] == c {
 				b = b[1:]
 			}
@@ -339,7 +361,9 @@ loop:
 	// Changes the size of the dynamic table.
 	// https://tools.ietf.org/html/rfc7541#section-6.3
 	case c&32 == 32: // 001- ----
-		b, n = readInt(5, b)
+		if b, n, err = readInt(5, b); err != nil {
+			return b, err
+		}
 		// Dynamic table size
 		// update MUST occur at the beginning of the first header block
 		// following the change to the dynamic table size.
@@ -361,29 +385,42 @@ loop:
 }
 
 // readInt reads int type from header field.
+//
+// A varint whose continuation bit is still set when the bytes run out returns
+// ErrUnexpectedSize, which the caller reads as "the rest is in a CONTINUATION
+// frame" rather than as a decoding failure. One that cannot fit in a uint64 is
+// a decoding failure and returns ErrIntOverflow.
 // https://tools.ietf.org/html/rfc7541#section-5.1
-func readInt(n int, b []byte) ([]byte, uint64) {
+func readInt(n int, b []byte) ([]byte, uint64, error) {
+	if len(b) == 0 {
+		return b, 0, ErrUnexpectedSize
+	}
+
 	// 1<<7 - 1 = 0111 1111
 	b0 := byte(1<<n - 1)
 	// if b[0] = 0111 1111 then continue reading the int
 	// if not, then we are done
 	// if b0 is 0011 1111, then b0&b[0] != b0 = false
 	if b0&b[0] != b0 {
-		return b[1:], uint64(b[0] & b0)
+		return b[1:], uint64(b[0] & b0), nil
 	}
 
 	nn := uint64(0)
-	i := 1
-	for i < len(b) {
-		nn |= uint64(b[i]&127) << ((i - 1) * 7)
-		if b[i]&128 != 128 {
-			break
+
+	for i := 1; i < len(b); i++ {
+		if shift := (i - 1) * 7; shift >= 64 {
+			return b, 0, ErrIntOverflow
+		} else {
+			nn |= uint64(b[i]&127) << shift
 		}
 
-		i++
+		if b[i]&128 != 128 {
+			return b[i+1:], nn + uint64(b0), nil
+		}
 	}
 
-	return b[i+1:], nn + uint64(b0)
+	// The bytes ran out with the continuation bit still set.
+	return b, 0, ErrUnexpectedSize
 }
 
 // appendInt appends int type to header field excluding the last byte
@@ -427,12 +464,15 @@ func readString(dst, b []byte) ([]byte, []byte, error) {
 
 	mustDecode := b[0]&128 == 128 // huffman encoded
 
-	b, n = readInt(7, b)
+	b, n, err := readInt(7, b)
+	if err != nil {
+		return b, dst, err
+	}
+
 	if uint64(len(b)) < n {
 		return b, dst, ErrUnexpectedSize
 	}
 
-	var err error
 	if mustDecode {
 		dst, err = HuffmanDecode(dst, b[:n])
 	} else {
@@ -450,6 +490,7 @@ func readString(dst, b []byte) ([]byte, []byte, error) {
 
 var (
 	ErrUnexpectedSize            = errors.New("unexpected size")
+	ErrIntOverflow               = errors.New("integer in the header block does not fit in 64 bits")
 	ErrDynamicUpdate             = errors.New("dynamic update received after the first header block")
 	ErrDynamicUpdateMaxTableSize = errors.New("dynamic update is over the max table")
 )

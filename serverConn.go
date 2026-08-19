@@ -26,6 +26,9 @@ const timerDisarmed = time.Duration(math.MaxInt64)
 // errConnClosed signals that the read loop terminated the connection on
 // purpose, typically after sending a connection-level GOAWAY. It is handled
 // as a graceful shutdown rather than a transport error.
+// closedStrmsCap is how many recently closed stream ids a connection keeps.
+const closedStrmsCap = 256
+
 var errConnClosed = errors.New("connection closed after GOAWAY")
 
 type connState int32
@@ -66,6 +69,7 @@ type serverConn struct {
 	closeRef uint32
 
 	// maxRequestTime is the max time of a request over one single stream
+	maxHeaderList  int
 	maxRequestTime time.Duration
 	pingInterval   time.Duration
 	// maxIdleTime is the max time a client can be connected without sending any REQUEST.
@@ -366,7 +370,31 @@ func (sc *serverConn) handleStreams() {
 	// window state owned by this single goroutine.
 	curInitialWindow := int32(defaultWindowSize)
 
-	closedStrms := make(map[uint32]struct{})
+	// closedStrms remembers recently closed stream ids so that a late frame on
+	// one can be told apart from a frame on a stream that was never opened,
+	// which is a protocol error rather than something to ignore. Only the most
+	// recent ids are kept: a peer that has not caught up is at most a round
+	// trip behind, and an unbounded set would grow for the whole life of the
+	// connection.
+	closedStrms := make(map[uint32]struct{}, closedStrmsCap)
+	closedRing := make([]uint32, 0, closedStrmsCap)
+	closedOldest := 0
+
+	markClosed := func(id uint32) {
+		if _, ok := closedStrms[id]; ok {
+			return
+		}
+
+		if len(closedRing) < closedStrmsCap {
+			closedRing = append(closedRing, id)
+		} else {
+			delete(closedStrms, closedRing[closedOldest])
+			closedRing[closedOldest] = id
+			closedOldest = (closedOldest + 1) % closedStrmsCap
+		}
+
+		closedStrms[id] = struct{}{}
+	}
 
 	closeStream := func(strm *Stream) {
 		if strm.origType == FrameHeaders {
@@ -375,7 +403,7 @@ func (sc *serverConn) handleStreams() {
 
 		strmID := strm.ID()
 
-		closedStrms[strm.ID()] = struct{}{}
+		markClosed(strmID)
 		strms.Del(strm.ID())
 
 		ctxPool.Put(strm.ctx)
@@ -490,7 +518,7 @@ loop:
 
 				if fr.Type() == FrameResetStream {
 					// only send go away on idle stream not on an already-closed stream
-					if _, ok := closedStrms[fr.Stream()]; !ok {
+					if fr.Stream() > sc.lastID {
 						sc.writeGoAway(fr.Stream(), ProtocolError, "RST_STREAM on idle stream")
 					}
 
@@ -608,6 +636,16 @@ loop:
 			if err := sc.handleFrame(strm, fr); err != nil {
 				sc.writeError(strm, err)
 				strm.SetState(StreamStateClosed)
+
+				// A GOAWAY carries a connection error, so stop serving this
+				// connection rather than letting the peer carry on sending.
+				// writeError has already queued the frame and the writer is
+				// drained before it closes (RFC 7540 6.8).
+				var connErr Error
+				if errors.As(err, &connErr) &&
+					connErr.frameType == FrameGoAway && connErr.Code() != NoError {
+					break loop
+				}
 			}
 
 			handleState(fr, strm)
@@ -896,6 +934,14 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 		}
 
 		k, v := hf.KeyBytes(), hf.ValueBytes()
+
+		// RFC 7540 6.5.2 sizes a field as name + value + 32. The running total
+		// spans the whole header block, so splitting it over CONTINUATION
+		// frames does not get around the limit.
+		strm.headerListSize += len(k) + len(v) + 32
+		if sc.maxHeaderList > 0 && strm.headerListSize > sc.maxHeaderList {
+			return NewGoAwayError(EnhanceYourCalm, "header list exceeds the maximum size")
+		}
 
 		// Header field names must not contain uppercase characters.
 		// https://httpwg.org/specs/rfc7540.html#rfc.section.8.1.2

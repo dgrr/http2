@@ -2,6 +2,7 @@ package http2
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -20,10 +21,23 @@ func TestHeaderFieldsToString(t *testing.T) {
 		headerFieldsToString(hfs, 0))
 }
 
+// TestAcquireHPACKAndReleaseHPACK checks the pool round trip. It deliberately
+// does not assert that Acquire hands back the exact pointer that was Released:
+// sync.Pool makes no such promise, and any other test that runs a connection
+// puts entries in the same pool.
 func TestAcquireHPACKAndReleaseHPACK(t *testing.T) {
-	hp := &HPACK{}
+	hp := AcquireHPACK()
+	hp.SetMaxTableSize(1 << 14)
+	hp.addDynamic(&HeaderField{key: []byte("k"), value: []byte("v")})
+
 	ReleaseHPACK(hp)
-	http2utils.AssertEqual(t, hp, AcquireHPACK())
+
+	hp2 := AcquireHPACK()
+	defer ReleaseHPACK(hp2)
+
+	if len(hp2.dynamic) != 0 {
+		http2utils.AssertEqual(t, 0, len(hp2.dynamic))
+	}
 }
 
 func TestHPACKAppendInt(t *testing.T) {
@@ -71,14 +85,45 @@ func TestHPACKReadInt(t *testing.T) {
 	var n uint64
 	b := []byte{15, 31, 154, 10, 122}
 
-	b, n = readInt(5, b)
+	b, n, err = readInt(5, b)
 	checkInt(t, err, n, 15, 4, b)
 
-	b, n = readInt(5, b)
+	b, n, err = readInt(5, b)
 	checkInt(t, err, n, 1337, 1, b)
 
-	b, n = readInt(7, b)
+	b, n, err = readInt(7, b)
 	checkInt(t, err, n, 122, 0, b)
+}
+
+// TestHPACKReadIntTruncated covers varints a peer cut short. Before these were
+// rejected, running off the end of the block panicked inside readInt.
+func TestHPACKReadIntTruncated(t *testing.T) {
+	for _, b := range [][]byte{
+		{},
+		{0xff},
+		{0xff, 0xff},
+		{0xff, 0xff, 0xff, 0xff, 0xff},
+	} {
+		if _, _, err := readInt(7, b); !errors.Is(err, ErrUnexpectedSize) {
+			t.Errorf("readInt(7, %v) error = %v, want %v", b, err, ErrUnexpectedSize)
+		}
+	}
+}
+
+// TestHPACKReadIntOverflow covers a varint too long to fit in a uint64. It is a
+// decoding failure rather than a truncated field, so waiting for more bytes
+// would never resolve it.
+func TestHPACKReadIntOverflow(t *testing.T) {
+	b := []byte{0xff}
+	for i := 0; i < 12; i++ {
+		b = append(b, 0xff)
+	}
+
+	b = append(b, 0x00)
+
+	if _, _, err := readInt(7, b); !errors.Is(err, ErrIntOverflow) {
+		t.Errorf("readInt error = %v, want %v", err, ErrIntOverflow)
+	}
 }
 
 func TestHPACKWriteTwoStrings(t *testing.T) {

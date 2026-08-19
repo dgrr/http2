@@ -9,6 +9,10 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// DefaultMaxHeaderListSize is the header list size a server accepts when
+// ServerConfig.MaxHeaderListSize is left at zero.
+const DefaultMaxHeaderListSize = 1 << 20
+
 // ServerConfig ...
 type ServerConfig struct {
 	// PingInterval is the interval at which the server will send a
@@ -19,6 +23,18 @@ type ServerConfig struct {
 
 	// ...
 	MaxConcurrentStreams int
+
+	// MaxHeaderListSize bounds the uncompressed size of a request header list,
+	// summed across the HEADERS frame and every CONTINUATION frame that
+	// completes it. Each field counts as name + value + 32 bytes, per RFC 7540
+	// 6.5.2. Exceeding it is a connection error.
+	//
+	// Without a limit a header block that never sets END_HEADERS grows the
+	// server's memory for as long as the client keeps sending, which is the
+	// CONTINUATION flood.
+	//
+	// Zero means DefaultMaxHeaderListSize. A negative value disables the check.
+	MaxHeaderListSize int
 
 	// Debug is a flag that will allow the library to print debugging information.
 	Debug bool
@@ -31,6 +47,10 @@ func (sc *ServerConfig) defaults() {
 
 	if sc.MaxConcurrentStreams <= 0 {
 		sc.MaxConcurrentStreams = 1024
+	}
+
+	if sc.MaxHeaderListSize == 0 {
+		sc.MaxHeaderListSize = DefaultMaxHeaderListSize
 	}
 }
 
@@ -62,6 +82,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 		maxRequestTime: s.s.ReadTimeout,
 		maxIdleTime:    s.s.IdleTimeout,
 		pingInterval:   s.cnf.PingInterval,
+		maxHeaderList:  s.cnf.MaxHeaderListSize,
 		logger:         s.s.Logger,
 		debug:          s.cnf.Debug,
 	}
@@ -79,6 +100,12 @@ func (s *Server) ServeConn(c net.Conn) error {
 	sc.st.Reset()
 	sc.st.SetMaxWindowSize(uint32(sc.maxWindow))
 	sc.st.SetMaxConcurrentStreams(uint32(s.cnf.MaxConcurrentStreams))
+
+	// Advertise the limit so a well-behaved client stops before we have to cut
+	// the connection.
+	if sc.maxHeaderList > 0 {
+		sc.st.SetMaxHeaderListSize(uint32(sc.maxHeaderList))
+	}
 
 	if err := sc.Handshake(); err != nil {
 		return err

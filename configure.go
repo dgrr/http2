@@ -21,6 +21,13 @@ func (ca *clientAdapter) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Reques
 	return ca.client.RoundTrip(hc, req, resp)
 }
 
+// CloseIdleConnections closes the underlying HTTP/2 connections. fasthttp does
+// not call this today, but implementing it means the adapter already satisfies
+// the interface if it ever does.
+func (ca *clientAdapter) CloseIdleConnections() {
+	_ = ca.client.Close()
+}
+
 func configureDialer(d *Dialer) {
 	if d.TLSConfig == nil {
 		d.TLSConfig = &tls.Config{
@@ -42,6 +49,21 @@ func configureDialer(d *Dialer) {
 	}
 
 	tlsConfig.NextProtos = append(tlsConfig.NextProtos, "h2")
+}
+
+// ClientFrom returns the HTTP/2 client backing hc, or nil if hc has not been
+// configured for HTTP/2 by ConfigureClient.
+//
+// Use it to reach Client.Close and release the connections, which fasthttp
+// cannot do for you: its RoundTripper interface has no close hook, so
+// HostClient.CloseIdleConnections leaves HTTP/2 connections running.
+func ClientFrom(hc *fasthttp.HostClient) *Client {
+	ca, ok := hc.Transport.(*clientAdapter)
+	if !ok {
+		return nil
+	}
+
+	return ca.client
 }
 
 // ConfigureClient configures the fasthttp.HostClient to run over HTTP/2.

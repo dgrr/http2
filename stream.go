@@ -35,8 +35,12 @@ func (ss StreamState) String() string {
 }
 
 type Stream struct {
-	id                  uint32
+	// window is updated with a 64-bit atomic, so it has to stay first: on
+	// 32-bit platforms only the first word of the struct is guaranteed to be
+	// 8-byte aligned, and a misaligned 64-bit atomic panics at run time.
+	// align32_test.go turns a move into a compile error.
 	window              int64
+	id                  uint32
 	state               StreamState
 	ctx                 *fasthttp.RequestCtx
 	scheme              []byte
@@ -66,6 +70,10 @@ type Stream struct {
 	// responded is set once the response has been generated and handed to the
 	// writer, so the half-closed handling does not run the handler twice.
 	responded bool
+
+	// headerListSize is the running RFC 7540 6.5.2 size of the header block
+	// being decoded, summed across the HEADERS frame and its CONTINUATIONs.
+	headerListSize int
 
 	// keeps track of the number of header blocks received
 	headerBlockNum int
@@ -106,6 +114,7 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.responded = false
 	strm.origType = 0
 	strm.headerBlockNum = 0
+	strm.headerListSize = 0
 
 	return strm
 }

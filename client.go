@@ -3,6 +3,7 @@ package http2
 import (
 	"container/list"
 	"errors"
+	"io"
 	"sync"
 	"time"
 
@@ -65,8 +66,50 @@ type Client struct {
 
 	opts ClientOpts
 
-	lck   sync.Mutex
-	conns list.List
+	lck    sync.Mutex
+	conns  list.List
+	closed bool
+}
+
+// ErrClientClosed is returned by RoundTrip after the Client has been closed.
+var ErrClientClosed = errors.New("client is closed")
+
+// Close closes every connection the client holds and stops it from opening new
+// ones. Each connection runs a read and a write goroutine, so a client that is
+// dropped without being closed leaks both those goroutines and the connection's
+// buffers for the life of the process.
+//
+// A closed Client cannot be reused.
+func (cl *Client) Close() error {
+	cl.lck.Lock()
+
+	if cl.closed {
+		cl.lck.Unlock()
+		return nil
+	}
+
+	cl.closed = true
+
+	conns := make([]*Conn, 0, cl.conns.Len())
+	for e := cl.conns.Front(); e != nil; e = e.Next() {
+		conns = append(conns, e.Value.(*Conn))
+	}
+
+	cl.conns.Init()
+
+	// Closing a connection calls back into onConnectionDropped, so the lock has
+	// to be released first.
+	cl.lck.Unlock()
+
+	var err error
+
+	for _, c := range conns {
+		if cerr := c.Close(); cerr != nil && !errors.Is(cerr, io.EOF) && err == nil {
+			err = cerr
+		}
+	}
+
+	return err
 }
 
 func createClient(d *Dialer, opts ClientOpts) *Client {
@@ -83,6 +126,11 @@ func createClient(d *Dialer, opts ClientOpts) *Client {
 func (cl *Client) onConnectionDropped(c *Conn) {
 	cl.lck.Lock()
 	defer cl.lck.Unlock()
+
+	// Do not dial a replacement for a connection we closed on purpose.
+	if cl.closed {
+		return
+	}
 
 	for e := cl.conns.Front(); e != nil; e = e.Next() {
 		if e.Value.(*Conn) == c {
@@ -114,6 +162,11 @@ func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *
 
 	cl.lck.Lock()
 
+	if cl.closed {
+		cl.lck.Unlock()
+		return false, ErrClientClosed
+	}
+
 	var next *list.Element
 
 	for e := cl.conns.Front(); c == nil; e = next {
@@ -122,6 +175,9 @@ func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *
 		} else {
 			c, e, err = cl.createConn()
 			if err != nil {
+				// Unlock explicitly: an early return used to leave the mutex
+				// held, wedging every later request on this client.
+				cl.lck.Unlock()
 				return false, err
 			}
 		}

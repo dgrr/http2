@@ -33,18 +33,101 @@ jobs:
           git diff --exit-code go.sum
 
       - name: Vet
-        run: go vet ./ ./http2utils/... ./h2spec
+        run: go vet ./ ./http2utils/... ./h2spec ./benchmark/...
+
+      # examples/proxy is built against an API generation this library no
+      # longer has, so it is left out until it is ported or dropped.
+      - name: Build examples
+        run: go build ./examples/simple ./examples/client ./examples/autocert ./examples/reverse_proxy ./benchmark/...
 
       - name: Unit tests
         run: go test ./
 
+      # The race detector is the point of this step. Most of what this library
+      # gets wrong is concurrent, and none of it shows up without -race.
+      - name: Unit tests (race)
+        run: go test -race -timeout 15m ./
+
       - name: h2spec conformance suite
         run: go test ./h2spec
 
-      # The examples/ and benchmark/ trees track an older API and are not part
-      # of the library build, so lint only the real packages.
+      - name: h2spec conformance suite (race)
+        run: go test -race -timeout 15m ./h2spec
+
+      - name: Benchmarks compile and run
+        run: go test -run '^$' -bench . -benchtime 10x ./
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: ./ ./http2utils/... ./h2spec
+
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [FuzzHuffmanDecode, FuzzHPACKNext, FuzzFrameHeaderRead]
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # These parsers take bytes straight off the wire from an unauthenticated
+      # peer. The committed corpus under testdata/fuzz replays past crashes on
+      # every run; the timed pass looks for new ones.
+      - name: Fuzz ${{ matrix.target }}
+        run: go test -run '^$' -fuzz '^${{ matrix.target }}$' -fuzztime 120s ./
+
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: testdata/fuzz
+
+  crossbuild:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 32-bit: catches the alignment rules for 64-bit atomics, which the
+          # amd64 job cannot.
+          - goos: linux
+            goarch: "386"
+          - goos: linux
+            goarch: arm
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Vet and build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build ./ ./http2utils/...
+          go vet ./ ./http2utils/...

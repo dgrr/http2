@@ -102,6 +102,11 @@ type Conn struct {
 	in  chan *Ctx
 	out chan *FrameHeader
 
+	// bwLck guards bw. Every other write to it happens on the write loop
+	// goroutine, but Close can be called from any goroutine: the read loop on
+	// its way out, or a caller of Client.Close.
+	bwLck sync.Mutex
+
 	pingInterval time.Duration
 
 	// unacks counts pings sent without a matching ack. The write loop bumps it
@@ -320,10 +325,14 @@ func (c *Conn) Close() error {
 
 	fr.SetBody(ga)
 
+	c.bwLck.Lock()
+
 	_, err := fr.WriteTo(c.bw)
 	if err == nil {
 		err = c.bw.Flush()
 	}
+
+	c.bwLck.Unlock()
 
 	_ = c.c.Close()
 
@@ -472,6 +481,9 @@ loop:
 }
 
 func (c *Conn) writeFrame(fr *FrameHeader) error {
+	c.bwLck.Lock()
+	defer c.bwLck.Unlock()
+
 	_, err := fr.WriteTo(c.bw)
 	if err == nil {
 		if err = c.bw.Flush(); err != nil {
@@ -588,6 +600,8 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 	atomic.StoreUint32(&ctx.streamID, id)
 	c.reqQueued.Store(id, ctx)
 
+	c.bwLck.Lock()
+
 	_, err := fr.WriteTo(c.bw)
 	if err == nil && hasBody {
 		// release headers bc it's going to get replaced by the data frame
@@ -602,6 +616,8 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 			atomic.AddInt32(&c.openStreams, 1)
 		}
 	}
+
+	c.bwLck.Unlock()
 
 	if err != nil {
 		c.lastErr = err
@@ -694,6 +710,9 @@ func (c *Conn) writePing() error {
 	ping.SetCurrentTime()
 
 	fr.SetBody(ping)
+
+	c.bwLck.Lock()
+	defer c.bwLck.Unlock()
 
 	_, err := fr.WriteTo(c.bw)
 	if err == nil {

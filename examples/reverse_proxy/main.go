@@ -22,7 +22,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	http2.ConfigureServer(s)
+	http2.ConfigureServer(s, http2.ServerConfig{})
 
 	err = s.ListenAndServeTLS(":8443", "", "")
 	if err != nil {

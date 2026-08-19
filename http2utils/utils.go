@@ -76,11 +76,18 @@ func Resize(b []byte, neededLen int) []byte {
 // CutPadding cuts the padding if the frame has FlagPadded
 // from the payload and returns the new payload as byte slice.
 func CutPadding(payload []byte, length int) ([]byte, error) {
+	// The pad length lives in the first byte, so a padded frame that carries no
+	// payload at all is malformed rather than empty.
+	if len(payload) == 0 || length < 1 || length > len(payload) {
+		return nil, fmt.Errorf("out of range: payload %d, length %d", len(payload), length)
+	}
+
 	pad := int(payload[0])
 
 	if len(payload) < length-pad-1 || length-pad < 1 {
 		return nil, fmt.Errorf("out of range: %d < %d", len(payload), length-pad-1)
 	}
+
 	payload = payload[1 : length-pad]
 
 	return payload, nil

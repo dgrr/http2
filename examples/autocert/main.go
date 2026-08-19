@@ -28,7 +28,7 @@ func main() {
 		Name:    "http2 test",
 	}
 
-	http2.ConfigureServer(s)
+	http2.ConfigureServer(s, http2.ServerConfig{})
 
 	log.Println("fasthttp", s.ListenAndServeTLSEmbed(":443", cert, priv))
 }
