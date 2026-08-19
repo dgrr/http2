@@ -70,6 +70,31 @@ func main() {
 }
 ```
 
+## Limits
+
+The server takes most of its limits from the `fasthttp.Server` it is configured
+on, so an HTTP/2 request is held to the same rules as an HTTP/1 one:
+
+- `MaxRequestBodySize` caps the request body. It is enforced against the
+  declared `content-length` before the body is read and against the bytes as
+  they arrive. fasthttp's default is 4 MiB.
+- `ReadTimeout` is how long a single request may take. Zero means no limit.
+
+The rest comes from `ServerConfig`:
+
+- `MaxConcurrentStreams` is what the server advertises and enforces. Default
+  1024.
+- `MaxHeaderListSize` caps the uncompressed header list, summed across the
+  HEADERS frame and its CONTINUATIONs. Default 1 MiB, and a negative value
+  turns the check off.
+- `PingInterval` is how often the server pings. A negative value disables it.
+
+On the client, `ClientOpts.MaxResponseTime` is how long a request waits for its
+response before the stream is cancelled (default one minute, negative disables
+the check). A client holds connections open until it is closed, so call
+`http2.ClientFrom(hc).Close()` when you are done with a `HostClient`, or the
+goroutines behind each connection stay for the life of the process.
+
 ## Benchmarks
 
 Benchmark code [here](https://github.com/dgrr/http2/tree/master/benchmark).

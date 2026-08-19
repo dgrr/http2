@@ -51,3 +51,25 @@ over the channel provided by the client.
 
 After the request/response finished, the client will continue thus exiting the
 `Do` function.
+
+## Flow control
+
+Both ends meter what they send against the peer's windows, which is what the
+protocol requires and what any peer that enforces the rule expects.
+
+On the client, a request body larger than the window is not written in one go.
+The part that does not fit stays with the request, and the write loop sends more
+of it when a WINDOW_UPDATE opens the window. A change to
+SETTINGS_INITIAL_WINDOW_SIZE is applied as a delta to every stream that is
+already open, as RFC 7540 6.9.2 requires.
+
+On the server the same applies to responses, both the ones the handler buffers
+and the ones it streams. A streamed body is pulled from the handler's reader a
+frame at a time as the windows allow rather than drained into the writer, so a
+peer with a small window is not flooded and a large response does not have to be
+held in memory.
+
+In the other direction the server hands its receive window straight back as the
+bytes are buffered, so it never becomes the thing that limits an upload. What
+bounds the memory instead is MaxRequestBodySize per stream and
+SETTINGS_MAX_CONCURRENT_STREAMS across the connection.
