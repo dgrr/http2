@@ -130,7 +130,11 @@ type Conn struct {
 	// goAway is set once the server has told us not to open more streams.
 	goAway uint32
 
-	reqQueued sync.Map
+	// reqQueued maps a stream id to the request waiting on it. A plain map
+	// under a mutex beats sync.Map here: every entry is written once and
+	// deleted once, which is the pattern sync.Map is worst at.
+	reqLck    sync.Mutex
+	reqQueued map[uint32]*Ctx
 
 	in  chan *Ctx
 	out chan *FrameHeader
@@ -209,6 +213,7 @@ func NewConn(c net.Conn, opts ConnOpts) *Conn {
 		maxStreams:    defaultConcurrentStreams,
 		maxFrameSize:  defaultDataFrameSize,
 		pending:       make(map[uint32]*pendingBody),
+		reqQueued:     make(map[uint32]*Ctx),
 		winCh:         make(chan struct{}, 1),
 		in:            make(chan *Ctx, 128),
 		out:           make(chan *FrameHeader, 128),
@@ -222,6 +227,49 @@ func NewConn(c net.Conn, opts ConnOpts) *Conn {
 	nc.current.SetPush(false)
 
 	return nc
+}
+
+// queueReq records the request waiting on a stream.
+func (c *Conn) queueReq(id uint32, ctx *Ctx) {
+	c.reqLck.Lock()
+	c.reqQueued[id] = ctx
+	c.reqLck.Unlock()
+}
+
+// dequeueReq drops a stream from the table.
+func (c *Conn) dequeueReq(id uint32) {
+	c.reqLck.Lock()
+	delete(c.reqQueued, id)
+	c.reqLck.Unlock()
+}
+
+// loadReq returns the request waiting on a stream, if there is one.
+func (c *Conn) loadReq(id uint32) (*Ctx, bool) {
+	c.reqLck.Lock()
+	ctx, ok := c.reqQueued[id]
+	c.reqLck.Unlock()
+
+	return ctx, ok
+}
+
+// takeAllReqs empties the table and returns what was in it, for resolving
+// everything at once when the connection ends.
+func (c *Conn) takeAllReqs() []*Ctx {
+	c.reqLck.Lock()
+	defer c.reqLck.Unlock()
+
+	if len(c.reqQueued) == 0 {
+		return nil
+	}
+
+	out := make([]*Ctx, 0, len(c.reqQueued))
+	for id, ctx := range c.reqQueued {
+		out = append(out, ctx)
+
+		delete(c.reqQueued, id)
+	}
+
+	return out
 }
 
 // Dialer allows creating HTTP/2 connections by specifying an address and tls configuration.
@@ -505,6 +553,11 @@ func (c *Conn) Cancel(ctx *Ctx) error {
 
 func (c *Conn) cancel(ctx *Ctx) {
 	id := atomic.LoadUint32(&ctx.streamID)
+	if id == 0 {
+		// The request never reached the wire, so there is no stream to reset.
+		// RST_STREAM on stream 0 is a connection error, not a no-op.
+		return
+	}
 
 	// Whatever is left of the body is not going out on a stream we are
 	// resetting, and the buffer stops being ours as soon as RoundTrip returns.
@@ -554,11 +607,9 @@ func (c *Conn) writeLoop() {
 	// sees a closed connection and resolves itself.
 	_ = c.Close()
 
-	c.reqQueued.Range(func(_, v interface{}) bool {
-		v.(*Ctx).resolve(lastErr)
-
-		return true
-	})
+	for _, ctx := range c.takeAllReqs() {
+		ctx.resolve(lastErr)
+	}
 
 	for {
 		select {
@@ -651,10 +702,14 @@ func (c *Conn) writeFrame(fr *FrameHeader) error {
 func (c *Conn) finish(r *Ctx, stream uint32, err error) {
 	atomic.AddInt32(&c.openStreams, -1)
 
-	r.resolve(err)
-
-	c.reqQueued.Delete(stream)
+	// Drop the stream before resolving: once RoundTrip returns it may hand the
+	// Ctx back to a pool, and it can only do that when nothing here still
+	// refers to it.
+	c.dequeueReq(stream)
 	c.deletePending(stream)
+
+	r.markFinished()
+	r.resolve(err)
 }
 
 func (c *Conn) readLoop() {
@@ -676,11 +731,9 @@ func (c *Conn) readLoop() {
 
 		c.setLastErr(perr)
 
-		c.reqQueued.Range(func(_, v interface{}) bool {
-			v.(*Ctx).resolve(perr)
-
-			return true
-		})
+		for _, ctx := range c.takeAllReqs() {
+			ctx.resolve(perr)
+		}
 	}()
 
 	for {
@@ -710,18 +763,15 @@ func (c *Conn) readLoop() {
 // dispatch hands a stream frame to the request waiting on it. It reports
 // whether the read loop should stop.
 func (c *Conn) dispatch(fr *FrameHeader) bool {
-	ri, ok := c.reqQueued.Load(fr.Stream())
+	r, ok := c.loadReq(fr.Stream())
 	if !ok {
-		// TODO: panic otherwise?
 		return false
 	}
 
-	r := ri.(*Ctx)
-
-	// A cancelled request has taken its Response back, so there is nowhere to
-	// put this frame. Drop the stream and carry on.
-	if !r.acquire() {
-		c.reqQueued.Delete(fr.Stream())
+	// A cancelled or finished request has taken its Response back, so there is
+	// nowhere to put this frame. Drop the stream and carry on.
+	if !r.acquireFor(c, fr.Stream()) {
+		c.dequeueReq(fr.Stream())
 
 		return false
 	}
@@ -835,8 +885,9 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 	h.SetEndHeaders(true)
 
 	// store the ctx before sending the request
+	ctx.conn.Store(c)
 	atomic.StoreUint32(&ctx.streamID, id)
-	c.reqQueued.Store(id, ctx)
+	c.queueReq(id, ctx)
 
 	if hasBody {
 		c.sendLck.Lock()
@@ -862,7 +913,7 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 	if err != nil {
 		c.setLastErr(err)
 		// if we had any error, remove it from the reqQueued.
-		c.reqQueued.Delete(id)
+		c.dequeueReq(id)
 		c.deletePending(id)
 
 		return err
@@ -1000,7 +1051,7 @@ func (c *Conn) sendPending(id uint32) error {
 
 	// body points into the caller's Request, which stops being ours the moment
 	// the request is cancelled.
-	if !pb.ctx.acquire() {
+	if !pb.ctx.acquireFor(c, id) {
 		c.deletePending(id)
 		return nil
 	}

@@ -83,8 +83,11 @@ func (s *Server) ServeConn(c net.Conn) error {
 		maxIdleTime:    s.s.IdleTimeout,
 		pingInterval:   s.cnf.PingInterval,
 		maxHeaderList:  s.cnf.MaxHeaderListSize,
-		logger:         s.s.Logger,
-		debug:          s.cnf.Debug,
+		// The HTTP/1 side of this server enforces the same limit, so a body
+		// that would be refused there is refused here too.
+		maxRequestBodySize: maxRequestBodySize(s.s),
+		logger:             s.s.Logger,
+		debug:              s.cnf.Debug,
 	}
 
 	if sc.logger == nil {
@@ -112,4 +115,14 @@ func (s *Server) ServeConn(c net.Conn) error {
 	}
 
 	return sc.Serve()
+}
+
+// maxRequestBodySize is the limit the fasthttp server is configured with,
+// falling back to the same default it uses.
+func maxRequestBodySize(s *fasthttp.Server) int {
+	if s.MaxRequestBodySize > 0 {
+		return s.MaxRequestBodySize
+	}
+
+	return fasthttp.DefaultMaxRequestBodySize
 }

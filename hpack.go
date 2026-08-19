@@ -219,10 +219,22 @@ const (
 	noIndexByte = 240 // 11110000
 )
 
+// bytePool holds scratch buffers for string coding. It stores pointers rather
+// than slices: putting a slice back boxes it into an interface, which is an
+// allocation on every header field.
 var bytePool = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, 128)
+		b := make([]byte, 128)
+		return &b
 	},
+}
+
+func acquireScratch() *[]byte {
+	return bytePool.Get().(*[]byte)
+}
+
+func releaseScratch(b *[]byte) {
+	bytePool.Put(b)
 }
 
 // Next reads and process the contents of `b`. If `b` contains a valid HTTP/2 header
@@ -284,14 +296,16 @@ loop:
 			hf.SetKeyBytes(hf2.KeyBytes())
 		} else { // Read key literal string
 			b = b[1:]
-			dst := bytePool.Get().([]byte)
+			scratch := acquireScratch()
+			dst := *scratch
 
 			b, dst, err = readString(dst[:0], b)
 			if err == nil {
 				hf.SetKeyBytes(dst)
 			}
 
-			bytePool.Put(dst)
+			*scratch = dst
+			releaseScratch(scratch)
 		}
 
 		// Reading value
@@ -306,7 +320,8 @@ loop:
 				b = b[1:]
 			}
 
-			dst := bytePool.Get().([]byte)
+			scratch := acquireScratch()
+			dst := *scratch
 
 			b, dst, err = readString(dst[:0], b)
 			if err == nil {
@@ -315,7 +330,8 @@ loop:
 				hp.addDynamic(hf)
 			}
 
-			bytePool.Put(dst)
+			*scratch = dst
+			releaseScratch(scratch)
 		}
 
 	// Literal Header Field Never Indexed.
@@ -343,14 +359,16 @@ loop:
 			hf.SetKeyBytes(hf2.key)
 		} else { // Reading key as string literal
 			b = b[1:]
-			dst := bytePool.Get().([]byte)
+			scratch := acquireScratch()
+			dst := *scratch
 
 			b, dst, err = readString(dst[:0], b)
 			if err == nil {
 				hf.SetKeyBytes(dst)
 			}
 
-			bytePool.Put(dst)
+			*scratch = dst
+			releaseScratch(scratch)
 		}
 
 		// Reading value
@@ -365,14 +383,16 @@ loop:
 				b = b[1:]
 			}
 
-			dst := bytePool.Get().([]byte)
+			scratch := acquireScratch()
+			dst := *scratch
 
 			b, dst, err = readString(dst[:0], b)
 			if err == nil {
 				hf.SetValueBytes(dst)
 			}
 
-			bytePool.Put(dst)
+			*scratch = dst
+			releaseScratch(scratch)
 		}
 
 	// Dynamic Table Size Update
@@ -516,12 +536,16 @@ var (
 // appendString writes bytes slice to dst and returns it.
 // https://tools.ietf.org/html/rfc7541#section-5.2
 func appendString(dst, src []byte, encode bool) []byte {
-	var b []byte
+	var (
+		b       []byte
+		scratch *[]byte
+	)
+
 	if !encode {
 		b = src
 	} else {
-		b = bytePool.Get().([]byte)
-		b = HuffmanEncode(b[:0], src)
+		scratch = acquireScratch()
+		b = HuffmanEncode((*scratch)[:0], src)
 	}
 	// TODO: Encode only if length is lower with the string encoded
 
@@ -536,7 +560,10 @@ func appendString(dst, src []byte, encode bool) []byte {
 	dst = append(dst, b...)
 
 	if encode {
-		bytePool.Put(b)
+		*scratch = b
+
+		releaseScratch(scratch)
+
 		dst[nn] |= 128 // setting H bit
 	}
 

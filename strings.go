@@ -3,6 +3,7 @@ package http2
 import (
 	"bytes"
 	"errors"
+	"strconv"
 )
 
 var (
@@ -95,3 +96,26 @@ const (
 	// H2Clean is the string used in HTTP headers by the client to upgrade the connection.
 	H2Clean = "h2c"
 )
+
+// statusCodes holds the decimal form of every three-digit status code, so
+// writing a response header does not format one.
+var statusCodes = func() [1000][]byte {
+	var codes [1000][]byte
+
+	for i := 100; i < 1000; i++ {
+		codes[i] = []byte(strconv.Itoa(i))
+	}
+
+	return codes
+}()
+
+// statusBytes returns the decimal form of a status code. Anything outside the
+// three digits HTTP/2 allows is reported as 500: the alternative is writing a
+// :status the peer has to reject.
+func statusBytes(code int) []byte {
+	if code < 100 || code > 999 {
+		code = 500
+	}
+
+	return statusCodes[code]
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/valyala/fasthttp"
@@ -61,6 +62,20 @@ type Ctx struct {
 	// back in a pool.
 	lck  sync.Mutex
 	done bool
+
+	// conn is the connection the request went out on, for the cancel timer.
+	conn atomic.Pointer[Conn]
+
+	// resLck guards everything to do with delivering the answer. It is separate
+	// from lck because the loops resolve a Ctx while they hold lck.
+	resLck   sync.Mutex
+	resolved bool
+	finished bool
+
+	// timer is the cancel timer, kept with the Ctx so that reusing one does not
+	// mean allocating a timer and a closure per request.
+	timer *time.Timer
+	armed bool
 }
 
 // acquire takes ownership of the Ctx for the connection. It reports false once
@@ -70,6 +85,20 @@ func (ctx *Ctx) acquire() bool {
 	ctx.lck.Lock()
 
 	if ctx.done {
+		ctx.lck.Unlock()
+		return false
+	}
+
+	return true
+}
+
+// acquireFor is acquire with a check that the Ctx is still the one that belongs
+// to this stream on this connection. A finished Ctx goes back to a pool, so a
+// pointer held past that point can end up pointing at somebody else's request.
+func (ctx *Ctx) acquireFor(c *Conn, id uint32) bool {
+	ctx.lck.Lock()
+
+	if ctx.done || ctx.conn.Load() != c || atomic.LoadUint32(&ctx.streamID) != id {
 		ctx.lck.Unlock()
 		return false
 	}
@@ -87,14 +116,108 @@ func (ctx *Ctx) takeBack() {
 	ctx.lck.Lock()
 	ctx.done = true
 	ctx.lck.Unlock()
+
+	ctx.resLck.Lock()
+	ctx.resolved = true
+	ctx.resLck.Unlock()
+}
+
+// markFinished records that the connection has dropped the stream from its
+// tables, which is what makes the Ctx safe to reuse.
+func (ctx *Ctx) markFinished() {
+	ctx.resLck.Lock()
+	ctx.finished = true
+	ctx.resLck.Unlock()
 }
 
 // resolve will resolve the context, meaning that provided an error,
 func (ctx *Ctx) resolve(err error) {
+	ctx.resLck.Lock()
+
+	if !ctx.resolved {
+		select {
+		case ctx.Err <- err:
+		default:
+		}
+	}
+
+	ctx.resLck.Unlock()
+}
+
+// fireTimeout runs when MaxResponseTime is up.
+func (ctx *Ctx) fireTimeout() {
+	// resolve rather than a bare send: the stream may have been answered
+	// already, in which case the buffer is full and a send would block this
+	// timer goroutine forever.
+	ctx.resolve(ErrRequestCanceled)
+
+	if c := ctx.conn.Load(); c != nil {
+		c.cancel(ctx)
+	}
+}
+
+// reusable reports whether the Ctx can go back in the pool: the connection has
+// finished with it and the cancel timer is not about to run.
+func (ctx *Ctx) reusable() bool {
+	stopped := true
+
+	if ctx.armed {
+		ctx.armed = false
+		stopped = ctx.timer.Stop()
+	}
+
+	ctx.resLck.Lock()
+	defer ctx.resLck.Unlock()
+
+	return stopped && ctx.finished
+}
+
+var clientCtxPool = sync.Pool{
+	New: func() interface{} {
+		ctx := &Ctx{
+			Err: make(chan error, 1),
+		}
+
+		// time.AfterFunc costs a timer and a closure. Building it once per
+		// pooled Ctx keeps that off the per-request path.
+		ctx.timer = time.AfterFunc(timerDisarmed, ctx.fireTimeout)
+		ctx.timer.Stop()
+
+		return ctx
+	},
+}
+
+func acquireCtx(req *fasthttp.Request, res *fasthttp.Response) *Ctx {
+	ctx := clientCtxPool.Get().(*Ctx)
+
+	// Nothing else refers to a Ctx that came out of the pool, so these are
+	// plain writes. A resolve that landed after the last caller stopped reading
+	// would still be sitting in the buffer.
 	select {
-	case ctx.Err <- err:
+	case <-ctx.Err:
 	default:
 	}
+
+	ctx.Request = req
+	ctx.Response = res
+	ctx.streamID = 0
+	ctx.done = false
+	ctx.resolved = false
+	ctx.finished = false
+	ctx.armed = false
+
+	ctx.conn.Store(nil)
+
+	return ctx
+}
+
+func releaseCtx(ctx *Ctx) {
+	ctx.Request = nil
+	ctx.Response = nil
+
+	ctx.conn.Store(nil)
+
+	clientCtxPool.Put(ctx)
 }
 
 type Client struct {
@@ -234,41 +357,31 @@ func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *
 
 	cl.lck.Unlock()
 
-	ch := make(chan error, 1)
-
-	var cancelTimer *time.Timer
-
-	ctx := &Ctx{
-		Request:  req,
-		Response: res,
-		Err:      ch,
-	}
+	ctx := acquireCtx(req, res)
 
 	if cl.opts.MaxResponseTime > 0 {
-		cancelTimer = time.AfterFunc(cl.opts.MaxResponseTime, func() {
-			// resolve rather than a bare send: the stream may have been
-			// answered already, in which case the buffer is full and a send
-			// would block this timer goroutine forever.
-			ctx.resolve(ErrRequestCanceled)
-			c.cancel(ctx)
-		})
+		ctx.armed = true
+		ctx.timer.Reset(cl.opts.MaxResponseTime)
 	}
 
 	c.Write(ctx)
 
-	err = <-ch
-
-	if cancelTimer != nil {
-		cancelTimer.Stop()
-	}
+	err = <-ctx.Err
 
 	// Both loops may still be part way through this Ctx, and the caller is free
 	// to reuse Request and Response as soon as we return.
+	reuse := ctx.reusable()
+
 	ctx.takeBack()
 
-	// ch is deliberately left open. The connection can still resolve this Ctx
-	// after we return (a late frame on the stream, or the cancel timer racing
-	// Stop), and resolving a closed channel panics.
+	// Err is deliberately never closed. The connection can still resolve this
+	// Ctx after we return (a late frame on the stream, or the cancel timer
+	// racing Stop), and resolving a closed channel panics. A Ctx only goes back
+	// in the pool when the connection has let go of it and the timer is not
+	// about to run, so nothing can reach the next request through it.
+	if reuse {
+		releaseCtx(ctx)
+	}
 
 	return false, err
 }

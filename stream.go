@@ -99,7 +99,9 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.startedAt = time.Time{}
 	strm.previousHeaderBytes = strm.previousHeaderBytes[:0]
 	strm.ctx = nil
-	strm.scheme = []byte("https")
+	// Appending a constant reuses the pooled buffer. Assigning []byte("https")
+	// throws it away and allocates on every stream.
+	strm.scheme = append(strm.scheme[:0], "https"...)
 	strm.path = strm.path[:0]
 	strm.pseudoMethod = false
 	strm.pseudoScheme = false

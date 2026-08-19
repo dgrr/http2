@@ -245,11 +245,16 @@ func BenchmarkFrameRoundTrip(b *testing.B) {
 
 	bw := bufio.NewWriter(&buf)
 
+	// Reused across iterations: a fresh bufio.Reader per iteration allocates a
+	// 4 KiB buffer, which would swamp what the benchmark is measuring.
+	br := bufio.NewReader(&buf)
+
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
+		br.Reset(&buf)
 
 		fr := AcquireFrameHeader()
 		fr.SetStream(1)
@@ -268,8 +273,6 @@ func BenchmarkFrameRoundTrip(b *testing.B) {
 
 		ReleaseFrameHeader(fr)
 
-		br := bufio.NewReader(bytes.NewReader(buf.Bytes()))
-
 		got, err := ReadFrameFrom(br)
 		if err != nil && err != io.EOF {
 			b.Fatal(err)
@@ -279,4 +282,47 @@ func BenchmarkFrameRoundTrip(b *testing.B) {
 			ReleaseFrameHeader(got)
 		}
 	}
+}
+
+// BenchmarkRequestWithBody covers the flow-controlled send path: the body goes
+// out in DATA frames metered against the server's windows.
+func BenchmarkRequestWithBody(b *testing.B) {
+	addr := benchServer(b)
+
+	hc := &fasthttp.HostClient{
+		Addr:      addr,
+		IsTLS:     true,
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	if err := ConfigureClient(hc, ClientOpts{PingInterval: -1}); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Cleanup(func() { _ = ClientFrom(hc).Close() })
+
+	body := bytes.Repeat([]byte("x"), 8<<10)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		req := fasthttp.AcquireRequest()
+		res := fasthttp.AcquireResponse()
+
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(res)
+
+		req.SetRequestURI("https://" + addr + "/")
+		req.Header.SetMethod(fasthttp.MethodPost)
+
+		for pb.Next() {
+			req.SetBody(body)
+
+			if err := hc.Do(req, res); err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
 }

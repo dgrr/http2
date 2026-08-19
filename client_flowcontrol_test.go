@@ -3,6 +3,7 @@ package http2
 import (
 	"crypto/tls"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -383,5 +384,154 @@ func TestClientStreamIDExhaustion(t *testing.T) {
 	// line too: a Ctx can be queued before the last id is taken.
 	if err := c.writeRequest(ctx); err == nil {
 		t.Error("writeRequest handed out a stream id past the end of the space")
+	}
+}
+
+// TestServerRefillsReceiveWindow uploads several times the server's receive
+// window over one connection. The server used to consume its window without
+// ever sending a WINDOW_UPDATE back, so a client that respects flow control
+// (which is every real one) stopped uploading for good once the initial window
+// was spent, part way through this test.
+func TestServerRefillsReceiveWindow(t *testing.T) {
+	certPEM, keyPEM := testKeyPair(t)
+
+	server := &fasthttp.Server{
+		Handler: func(ctx *fasthttp.RequestCtx) {
+			ctx.SetBodyString(strconv.Itoa(len(ctx.Request.Body())))
+		},
+		Logger: discardLogger{},
+	}
+	ConfigureServer(server, ServerConfig{PingInterval: -1})
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() { _ = server.ServeTLSEmbed(ln, certPEM, keyPEM) }()
+
+	addr := ln.Addr().String()
+
+	hc := &fasthttp.HostClient{
+		Addr:      addr,
+		IsTLS:     true,
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	if err := ConfigureClient(hc, ClientOpts{
+		PingInterval:    -1,
+		MaxResponseTime: 15 * time.Second,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = ClientFrom(hc).Close() })
+
+	// The server opens with a 4 MiB connection window, so this is several
+	// windows worth on a single connection.
+	const (
+		body   = 256 << 10
+		rounds = 64
+	)
+
+	req := fasthttp.AcquireRequest()
+	res := fasthttp.AcquireResponse()
+
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(res)
+
+	req.SetRequestURI("https://" + addr + "/")
+	req.Header.SetMethod(fasthttp.MethodPost)
+
+	payload := make([]byte, body)
+
+	for i := 0; i < rounds; i++ {
+		req.SetBody(payload)
+
+		if err := hc.Do(req, res); err != nil {
+			t.Fatalf("upload %d of %d (%d bytes sent so far): %v", i+1, rounds, i*body, err)
+		}
+
+		if got := string(res.Body()); got != strconv.Itoa(body) {
+			t.Fatalf("upload %d: server saw %s bytes, want %d", i+1, got, body)
+		}
+	}
+}
+
+// TestServerLimitsRequestBody checks the server refuses a body larger than the
+// fasthttp server is configured to accept, both when the size is declared up
+// front and when the peer just keeps sending. The body is buffered in memory,
+// so without this one stream can grow until the process dies.
+func TestServerLimitsRequestBody(t *testing.T) {
+	const limit = 64 << 10
+
+	certPEM, keyPEM := testKeyPair(t)
+
+	var served atomic.Int64
+
+	server := &fasthttp.Server{
+		Handler: func(ctx *fasthttp.RequestCtx) {
+			served.Add(1)
+			ctx.SetBodyString("ok")
+		},
+		MaxRequestBodySize: limit,
+		Logger:             discardLogger{},
+	}
+	ConfigureServer(server, ServerConfig{PingInterval: -1})
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() { _ = server.ServeTLSEmbed(ln, certPEM, keyPEM) }()
+
+	addr := ln.Addr().String()
+
+	hc := &fasthttp.HostClient{
+		Addr:      addr,
+		IsTLS:     true,
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	if err := ConfigureClient(hc, ClientOpts{
+		PingInterval:    -1,
+		MaxResponseTime: 10 * time.Second,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = ClientFrom(hc).Close() })
+
+	post := func(n int) error {
+		req := fasthttp.AcquireRequest()
+		res := fasthttp.AcquireResponse()
+
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(res)
+
+		req.SetRequestURI("https://" + addr + "/")
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.SetBody(make([]byte, n))
+
+		return hc.Do(req, res)
+	}
+
+	if err := post(limit); err != nil {
+		t.Fatalf("a body at the limit was refused: %v", err)
+	}
+
+	before := served.Load()
+
+	if err := post(limit * 4); err == nil {
+		t.Error("a body four times the limit was accepted")
+	}
+
+	if served.Load() != before {
+		t.Error("the handler ran on a request whose body was over the limit")
 	}
 }

@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -73,9 +72,13 @@ type serverConn struct {
 	closeRef uint32
 
 	// maxRequestTime is the max time of a request over one single stream
-	maxHeaderList  int
-	maxRequestTime time.Duration
-	pingInterval   time.Duration
+	maxHeaderList int
+	// maxRequestBodySize mirrors fasthttp.Server.MaxRequestBodySize. The
+	// request body is buffered in memory, so without a cap one stream can grow
+	// until the process runs out.
+	maxRequestBodySize int
+	maxRequestTime     time.Duration
+	pingInterval       time.Duration
 	// maxIdleTime is the max time a client can be connected without sending any REQUEST.
 	// As highlighted, PING/PONG frames are completely excluded.
 	//
@@ -444,8 +447,25 @@ func (sc *serverConn) handleStreams() {
 		}
 	}
 
+	// Frames come off sc.reader owned by this goroutine and have to go back to
+	// the pool once the iteration that handled them is done. Releasing at the
+	// top of the next iteration covers every path out of the body, of which
+	// there are many, without a release on each one.
+	var handled *FrameHeader
+
+	releaseHandled := func() {
+		if handled != nil {
+			ReleaseFrameHeader(handled)
+			handled = nil
+		}
+	}
+
+	defer releaseHandled()
+
 loop:
 	for {
+		releaseHandled()
+
 		select {
 		case <-sc.closer:
 			break loop
@@ -499,6 +519,8 @@ loop:
 				return
 			}
 
+			handled = fr
+
 			// Connection-level flow-control frames are forwarded here so the
 			// window bookkeeping and the resumption of buffered response data
 			// happen in this single goroutine, in frame order.
@@ -514,7 +536,6 @@ loop:
 							s.window += delta
 							if s.window > 1<<31-1 {
 								sc.writeGoAway(0, FlowControlError, "stream flow-control window exceeded maximum")
-								ReleaseFrameHeader(fr)
 								break loop
 							}
 						}
@@ -525,14 +546,12 @@ loop:
 					sc.clientWindow += int64(fr.Body().(*WindowUpdate).Increment())
 					if sc.clientWindow > 1<<31-1 {
 						sc.writeGoAway(0, FlowControlError, "connection flow-control window exceeded maximum")
-						ReleaseFrameHeader(fr)
 						break loop
 					}
 
 					sc.flushStreams(strms, closeStream)
 				}
 
-				ReleaseFrameHeader(fr)
 				continue
 			}
 
@@ -728,6 +747,44 @@ loop:
 	}
 }
 
+// consumeRecvWindow accounts for DATA that has been received and hands the
+// space straight back with WINDOW_UPDATE. Without it the peer's send window
+// runs down and never recovers, so a client that respects flow control stops
+// uploading for good once it has sent the initial window.
+// https://httpwg.org/specs/rfc7540.html#rfc.section.6.9
+func (sc *serverConn) consumeRecvWindow(strm *Stream, fr *FrameHeader, n int) {
+	if n <= 0 {
+		return
+	}
+
+	// The body has already been copied into the request, so the stream window
+	// goes back in full. There is nothing to give back on a stream the peer has
+	// just finished with.
+	if !fr.Flags().Has(FlagEndStream) {
+		sc.writeWindowUpdate(strm.ID(), n)
+	}
+
+	sc.currentWindow -= int32(n)
+	if sc.currentWindow < sc.maxWindow/2 {
+		inc := sc.maxWindow - sc.currentWindow
+		sc.currentWindow = sc.maxWindow
+
+		sc.writeWindowUpdate(0, int(inc))
+	}
+}
+
+func (sc *serverConn) writeWindowUpdate(id uint32, inc int) {
+	fr := AcquireFrameHeader()
+	fr.SetStream(id)
+
+	wu := AcquireFrame(FrameWindowUpdate).(*WindowUpdate)
+	wu.SetIncrement(inc)
+
+	fr.SetBody(wu)
+
+	sc.writer <- fr
+}
+
 func (sc *serverConn) writeReset(strm uint32, code ErrorCode) {
 	r := AcquireFrame(FrameResetStream).(*RstStream)
 
@@ -906,7 +963,14 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 
 		data := fr.Body().(*Data).Data()
 		strm.recvBody += len(data)
+
+		if sc.maxRequestBodySize > 0 && strm.recvBody > sc.maxRequestBodySize {
+			return NewResetStreamError(EnhanceYourCalm, "request body is too large")
+		}
+
 		strm.ctx.Request.AppendBody(data)
+
+		sc.consumeRecvWindow(strm, fr, fr.Len())
 	case FrameResetStream:
 		if strm.State() == StreamStateIdle {
 			return NewGoAwayError(ProtocolError, "RST_STREAM on idle stream")
@@ -949,7 +1013,10 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 		return NewGoAwayError(ProtocolError, "stream that depends on itself")
 	}
 
+	// Appending to the stream's own buffer and handing it back keeps the
+	// capacity across frames instead of allocating a header block every time.
 	b := append(strm.previousHeaderBytes, fr.Body().(FrameWithHeaders).Headers()...)
+	strm.previousHeaderBytes = b[:0]
 
 	hf := AcquireHeaderField()
 	defer ReleaseHeaderField(hf)
@@ -958,7 +1025,6 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 
 	var err error
 
-	strm.previousHeaderBytes = strm.previousHeaderBytes[:0]
 	fieldsProcessed := 0
 
 	for len(b) > 0 {
@@ -1061,6 +1127,10 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 			req.Header.SetContentTypeBytes(v)
 		case bytes.Equal(k, StringContentLength):
 			if n, perr := parseUint(v); perr == nil {
+				if sc.maxRequestBodySize > 0 && n > sc.maxRequestBodySize {
+					return NewResetStreamError(EnhanceYourCalm, "request body is too large")
+				}
+
 				strm.contentLength = n
 				strm.hasContentLength = true
 			}
@@ -1392,11 +1462,7 @@ func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
 	defer ReleaseHeaderField(hf)
 
 	hf.SetKeyBytes(StringStatus)
-	hf.SetValue(
-		strconv.FormatInt(
-			int64(res.Header.StatusCode()), 10,
-		),
-	)
+	hf.SetValueBytes(statusBytes(res.Header.StatusCode()))
 
 	dst.AppendHeaderField(hp, hf, true)
 
