@@ -326,32 +326,36 @@ func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *
 		return false, ErrClientClosed
 	}
 
+	// Walk what we have, dropping the connections that have closed, and dial at
+	// most one replacement. The old form of this loop went back to the start of
+	// the list after every failed candidate, so a server that advertises no
+	// concurrent streams kept the client dialling for ever.
 	var next *list.Element
 
-	for e := cl.conns.Front(); c == nil; e = next {
-		if e != nil {
-			c = e.Value.(*Conn)
-		} else {
-			c, e, err = cl.createConn()
-			if err != nil {
-				// Unlock explicitly: an early return used to leave the mutex
-				// held, wedging every later request on this client.
-				cl.lck.Unlock()
-				return false, err
-			}
-		}
+	for e := cl.conns.Front(); e != nil; e = next {
+		next = e.Next()
 
-		// if we can't open a stream, then move on to the next one.
-		if !c.CanOpenStream() {
-			c = nil
-			next = e.Next()
-		}
+		conn := e.Value.(*Conn)
 
-		// if the connection has been closed, then just remove the connection.
-		if c != nil && c.Closed() {
-			next = e.Next()
+		if conn.Closed() {
 			cl.conns.Remove(e)
-			c = nil
+			continue
+		}
+
+		if conn.CanOpenStream() {
+			c = conn
+			break
+		}
+	}
+
+	if c == nil {
+		c, _, err = cl.createConn()
+		if err != nil {
+			// Unlock explicitly: an early return used to leave the mutex held,
+			// wedging every later request on this client.
+			cl.lck.Unlock()
+
+			return false, err
 		}
 	}
 
@@ -383,5 +387,21 @@ func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *
 		releaseCtx(ctx)
 	}
 
-	return false, err
+	// A request that never reached the server can be sent again. fasthttp
+	// decides whether to, under its own retry policy: idempotent methods only,
+	// up to MaxIdemponentCallAttempts. Saying so here is what turns a
+	// connection the server had already finished with into a retry rather than
+	// an error the caller has to handle.
+	return retryable(err), err
+}
+
+// retryable reports whether the request definitely did not reach the server.
+func retryable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return errors.Is(err, ErrConnectionClosed) ||
+		errors.Is(err, ErrNotAvailableStreams) ||
+		errors.Is(err, ErrNoMoreStreamIDs)
 }
