@@ -1,6 +1,7 @@
 package http2
 
 import (
+	"io"
 	"sync"
 	"time"
 
@@ -67,6 +68,13 @@ type Stream struct {
 	// END_STREAM must be set once pendingData is fully flushed.
 	pendingData []byte
 	pendingEnd  bool
+
+	// bodyStream is a streamed response body, pulled from a frame at a time as
+	// the windows allow rather than drained into the writer in one go.
+	// bodySize is the declared content length, negative when it is unknown.
+	bodyStream io.Reader
+	bodySize   int64
+	bodyRead   int64
 	// responded is set once the response has been generated and handed to the
 	// writer, so the half-closed handling does not run the handler twice.
 	responded bool
@@ -110,6 +118,9 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.recvBody = 0
 	strm.pendingData = strm.pendingData[:0]
 	strm.pendingEnd = false
+	strm.bodyStream = nil
+	strm.bodySize = 0
+	strm.bodyRead = 0
 	strm.responded = false
 	strm.origType = 0
 	strm.headerListSize = 0
@@ -151,4 +162,10 @@ func (s *Stream) Ctx() *fasthttp.RequestCtx {
 
 func (s *Stream) SetData(ctx *fasthttp.RequestCtx) {
 	s.ctx = ctx
+}
+
+// hasMoreToSend reports whether the stream still owes the peer response data,
+// either buffered or still to be pulled from a streamed body.
+func (s *Stream) hasMoreToSend() bool {
+	return len(s.pendingData) > 0 || s.bodyStream != nil
 }

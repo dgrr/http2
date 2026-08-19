@@ -396,3 +396,59 @@ func TestInteropStdlibClientSendsTrailers(t *testing.T) {
 		t.Fatal("the handler never ran")
 	}
 }
+
+// TestInteropStdlibClientReadsStreamedBody covers a response the handler
+// streams rather than buffers, which is the path fasthttp takes for
+// SetBodyStream and ServeFile. It is metered against the peer's windows a frame
+// at a time, so this checks the whole body still arrives, in order, against a
+// client that enforces flow control.
+func TestInteropStdlibClientReadsStreamedBody(t *testing.T) {
+	const size = 2 << 20
+
+	certPEM, keyPEM := testKeyPair(t)
+
+	server := &fasthttp.Server{
+		Handler: func(ctx *fasthttp.RequestCtx) {
+			ctx.SetBodyStream(bytes.NewReader(bytes.Repeat([]byte("x"), size)), size)
+		},
+		Logger: discardLogger{},
+	}
+	ConfigureServer(server, ServerConfig{PingInterval: -1})
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() { _ = server.ServeTLSEmbed(ln, certPEM, keyPEM) }()
+
+	addr := ln.Addr().String()
+	waitForServer(t, addr)
+
+	tr := &xhttp2.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	client := &http.Client{Transport: tr, Timeout: 30 * time.Second}
+
+	t.Cleanup(tr.CloseIdleConnections)
+
+	res, err := client.Get("https://" + addr + "/")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+
+	defer func() { _ = res.Body.Close() }()
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("reading a streamed body: %v", err)
+	}
+
+	if len(body) != size {
+		t.Fatalf("body = %d bytes, want %d", len(body), size)
+	}
+
+	if want := bytes.Repeat([]byte("x"), size); !bytes.Equal(body, want) {
+		t.Error("the streamed body came back altered")
+	}
+}

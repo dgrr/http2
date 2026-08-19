@@ -452,6 +452,8 @@ func (sc *serverConn) handleStreams() {
 		markClosed(strmID)
 		strms.Del(strm.ID())
 
+		sc.closeBodyStream(strm)
+
 		ctxPool.Put(strm.ctx)
 		streamPool.Put(strm)
 
@@ -736,7 +738,7 @@ loop:
 				} else if sc.handleEndRequest(strm) {
 					strm.SetState(StreamStateClosed)
 				}
-			} else if strm.responded && len(strm.pendingData) > 0 {
+			} else if strm.responded && strm.hasMoreToSend() {
 				// a stream-level WINDOW_UPDATE may have opened up space
 				if sc.sendData(strm) {
 					strm.SetState(StreamStateClosed)
@@ -1243,23 +1245,68 @@ func (sc *serverConn) handleEndRequest(strm *Stream) bool {
 		return true
 	}
 
-	// Streaming bodies bypass the flow-control buffering below; they are
-	// chunked by frame size only.
 	if ctx.Response.IsBodyStream() {
-		streamWriter := acquireStreamWrite()
-		streamWriter.strm = strm
-		streamWriter.sc = sc
-		streamWriter.size = int64(ctx.Response.Header.ContentLength())
-		_ = ctx.Response.BodyWriteTo(streamWriter)
-		releaseStreamWrite(streamWriter)
-		return true
+		// The body is pulled a frame at a time as the windows allow. Draining
+		// it straight into the writer, which is what this used to do, put the
+		// whole response on the wire regardless of what the peer had said it
+		// could take.
+		strm.bodyStream = ctx.Response.BodyStream()
+		strm.bodySize = int64(ctx.Response.Header.ContentLength())
+		strm.bodyRead = 0
+		strm.pendingData = strm.pendingData[:0]
+		strm.pendingEnd = false
+	} else {
+		// Buffer the body and send as much as the flow-control windows allow.
+		strm.pendingData = append(strm.pendingData[:0], ctx.Response.Body()...)
+		strm.pendingEnd = true
 	}
 
-	// Buffer the body and send as much as the flow-control windows allow.
-	strm.pendingData = append(strm.pendingData[:0], ctx.Response.Body()...)
-	strm.pendingEnd = true
-
 	return sc.sendData(strm)
+}
+
+// refillPending pulls the next chunk of a streamed response body into the
+// stream's buffer.
+func (sc *serverConn) refillPending(strm *Stream) error {
+	buf := copyBufPool.Get().(*[]byte)
+	defer copyBufPool.Put(buf)
+
+	n, err := strm.bodyStream.Read(*buf)
+	if n > 0 {
+		strm.pendingData = append(strm.pendingData[:0], (*buf)[:n]...)
+		strm.bodyRead += int64(n)
+	}
+
+	switch {
+	case errors.Is(err, io.EOF):
+		strm.pendingEnd = true
+	case err != nil:
+		return err
+	case n == 0:
+		return errors.New("BUG: io.Reader returned 0, nil")
+	}
+
+	// A declared content length is the end of the body even if the reader has
+	// not said so yet.
+	if strm.bodySize >= 0 && strm.bodyRead >= strm.bodySize {
+		strm.pendingEnd = true
+	}
+
+	return nil
+}
+
+// closeBodyStream releases a streamed response body. fasthttp hands out the
+// reader, and whatever is behind it (a file, a pipe) stays open until this
+// runs.
+func (sc *serverConn) closeBodyStream(strm *Stream) {
+	if strm.bodyStream == nil {
+		return
+	}
+
+	strm.bodyStream = nil
+
+	if strm.ctx != nil {
+		_ = strm.ctx.Response.CloseBodyStream()
+	}
 }
 
 // sendData writes as much of strm.pendingData as the connection and stream
@@ -1267,7 +1314,27 @@ func (sc *serverConn) handleEndRequest(strm *Stream) bool {
 // frame size. It returns true once the entire buffer (and the END_STREAM flag)
 // has been sent. A negative window simply blocks until a WINDOW_UPDATE arrives.
 func (sc *serverConn) sendData(strm *Stream) bool {
-	for len(strm.pendingData) > 0 {
+	for {
+		if len(strm.pendingData) == 0 {
+			if strm.bodyStream == nil {
+				break
+			}
+
+			if err := sc.refillPending(strm); err != nil {
+				// The response cannot be finished, and the peer is part way
+				// through a body it will otherwise wait for.
+				sc.logger.Printf("ERROR: reading the response body: %s\n", err)
+				sc.closeBodyStream(strm)
+				sc.writeReset(strm.ID(), InternalError)
+
+				return true
+			}
+
+			if len(strm.pendingData) == 0 {
+				break
+			}
+		}
+
 		avail := strm.window
 		if sc.clientWindow < avail {
 			avail = sc.clientWindow
@@ -1305,6 +1372,8 @@ func (sc *serverConn) sendData(strm *Stream) bool {
 		sc.clientWindow -= step
 	}
 
+	sc.closeBodyStream(strm)
+
 	return true
 }
 
@@ -1315,7 +1384,7 @@ func (sc *serverConn) flushStreams(strms Streams, closeStream func(*Stream)) {
 	var done []*Stream
 
 	for _, s := range strms {
-		if s.responded && len(s.pendingData) > 0 && sc.sendData(s) {
+		if s.responded && s.hasMoreToSend() && sc.sendData(s) {
 			done = append(done, s)
 		}
 	}
@@ -1327,122 +1396,16 @@ func (sc *serverConn) flushStreams(strms Streams, closeStream func(*Stream)) {
 }
 
 var (
+	// Pointers, not slices: putting a slice back boxes it into an interface,
+	// which is an allocation every time.
 	copyBufPool = sync.Pool{
 		New: func() interface{} {
-			return make([]byte, 1<<14) // max frame size 16384
-		},
-	}
-	streamWritePool = sync.Pool{
-		New: func() interface{} {
-			return &streamWrite{}
+			b := make([]byte, 1<<14) // max frame size 16384
+
+			return &b
 		},
 	}
 )
-
-type streamWrite struct {
-	size    int64
-	written int64
-	strm    *Stream
-	sc      *serverConn
-}
-
-func acquireStreamWrite() *streamWrite {
-	v := streamWritePool.Get()
-	if v == nil {
-		return &streamWrite{}
-	}
-	return v.(*streamWrite)
-}
-
-func releaseStreamWrite(streamWrite *streamWrite) {
-	streamWrite.Reset()
-	streamWritePool.Put(streamWrite)
-}
-
-func (s *streamWrite) Reset() {
-	s.size = 0
-	s.written = 0
-	s.strm = nil
-	s.sc = nil
-}
-
-func (s *streamWrite) Write(body []byte) (n int, err error) {
-	if (s.size <= 0 && s.written > 0) || (s.size > 0 && s.written >= s.size) {
-		return 0, errors.New("writer closed")
-	}
-
-	step := 1 << 14 // max frame size 16384
-
-	n = len(body)
-	s.written += int64(n)
-
-	end := s.size < 0 || s.written >= s.size
-	for i := 0; i < n; i += step {
-		if i+step >= n {
-			step = n - i
-		}
-
-		fr := AcquireFrameHeader()
-		fr.SetStream(s.strm.ID())
-
-		data := AcquireFrame(FrameData).(*Data)
-		data.SetEndStream(end && i+step == n)
-		data.SetPadding(false)
-		data.SetData(body[i : step+i])
-
-		fr.SetBody(data)
-
-		s.sc.write(fr)
-	}
-
-	return len(body), nil
-}
-
-func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
-	buf := copyBufPool.Get().([]byte)
-
-	if s.size < 0 {
-		lrSize := limitedReaderSize(r)
-		if lrSize >= 0 {
-			s.size = lrSize
-		}
-	}
-
-	var n int
-	for {
-		n, err = r.Read(buf[0:])
-		if n <= 0 && err == nil {
-			err = errors.New("BUG: io.Reader returned 0, nil")
-		}
-
-		if err != nil {
-			break
-		}
-
-		fr := AcquireFrameHeader()
-		fr.SetStream(s.strm.ID())
-
-		data := AcquireFrame(FrameData).(*Data)
-		data.SetEndStream(err != nil || (s.size >= 0 && num+int64(n) >= s.size))
-		data.SetPadding(false)
-		data.SetData(buf[:n])
-		fr.SetBody(data)
-
-		s.sc.write(fr)
-
-		num += int64(n)
-		if s.size >= 0 && num >= s.size {
-			break
-		}
-	}
-
-	copyBufPool.Put(buf)
-	if errors.Is(err, io.EOF) {
-		return num, nil
-	}
-
-	return num, err
-}
 
 func (sc *serverConn) sendPingAndSchedule() {
 	sc.writePing()
@@ -1551,12 +1514,4 @@ func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
 
 		dst.AppendHeaderField(hp, hf, false)
 	}
-}
-
-func limitedReaderSize(r io.Reader) int64 {
-	lr, ok := r.(*io.LimitedReader)
-	if !ok {
-		return -1
-	}
-	return lr.N
 }
