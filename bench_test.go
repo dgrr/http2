@@ -326,3 +326,49 @@ func BenchmarkRequestWithBody(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkConcurrentUploads keeps many streams open at once: bodies arrive
+// over several frames, so the server holds every stream open while it is being
+// sent rather than opening and closing one per request. This is where anything
+// the server does per frame and per stream shows up.
+func BenchmarkConcurrentUploads(b *testing.B) {
+	addr := benchServer(b)
+
+	hc := &fasthttp.HostClient{
+		Addr:      addr,
+		IsTLS:     true,
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	if err := ConfigureClient(hc, ClientOpts{PingInterval: -1}); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Cleanup(func() { _ = ClientFrom(hc).Close() })
+
+	body := bytes.Repeat([]byte("x"), 256<<10)
+
+	b.SetParallelism(64)
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		req := fasthttp.AcquireRequest()
+		res := fasthttp.AcquireResponse()
+
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(res)
+
+		req.SetRequestURI("https://" + addr + "/")
+		req.Header.SetMethod(fasthttp.MethodPost)
+
+		for pb.Next() {
+			req.SetBody(body)
+
+			if err := hc.Do(req, res); err != nil {
+				b.Error(err)
+				return
+			}
+		}
+	})
+}

@@ -22,6 +22,11 @@ import (
 // not fire before it gets Reset to a real interval.
 const timerDisarmed = time.Duration(math.MaxInt64)
 
+// maxDataFrameSize is the largest DATA frame the server emits. It is the
+// smallest SETTINGS_MAX_FRAME_SIZE the protocol allows, so every peer accepts
+// it without having to be asked.
+const maxDataFrameSize = 1 << 14
+
 // errConnClosed signals that the read loop terminated the connection on
 // purpose, typically after sending a connection-level GOAWAY. It is handled
 // as a graceful shutdown rather than a transport error.
@@ -1253,11 +1258,14 @@ func (sc *serverConn) handleEndRequest(strm *Stream) bool {
 		strm.bodyStream = ctx.Response.BodyStream()
 		strm.bodySize = int64(ctx.Response.Header.ContentLength())
 		strm.bodyRead = 0
-		strm.pendingData = strm.pendingData[:0]
+		strm.pendingData = nil
 		strm.pendingEnd = false
 	} else {
-		// Buffer the body and send as much as the flow-control windows allow.
-		strm.pendingData = append(strm.pendingData[:0], ctx.Response.Body()...)
+		// The response body is the stream's to read until the stream closes,
+		// which cannot happen before every byte of it has been queued, so this
+		// points at it rather than copying it. Data.SetData copies each chunk
+		// on its way into a frame, so the write loop never sees this buffer.
+		strm.pendingData = ctx.Response.Body()
 		strm.pendingEnd = true
 	}
 
@@ -1267,12 +1275,17 @@ func (sc *serverConn) handleEndRequest(strm *Stream) bool {
 // refillPending pulls the next chunk of a streamed response body into the
 // stream's buffer.
 func (sc *serverConn) refillPending(strm *Stream) error {
-	buf := copyBufPool.Get().(*[]byte)
-	defer copyBufPool.Put(buf)
+	// Read straight into the stream's own buffer: going via a scratch buffer
+	// would copy every byte of the body a second time.
+	if cap(strm.bodyBuf) < maxDataFrameSize {
+		strm.bodyBuf = make([]byte, maxDataFrameSize)
+	}
 
-	n, err := strm.bodyStream.Read(*buf)
+	buf := strm.bodyBuf[:maxDataFrameSize]
+
+	n, err := strm.bodyStream.Read(buf)
 	if n > 0 {
-		strm.pendingData = append(strm.pendingData[:0], (*buf)[:n]...)
+		strm.pendingData = buf[:n]
 		strm.bodyRead += int64(n)
 	}
 
@@ -1344,7 +1357,7 @@ func (sc *serverConn) sendData(strm *Stream) bool {
 			return false
 		}
 
-		step := int64(1 << 14) // max frame size 16384
+		step := int64(maxDataFrameSize)
 		if avail < step {
 			step = avail
 		}
@@ -1394,18 +1407,6 @@ func (sc *serverConn) flushStreams(strms Streams, closeStream func(*Stream)) {
 		closeStream(s)
 	}
 }
-
-var (
-	// Pointers, not slices: putting a slice back boxes it into an interface,
-	// which is an allocation every time.
-	copyBufPool = sync.Pool{
-		New: func() interface{} {
-			b := make([]byte, 1<<14) // max frame size 16384
-
-			return &b
-		},
-	}
-)
 
 func (sc *serverConn) sendPingAndSchedule() {
 	sc.writePing()

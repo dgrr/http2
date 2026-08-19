@@ -72,9 +72,11 @@ type Stream struct {
 	// bodyStream is a streamed response body, pulled from a frame at a time as
 	// the windows allow rather than drained into the writer in one go.
 	// bodySize is the declared content length, negative when it is unknown.
+	// bodyBuf is where each chunk is read, and pendingData points into it.
 	bodyStream io.Reader
 	bodySize   int64
 	bodyRead   int64
+	bodyBuf    []byte
 	// responded is set once the response has been generated and handed to the
 	// writer, so the half-closed handling does not run the handler twice.
 	responded bool
@@ -116,7 +118,10 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.contentLength = 0
 	strm.hasContentLength = false
 	strm.recvBody = 0
-	strm.pendingData = strm.pendingData[:0]
+	// nil rather than [:0]: for a buffered response pendingData points straight
+	// at the response body rather than at a buffer of the stream's own, and
+	// appending to that would write into a response somebody else now owns.
+	strm.pendingData = nil
 	strm.pendingEnd = false
 	strm.bodyStream = nil
 	strm.bodySize = 0

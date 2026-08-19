@@ -316,14 +316,14 @@ func (cl *Client) createConn() (*Conn, *list.Element, error) {
 
 var ErrRequestCanceled = errors.New("request timed out")
 
-func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *fasthttp.Response) (retry bool, err error) {
-	var c *Conn
-
+// pickConn returns a connection with room for another stream, dialling one if
+// none of the connections the client holds has any.
+func (cl *Client) pickConn() (*Conn, error) {
 	cl.lck.Lock()
+	defer cl.lck.Unlock()
 
 	if cl.closed {
-		cl.lck.Unlock()
-		return false, ErrClientClosed
+		return nil, ErrClientClosed
 	}
 
 	// Walk what we have, dropping the connections that have closed, and dial at
@@ -343,23 +343,45 @@ func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *
 		}
 
 		if conn.CanOpenStream() {
-			c = conn
-			break
+			return conn, nil
 		}
 	}
 
-	if c == nil {
-		c, _, err = cl.createConn()
-		if err != nil {
-			// Unlock explicitly: an early return used to leave the mutex held,
-			// wedging every later request on this client.
-			cl.lck.Unlock()
+	c, _, err := cl.createConn()
 
+	return c, err
+}
+
+// roundTripAttempts bounds how many connections one request will try before
+// giving up. Each attempt costs nothing but a pick, because a retry only
+// happens when the request never reached the wire.
+const roundTripAttempts = 4
+
+func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *fasthttp.Response) (retry bool, err error) {
+	for attempt := 0; ; attempt++ {
+		err = cl.roundTripOnce(req, res)
+		if err == nil || !retryable(err) {
 			return false, err
 		}
-	}
 
-	cl.lck.Unlock()
+		// Nothing went out, so this can go on another connection whatever the
+		// method is. Picking again skips the connection that just turned it
+		// away: it either has no streams left or has closed, and pickConn
+		// checks both.
+		if attempt == roundTripAttempts-1 {
+			// A request that never reached the server can be sent again.
+			// fasthttp decides whether to, under its own retry policy:
+			// idempotent methods only, up to MaxIdemponentCallAttempts.
+			return true, err
+		}
+	}
+}
+
+func (cl *Client) roundTripOnce(req *fasthttp.Request, res *fasthttp.Response) error {
+	c, err := cl.pickConn()
+	if err != nil {
+		return err
+	}
 
 	ctx := acquireCtx(req, res)
 
@@ -387,12 +409,7 @@ func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *
 		releaseCtx(ctx)
 	}
 
-	// A request that never reached the server can be sent again. fasthttp
-	// decides whether to, under its own retry policy: idempotent methods only,
-	// up to MaxIdemponentCallAttempts. Saying so here is what turns a
-	// connection the server had already finished with into a retry rather than
-	// an error the caller has to handle.
-	return retryable(err), err
+	return err
 }
 
 // retryable reports whether the request definitely did not reach the server.

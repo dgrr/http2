@@ -91,10 +91,10 @@ func TestAllocsPerRequest(t *testing.T) {
 
 	perRequest := float64(after.Mallocs-before.Mallocs) / n
 
-	// Around 3 with everything pooled. The ceiling leaves room for the runtime
-	// and the TLS layer to move without failing the build, while still
+	// Around 2.5 with everything pooled. The ceiling leaves room for the
+	// runtime and the TLS layer to move without failing the build, while still
 	// catching anything that starts allocating per request or per frame.
-	const ceiling = 12
+	const ceiling = 10
 
 	t.Logf("%.2f allocations per request", perRequest)
 
