@@ -2,7 +2,10 @@ package http2
 
 import (
 	"crypto/tls"
+	"net"
 	"runtime"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -206,6 +209,132 @@ func TestSoakLongLivedConnections(t *testing.T) {
 
 	if perRequest := float64(grew) / float64(requests); perRequest > 16 {
 		t.Errorf("heap grows %.1f bytes per request on a held-open connection", perRequest)
+	}
+}
+
+// TestSoakUploads pushes bodies through the flow-controlled send path for long
+// enough that the connection has to be granted its window back many times over.
+// A request whose body is held back leaves state on both ends, so anything that
+// is not cleaned up when the body finishes shows up here as heap that climbs
+// and as streams the connection never lets go of.
+func TestSoakUploads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("soak test skipped in short mode")
+	}
+
+	const (
+		rounds = 200
+		body   = 64 << 10
+	)
+
+	certPEM, keyPEM := testKeyPair(t)
+
+	server := &fasthttp.Server{
+		Handler: func(ctx *fasthttp.RequestCtx) {
+			ctx.SetBodyString(strconv.Itoa(len(ctx.Request.Body())))
+		},
+		MaxRequestBodySize: 1 << 20,
+		Logger:             discardLogger{},
+	}
+	ConfigureServer(server, ServerConfig{PingInterval: -1})
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() { _ = server.ServeTLSEmbed(ln, certPEM, keyPEM) }()
+
+	addr := ln.Addr().String()
+
+	hc := &fasthttp.HostClient{
+		Addr:      addr,
+		IsTLS:     true,
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	if err := ConfigureClient(hc, ClientOpts{
+		PingInterval:    -1,
+		MaxResponseTime: 20 * time.Second,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := ClientFrom(hc)
+
+	t.Cleanup(func() { _ = cl.Close() })
+
+	payload := make([]byte, body)
+
+	upload := func(n int) {
+		t.Helper()
+
+		for i := 0; i < n; i++ {
+			req := fasthttp.AcquireRequest()
+			res := fasthttp.AcquireResponse()
+
+			req.SetRequestURI("https://" + addr + "/")
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.SetBody(payload)
+
+			if err := hc.Do(req, res); err != nil {
+				t.Fatalf("upload %d: %v", i, err)
+			}
+
+			if got := string(res.Body()); got != strconv.Itoa(body) {
+				t.Fatalf("upload %d: server saw %s bytes, want %d", i, got, body)
+			}
+
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(res)
+		}
+	}
+
+	upload(20)
+
+	grew := heapDelta(func() { upload(rounds) })
+
+	sent := rounds * body
+
+	t.Logf("%d uploads of %d bytes (%.1f MiB in total): heap delta %.1f MiB",
+		rounds, body, float64(sent)/(1<<20), float64(grew)/(1<<20))
+
+	if perUpload := float64(grew) / float64(rounds); perUpload > float64(body)/4 {
+		t.Errorf("heap grows %.0f bytes per upload of %d", perUpload, body)
+	}
+
+	// Everything the connection was tracking for those bodies should be gone.
+	cl.lck.Lock()
+
+	conns := make([]*Conn, 0, cl.conns.Len())
+	for e := cl.conns.Front(); e != nil; e = e.Next() {
+		conns = append(conns, e.Value.(*Conn))
+	}
+
+	cl.lck.Unlock()
+
+	for _, c := range conns {
+		c.sendLck.Lock()
+		pending := len(c.pending)
+		c.sendLck.Unlock()
+
+		if pending != 0 {
+			t.Errorf("connection still holds %d unsent request bodies", pending)
+		}
+
+		c.reqLck.Lock()
+		queued := len(c.reqQueued)
+		c.reqLck.Unlock()
+
+		if queued != 0 {
+			t.Errorf("connection still holds %d finished requests", queued)
+		}
+
+		if n := atomic.LoadInt32(&c.openStreams); n != 0 {
+			t.Errorf("connection still counts %d open streams", n)
+		}
 	}
 }
 

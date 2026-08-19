@@ -243,6 +243,24 @@ func (c *Conn) dequeueReq(id uint32) {
 	c.reqLck.Unlock()
 }
 
+// takeReq drops a stream from the table and reports whether it was still
+// there. Exactly one caller gets a true, which is what decides who accounts for
+// the stream closing: a cancel and a late response can both reach the same
+// stream, and counting it twice would leave the connection thinking it has
+// fewer streams open than it does.
+func (c *Conn) takeReq(id uint32) bool {
+	c.reqLck.Lock()
+
+	_, ok := c.reqQueued[id]
+	if ok {
+		delete(c.reqQueued, id)
+	}
+
+	c.reqLck.Unlock()
+
+	return ok
+}
+
 // loadReq returns the request waiting on a stream, if there is one.
 func (c *Conn) loadReq(id uint32) (*Ctx, bool) {
 	c.reqLck.Lock()
@@ -563,6 +581,14 @@ func (c *Conn) cancel(ctx *Ctx) {
 	// resetting, and the buffer stops being ours as soon as RoundTrip returns.
 	c.deletePending(id)
 
+	// Drop the stream here rather than waiting for a response that may never
+	// come. Leaving it queued kept the Ctx alive for the life of the connection
+	// and, worse, left openStreams counting a stream that was over, so enough
+	// timed-out requests made the connection refuse to open any more.
+	if c.takeReq(id) {
+		atomic.AddInt32(&c.openStreams, -1)
+	}
+
 	h := AcquireFrameHeader()
 	h.SetStream(id)
 
@@ -700,12 +726,13 @@ func (c *Conn) writeFrame(fr *FrameHeader) error {
 }
 
 func (c *Conn) finish(r *Ctx, stream uint32, err error) {
-	atomic.AddInt32(&c.openStreams, -1)
-
 	// Drop the stream before resolving: once RoundTrip returns it may hand the
 	// Ctx back to a pool, and it can only do that when nothing here still
 	// refers to it.
-	c.dequeueReq(stream)
+	if c.takeReq(stream) {
+		atomic.AddInt32(&c.openStreams, -1)
+	}
+
 	c.deletePending(stream)
 
 	r.markFinished()
@@ -740,6 +767,17 @@ func (c *Conn) readLoop() {
 		fr, err := c.readNext()
 		if err != nil {
 			c.setLastErr(err)
+			break
+		}
+
+		// We advertise SETTINGS_ENABLE_PUSH of 0, so the server has no business
+		// promising anything. Ignoring the frame would leave it holding a
+		// stream we are never going to read.
+		// https://httpwg.org/specs/rfc7540.html#rfc.section.6.5.2
+		if fr.Type() == FramePushPromise {
+			c.setLastErr(NewGoAwayError(ProtocolError, "server pushed with push disabled"))
+			ReleaseFrameHeader(fr)
+
 			break
 		}
 

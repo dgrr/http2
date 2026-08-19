@@ -173,3 +173,83 @@ func TestClientDoesNotDialForever(t *testing.T) {
 		t.Fatal("the client never gave up")
 	}
 }
+
+// TestTimedOutRequestsDoNotPoisonTheConnection covers what happens after a
+// request gives up waiting. Cancelling used to leave the stream in the
+// connection's table with openStreams still counting it, so a connection that
+// saw enough timeouts stopped accepting requests for good while looking
+// perfectly healthy.
+func TestTimedOutRequestsDoNotPoisonTheConnection(t *testing.T) {
+	// A server that answers nothing, so every request hits MaxResponseTime.
+	silent := make(chan struct{})
+
+	addr := newRawServer(t, func(p *peer) {
+		<-silent
+	})
+
+	t.Cleanup(func() { close(silent) })
+
+	hc := &fasthttp.HostClient{
+		Addr:      addr,
+		IsTLS:     true,
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	if err := ConfigureClient(hc, ClientOpts{
+		PingInterval:    -1,
+		MaxResponseTime: 50 * time.Millisecond,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := ClientFrom(hc)
+
+	t.Cleanup(func() { _ = cl.Close() })
+
+	const timeouts = 20
+
+	for i := 0; i < timeouts; i++ {
+		req := fasthttp.AcquireRequest()
+		res := fasthttp.AcquireResponse()
+
+		req.SetRequestURI("https://" + addr + "/")
+
+		if err := hc.Do(req, res); err == nil {
+			t.Fatalf("request %d succeeded against a silent server", i)
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(res)
+	}
+
+	cl.lck.Lock()
+
+	conns := make([]*Conn, 0, cl.conns.Len())
+	for e := cl.conns.Front(); e != nil; e = e.Next() {
+		conns = append(conns, e.Value.(*Conn))
+	}
+
+	cl.lck.Unlock()
+
+	if len(conns) == 0 {
+		t.Fatal("the client kept no connection")
+	}
+
+	for _, c := range conns {
+		if n := atomic.LoadInt32(&c.openStreams); n != 0 {
+			t.Errorf("connection still counts %d open streams after %d timeouts", n, timeouts)
+		}
+
+		c.reqLck.Lock()
+		queued := len(c.reqQueued)
+		c.reqLck.Unlock()
+
+		if queued != 0 {
+			t.Errorf("connection still holds %d timed-out requests", queued)
+		}
+
+		if !c.CanOpenStream() {
+			t.Error("connection refuses new streams after nothing but timeouts")
+		}
+	}
+}

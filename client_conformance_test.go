@@ -570,3 +570,41 @@ func TestClientRejectsMalformedResponseHeaders(t *testing.T) {
 		})
 	}
 }
+
+// TestClientRejectsUnsolicitedPush covers RFC 7540 6.5.2: the client
+// advertises SETTINGS_ENABLE_PUSH of 0, so a PUSH_PROMISE from the server is a
+// connection error. Ignoring the frame left the server holding a stream that
+// would never be read.
+func TestClientRejectsUnsolicitedPush(t *testing.T) {
+	release := make(chan struct{})
+
+	addr := newRawServer(t, func(p *peer) {
+		id := p.waitForRequest()
+		if id == 0 {
+			return
+		}
+
+		// A PUSH_PROMISE on the request's stream, promising stream 2.
+		var payload [4]byte
+
+		binary.BigEndian.PutUint32(payload[:], 2)
+
+		p.writeRaw(byte(FramePushPromise), byte(FlagEndHeaders), id, payload[:])
+
+		<-release
+	})
+
+	t.Cleanup(func() { close(release) })
+
+	hc := clientFor(t, addr)
+
+	start := time.Now()
+
+	if _, err := doWithin(t, hc, addr, 10*time.Second); err == nil {
+		t.Error("request reported success after an unsolicited push")
+	}
+
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("took %s to fail, so the push was ignored rather than rejected", elapsed)
+	}
+}

@@ -33,6 +33,21 @@ func (a *attacker) writeRaw(kind, flags byte, stream uint32, payload []byte) err
 	return a.bw.Flush()
 }
 
+// writeData sends a DATA frame on a stream.
+func (a *attacker) writeData(id uint32, endStream bool, body []byte) error {
+	fr := AcquireFrameHeader()
+	fr.SetStream(id)
+
+	data := AcquireFrame(FrameData).(*Data)
+	data.SetPadding(false)
+	data.SetEndStream(endStream)
+	data.SetData(body)
+
+	fr.SetBody(data)
+
+	return a.write(fr)
+}
+
 // TestServerIgnoresUnknownFrameType covers RFC 7540 4.1 and 5.5: a frame of an
 // unknown type is discarded. Extension frames such as ALTSVC, ORIGIN and
 // PRIORITY_UPDATE are the ordinary reason a peer sends one, so rejecting them
@@ -152,5 +167,71 @@ func TestServerAcceptsTableSizeUpdateInTrailers(t *testing.T) {
 	if d.gotGoAway.Load() {
 		t.Errorf("server sent GOAWAY %s for a table size update in the trailers",
 			ErrorCode(d.goaway.Load()))
+	}
+}
+
+// TestServerDoesNotCancelAnOpenRequest covers a request that is still being
+// sent when the connection's request timer first fires. The timer was created
+// already expired, and with no read timeout configured every open stream looked
+// overdue, so a request whose body had not finished arriving was answered with
+// RST_STREAM(CANCEL) and nothing in the logs to explain it.
+//
+// Any request with a body is exposed: the stream stays open between the headers
+// and the last DATA frame, which is exactly the window the stale tick lands in.
+func TestServerDoesNotCancelAnOpenRequest(t *testing.T) {
+	const conns = 20
+
+	addr, _ := newAttackServer(t, ServerConfig{PingInterval: -1})
+
+	for i := 0; i < conns; i++ {
+		func() {
+			a := dialAttacker(t, addr)
+
+			defer func() { _ = a.c.Close() }()
+
+			// Headers without END_STREAM: the stream is open and waiting for a
+			// body from here on.
+			if err := a.writeHeaders(1, false, true, requestFields(addr)); err != nil {
+				t.Fatalf("connection %d: request: %v", i, err)
+			}
+
+			a.flush()
+
+			// Long enough for the timer that was armed when the connection
+			// started to have fired.
+			time.Sleep(20 * time.Millisecond)
+
+			if err := a.writeData(1, true, []byte("body")); err != nil {
+				t.Fatalf("connection %d: body: %v", i, err)
+			}
+
+			a.flush()
+
+			_ = a.c.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+			for {
+				fr, err := ReadFrameFrom(a.br)
+				if err != nil {
+					t.Fatalf("connection %d: reading the answer: %v", i, err)
+				}
+
+				kind, stream := fr.Type(), fr.Stream()
+
+				var code ErrorCode
+				if kind == FrameResetStream {
+					code = fr.Body().(*RstStream).Code()
+				}
+
+				ReleaseFrameHeader(fr)
+
+				if kind == FrameResetStream && stream == 1 {
+					t.Fatalf("connection %d: server reset a request that was still arriving, with %s", i, code)
+				}
+
+				if kind == FrameHeaders && stream == 1 {
+					return
+				}
+			}
+		}()
 	}
 }

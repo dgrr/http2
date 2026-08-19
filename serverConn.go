@@ -65,6 +65,13 @@ type serverConn struct {
 	writer chan *FrameHeader
 	reader chan *FrameHeader
 
+	// writeStop is closed when the connection is on its way out. Every send
+	// into writer selects on it: the ping timer and the idle timer both queue
+	// frames from their own goroutines, so closing writer to stop the write
+	// loop meant one of them could panic the process with a send on a closed
+	// channel.
+	writeStop chan struct{}
+
 	state connState
 	// closeRef stores the last stream that was valid before sending a GOAWAY.
 	// Thus, the number stored in closeRef is used to complete all the requests that were sent before
@@ -113,7 +120,12 @@ func (sc *serverConn) Handshake() error {
 
 func (sc *serverConn) Serve() error {
 	sc.closer = make(chan struct{}, 1)
-	sc.maxRequestTimer = time.NewTimer(0)
+	sc.writeStop = make(chan struct{})
+	// Created disarmed. time.NewTimer(0) fires at once, and with no read
+	// timeout configured every stream open at that moment looked overdue, so a
+	// request that arrived in the same instant was answered with
+	// RST_STREAM(CANCEL) for no reason anyone could see.
+	sc.maxRequestTimer = time.NewTimer(timerDisarmed)
 	// The connection-level flow-control window always starts at 65535 octets,
 	// independent of SETTINGS_INITIAL_WINDOW_SIZE (RFC 7540 6.9.2).
 	sc.clientWindow = int64(defaultWindowSize)
@@ -161,9 +173,10 @@ func (sc *serverConn) Serve() error {
 		if sc.pingTimer != nil {
 			sc.pingTimer.Stop()
 		}
-		// close the writer here to ensure that no pending requests
-		// are writing to a closed channel
-		close(sc.writer)
+		// Tell the write loop to drain what is queued and stop. The channel
+		// itself is never closed: anything still holding a frame would panic
+		// trying to hand it over.
+		close(sc.writeStop)
 	}()
 
 	defer func() {
@@ -230,7 +243,7 @@ func (sc *serverConn) handlePing(ping *Ping) {
 	fr := AcquireFrameHeader()
 	fr.SetBody(ack)
 
-	sc.writer <- fr
+	sc.write(fr)
 }
 
 func (sc *serverConn) writePing() {
@@ -241,7 +254,7 @@ func (sc *serverConn) writePing() {
 
 	fr.SetBody(ping)
 
-	sc.writer <- fr
+	sc.write(fr)
 }
 
 func (sc *serverConn) checkFrameWithStream(fr *FrameHeader) error {
@@ -472,6 +485,11 @@ loop:
 		case <-sc.maxRequestTimer.C:
 			reqTimerArmed = false
 
+			// No read timeout configured means requests do not time out.
+			if sc.maxRequestTime <= 0 {
+				continue
+			}
+
 			deleteUntil := 0
 			for _, strm := range strms {
 				// the request is due if the startedAt time + maxRequestTime is in the past
@@ -663,7 +681,10 @@ loop:
 						nstrm.origType == FrameHeaders {
 
 						nstrm.SetState(StreamStateClosed)
-						closeStream(strm)
+						// nstrm, not strm: closing the stream that was just
+						// created leaves nstrm at the head of the list, still
+						// idle, so the loop never makes progress.
+						closeStream(nstrm)
 
 						if sc.debug {
 							sc.logger.Printf("Canceling stream in idle state: %d\n", nstrm.ID())
@@ -788,7 +809,7 @@ func (sc *serverConn) writeWindowUpdate(id uint32, inc int) {
 
 	fr.SetBody(wu)
 
-	sc.writer <- fr
+	sc.write(fr)
 }
 
 func (sc *serverConn) writeReset(strm uint32, code ErrorCode) {
@@ -800,7 +821,7 @@ func (sc *serverConn) writeReset(strm uint32, code ErrorCode) {
 
 	r.SetCode(code)
 
-	sc.writer <- fr
+	sc.write(fr)
 
 	if sc.debug {
 		sc.logger.Printf(
@@ -821,7 +842,7 @@ func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode, message string) {
 
 	fr.SetBody(ga)
 
-	sc.writer <- fr
+	sc.write(fr)
 
 	if strm != 0 {
 		atomic.StoreUint32(&sc.closeRef, sc.lastID)
@@ -1216,7 +1237,7 @@ func (sc *serverConn) handleEndRequest(strm *Stream) bool {
 
 	fasthttpResponseHeaders(h, &sc.enc, &ctx.Response)
 
-	sc.writer <- fr
+	sc.write(fr)
 
 	if !hasBody {
 		return true
@@ -1227,7 +1248,7 @@ func (sc *serverConn) handleEndRequest(strm *Stream) bool {
 	if ctx.Response.IsBodyStream() {
 		streamWriter := acquireStreamWrite()
 		streamWriter.strm = strm
-		streamWriter.writer = sc.writer
+		streamWriter.sc = sc
 		streamWriter.size = int64(ctx.Response.Header.ContentLength())
 		_ = ctx.Response.BodyWriteTo(streamWriter)
 		releaseStreamWrite(streamWriter)
@@ -1278,7 +1299,7 @@ func (sc *serverConn) sendData(strm *Stream) bool {
 
 		fr.SetBody(data)
 
-		sc.writer <- fr
+		sc.write(fr)
 
 		strm.window -= step
 		sc.clientWindow -= step
@@ -1322,7 +1343,7 @@ type streamWrite struct {
 	size    int64
 	written int64
 	strm    *Stream
-	writer  chan<- *FrameHeader
+	sc      *serverConn
 }
 
 func acquireStreamWrite() *streamWrite {
@@ -1342,7 +1363,7 @@ func (s *streamWrite) Reset() {
 	s.size = 0
 	s.written = 0
 	s.strm = nil
-	s.writer = nil
+	s.sc = nil
 }
 
 func (s *streamWrite) Write(body []byte) (n int, err error) {
@@ -1371,7 +1392,7 @@ func (s *streamWrite) Write(body []byte) (n int, err error) {
 
 		fr.SetBody(data)
 
-		s.writer <- fr
+		s.sc.write(fr)
 	}
 
 	return len(body), nil
@@ -1407,7 +1428,7 @@ func (s *streamWrite) ReadFrom(r io.Reader) (num int64, err error) {
 		data.SetData(buf[:n])
 		fr.SetBody(data)
 
-		s.writer <- fr
+		s.sc.write(fr)
 
 		num += int64(n)
 		if s.size >= 0 && num >= s.size {
@@ -1429,10 +1450,21 @@ func (sc *serverConn) sendPingAndSchedule() {
 	sc.pingTimer.Reset(sc.pingInterval)
 }
 
+// write queues a frame for the peer. It drops the frame instead of blocking
+// once the connection is on its way out: the ping and idle timers queue frames
+// from their own goroutines and cannot know the write loop has gone.
+func (sc *serverConn) write(fr *FrameHeader) {
+	select {
+	case sc.writer <- fr:
+	case <-sc.writeStop:
+		ReleaseFrameHeader(fr)
+	}
+}
+
 func (sc *serverConn) writeLoop() {
 	buffered := 0
 
-	for fr := range sc.writer {
+	send := func(fr *FrameHeader) error {
 		_, err := fr.WriteTo(sc.bw)
 		if err == nil && (len(sc.writer) == 0 || buffered > 10) {
 			err = sc.bw.Flush()
@@ -1445,8 +1477,32 @@ func (sc *serverConn) writeLoop() {
 
 		if err != nil {
 			sc.logger.Printf("ERROR: writeLoop: %s\n", err)
-			// TODO: sc.writer.err <- err
-			return
+		}
+
+		return err
+	}
+
+	for {
+		select {
+		case fr := <-sc.writer:
+			if send(fr) != nil {
+				return
+			}
+		case <-sc.writeStop:
+			// Drain what is already queued: a GOAWAY written on the way out is
+			// usually the last thing in here, and the peer needs to see it.
+			for {
+				select {
+				case fr := <-sc.writer:
+					if send(fr) != nil {
+						return
+					}
+				default:
+					_ = sc.bw.Flush()
+
+					return
+				}
+			}
 		}
 	}
 }
@@ -1466,7 +1522,7 @@ func (sc *serverConn) handleSettings(st *Settings) {
 
 	fr.SetBody(stRes)
 
-	sc.writer <- fr
+	sc.write(fr)
 }
 
 func fasthttpResponseHeaders(dst *Headers, hp *HPACK, res *fasthttp.Response) {
