@@ -29,6 +29,10 @@ const timerDisarmed = time.Duration(math.MaxInt64)
 // closedStrmsCap is how many recently closed stream ids a connection keeps.
 const closedStrmsCap = 256
 
+// writeDrainTimeout is how long teardown waits for queued frames, a GOAWAY in
+// particular, to reach a peer that may have stopped reading.
+const writeDrainTimeout = time.Second
+
 var errConnClosed = errors.New("connection closed after GOAWAY")
 
 type connState int32
@@ -133,7 +137,12 @@ func (sc *serverConn) Serve() error {
 		}
 	}()
 
+	// writeDone lets the teardown wait for queued frames to reach the socket.
+	writeDone := make(chan struct{})
+
 	go func() {
+		defer close(writeDone)
+
 		// defer closing the connection in the writeLoop in case the writeLoop panics
 		defer func() {
 			_ = sc.c.Close()
@@ -157,6 +166,19 @@ func (sc *serverConn) Serve() error {
 	defer func() {
 		// close the reader here so we can stop handling stream updates
 		close(sc.reader)
+
+		// ServeConn closes the socket the moment this returns, so a GOAWAY that
+		// is still queued would never reach the peer and it would see a bare
+		// disconnect instead of an error code (RFC 7540 5.4.1). Closing the
+		// reader unwinds handleStreams, which closes the writer, which lets the
+		// write loop drain.
+		//
+		// Bounded, because a peer that has stopped reading would otherwise hold
+		// this goroutine open for as long as it likes.
+		select {
+		case <-writeDone:
+		case <-time.After(writeDrainTimeout):
+		}
 	}()
 
 	var err error
@@ -253,8 +275,16 @@ func (sc *serverConn) readLoop() (err error) {
 		fr, err = ReadFrameFromWithSize(sc.br, sc.clientS.frameSize)
 		if err != nil {
 			if errors.Is(err, ErrUnknownFrameType) {
-				sc.writeGoAway(0, ProtocolError, "unknown frame type")
+				// Unknown frame types are discarded, not rejected (RFC 7540
+				// 4.1). The exception is one appearing inside a header block,
+				// which 6.10 makes a connection error.
+				if expectContinuation != 0 {
+					sc.writeGoAway(0, ProtocolError, "extension frame inside a header block")
+					return errConnClosed
+				}
+
 				err = nil
+
 				continue
 			}
 
@@ -746,9 +776,19 @@ func (sc *serverConn) writeGoAway(strm uint32, code ErrorCode, message string) {
 
 func (sc *serverConn) writeError(strm *Stream, err error) {
 	streamErr := Error{}
+
 	if !errors.As(err, &streamErr) {
+		// Not one of ours, so there is no code to report. Without a stream
+		// there is nothing to reset either, and the connection error path is
+		// the only thing left.
+		if strm == nil {
+			sc.writeGoAway(0, InternalError, err.Error())
+			return
+		}
+
 		sc.writeReset(strm.ID(), InternalError)
 		strm.SetState(StreamStateClosed)
+
 		return
 	}
 
@@ -760,6 +800,11 @@ func (sc *serverConn) writeError(strm *Stream, err error) {
 			sc.writeGoAway(strm.ID(), streamErr.Code(), streamErr.Error())
 		}
 	case FrameResetStream:
+		if strm == nil {
+			sc.writeGoAway(0, streamErr.Code(), streamErr.Error())
+			return
+		}
+
 		sc.writeReset(strm.ID(), streamErr.Code())
 	}
 

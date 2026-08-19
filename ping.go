@@ -31,8 +31,11 @@ func (p *Ping) Reset() {
 	p.ack = false
 }
 
+// CopyTo copies the Ping to `other`, matching the direction of every other
+// CopyTo in this package.
 func (p *Ping) CopyTo(other *Ping) {
-	p.ack = other.ack
+	other.ack = p.ack
+	other.data = p.data
 }
 
 func (p *Ping) Write(b []byte) (n int, err error) {

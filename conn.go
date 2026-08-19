@@ -505,6 +505,29 @@ func (c *Conn) finish(r *Ctx, stream uint32, err error) {
 func (c *Conn) readLoop() {
 	defer func() { _ = c.Close() }()
 
+	// A panic here would otherwise take the whole process down: this goroutine
+	// parses whatever the server sends. Resolve the in-flight requests with the
+	// failure instead, the way the write loop does.
+	defer func() {
+		err := recover()
+		if err == nil {
+			return
+		}
+
+		perr, ok := err.(error)
+		if !ok {
+			perr = fmt.Errorf("%v", err)
+		}
+
+		c.lastErr = perr
+
+		c.reqQueued.Range(func(_, v interface{}) bool {
+			v.(*Ctx).resolve(perr)
+
+			return true
+		})
+	}()
+
 	for {
 		fr, err := c.readNext()
 		if err != nil {
@@ -516,6 +539,15 @@ func (c *Conn) readLoop() {
 		if ri, ok := c.reqQueued.Load(fr.Stream()); ok {
 			r := ri.(*Ctx)
 
+			// A cancelled request has taken its Response back, so there is
+			// nowhere to put this frame. Drop the stream and carry on.
+			if !r.acquire() {
+				c.reqQueued.Delete(fr.Stream())
+				ReleaseFrameHeader(fr)
+
+				continue
+			}
+
 			err := c.readStream(fr, r.Response)
 			if err == nil {
 				if fr.Flags().Has(FlagEndStream) {
@@ -523,10 +555,12 @@ func (c *Conn) readLoop() {
 				}
 			} else {
 				c.finish(r, fr.Stream(), err)
+			}
 
-				if errors.Is(err, FlowControlError) {
-					break
-				}
+			r.release()
+
+			if err != nil && errors.Is(err, FlowControlError) {
+				break
 			}
 
 			if c.state == connStateClosed {
@@ -544,6 +578,14 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 	if !c.CanOpenStream() {
 		return ErrNotAvailableStreams
 	}
+
+	// The request may have been cancelled while it sat in the queue, in which
+	// case its Request no longer belongs to us.
+	if !ctx.acquire() {
+		return nil
+	}
+
+	defer ctx.release()
 
 	req := ctx.Request
 
@@ -656,6 +698,16 @@ loop:
 	for err == nil {
 		fr, err = ReadFrameFrom(c.br)
 		if err != nil {
+			// A frame of a type we do not know must be discarded rather than
+			// treated as an error (RFC 7540 4.1). Its payload has already been
+			// skipped by the reader, so there is nothing left to do but carry
+			// on: extension frames such as ALTSVC, ORIGIN and PRIORITY_UPDATE
+			// are the normal reason to see one.
+			if errors.Is(err, ErrUnknownFrameType) {
+				err = nil
+				continue
+			}
+
 			break
 		}
 

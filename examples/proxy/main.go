@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -90,77 +92,92 @@ func (px *Proxy) handleConn(c net.Conn) {
 }
 
 func readFramesFrom(c, c2 net.Conn, primaryIsProxy bool) {
-	fr := fasthttp2.AcquireFrame()
-	defer fasthttp2.ReleaseFrame(fr)
+	br := bufio.NewReader(c)
+	bw := bufio.NewWriter(c2)
 
 	symbol := byte('>')
 	if !primaryIsProxy {
 		symbol = '<'
 	}
 
-	fr.SetMaxLen(0)
+	// One decoder for the whole direction: HPACK carries a dynamic table across
+	// frames, so decoding each HEADERS with a fresh one prints nonsense as soon
+	// as the peer starts using indexed fields.
+	hp := fasthttp2.AcquireHPACK()
+	defer fasthttp2.ReleaseHPACK(hp)
 
-	var err error
-	for err == nil {
-		_, err = fr.ReadFrom(c) // TODO: Use ReadFromLimitPayload?
+	for {
+		fr, err := fasthttp2.ReadFrameFrom(br)
 		if err != nil {
-			if err == io.EOF {
-				err = nil
+			// An extension frame this library does not model is forwarded
+			// blind rather than ending the connection.
+			if errors.Is(err, fasthttp2.ErrUnknownFrameType) {
+				continue
 			}
-			break
+
+			if !errors.Is(err, io.EOF) {
+				log.Println(err)
+			}
+
+			return
 		}
 
-		debugFrame(c, fr, symbol)
+		debugFrame(c, fr, hp, symbol)
 
-		_, err = fr.WriteTo(c2)
+		if _, err = fr.WriteTo(bw); err == nil {
+			err = bw.Flush()
+		}
+
+		fasthttp2.ReleaseFrameHeader(fr)
+
+		if err != nil {
+			log.Println(err)
+			return
+		}
 	}
 }
 
-func debugFrame(c net.Conn, fr *fasthttp2.FrameHeader, symbol byte) {
+func debugFrame(c net.Conn, fr *fasthttp2.FrameHeader, hp *fasthttp2.HPACK, symbol byte) {
 	bf := bytes.NewBuffer(nil)
 
 	fmt.Fprintf(bf, "%c %d - %s\n", symbol, fr.Stream(), c.RemoteAddr())
 	fmt.Fprintf(bf, "%c %d\n", symbol, fr.Len())
-	fmt.Fprintf(bf, "%c EndStream: %v\n", symbol, fr.HasFlag(fasthttp2.FlagEndStream))
+	fmt.Fprintf(bf, "%c EndStream: %v\n", symbol, fr.Flags().Has(fasthttp2.FlagEndStream))
 
-	switch fr.Type() {
-	case fasthttp2.FrameHeaders:
+	// ReadFrameFrom has already deserialized the body, so the type of the body
+	// is the frame type.
+	switch body := fr.Body().(type) {
+	case *fasthttp2.Headers:
 		fmt.Fprintf(bf, "%c [HEADERS]\n", symbol)
-		h := fasthttp2.AcquireHeaders()
-		h.ReadFrame(fr)
-		debugHeaders(bf, h, symbol)
-		fasthttp2.ReleaseHeaders(h)
-	case fasthttp2.FrameContinuation:
-		println("continuation")
-	case fasthttp2.FrameData:
+		debugHeaders(bf, body, hp, symbol)
+	case *fasthttp2.Continuation:
+		fmt.Fprintf(bf, "%c [CONTINUATION]\n", symbol)
+		fmt.Fprintf(bf, "%c   EndHeaders: %v\n", symbol, body.EndHeaders())
+	case *fasthttp2.Data:
 		fmt.Fprintf(bf, "%c [DATA]\n", symbol)
-		data := fasthttp2.AcquireData()
-		data.ReadFrame(fr)
-		debugData(bf, data, symbol)
-		fasthttp2.ReleaseData(data)
-	case fasthttp2.FramePriority:
-		println("priority")
-		// TODO: If a PRIORITY frame is received with a stream identifier of 0x0, the recipient MUST respond with a connection error
-	case fasthttp2.FrameResetStream:
-		println("reset")
-	case fasthttp2.FrameSettings:
+		fmt.Fprintf(bf, "%c   Data: %s\n", symbol, body.Data())
+	case *fasthttp2.Priority:
+		fmt.Fprintf(bf, "%c [PRIORITY]\n", symbol)
+		fmt.Fprintf(bf, "%c   Dependency: %d\n", symbol, body.Stream())
+		fmt.Fprintf(bf, "%c   Weight: %d\n", symbol, body.Weight())
+	case *fasthttp2.RstStream:
+		fmt.Fprintf(bf, "%c [RST_STREAM]\n", symbol)
+		fmt.Fprintf(bf, "%c   Code: %s\n", symbol, body.Code())
+	case *fasthttp2.Settings:
 		fmt.Fprintf(bf, "%c [SETTINGS]\n", symbol)
-		st := fasthttp2.AcquireSettings()
-		st.ReadFrame(fr)
-		debugSettings(bf, st, symbol)
-		fasthttp2.ReleaseSettings(st)
-	case fasthttp2.FramePushPromise:
-		println("pp")
-	case fasthttp2.FramePing:
-		println("ping")
-	case fasthttp2.FrameGoAway:
-		println("away")
-	case fasthttp2.FrameWindowUpdate:
+		debugSettings(bf, body, symbol)
+	case *fasthttp2.PushPromise:
+		fmt.Fprintf(bf, "%c [PUSH_PROMISE]\n", symbol)
+	case *fasthttp2.Ping:
+		fmt.Fprintf(bf, "%c [PING]\n", symbol)
+		fmt.Fprintf(bf, "%c   ACK: %v\n", symbol, body.IsAck())
+	case *fasthttp2.GoAway:
+		fmt.Fprintf(bf, "%c [GOAWAY]\n", symbol)
+		fmt.Fprintf(bf, "%c   Code: %s\n", symbol, body.Code())
+		fmt.Fprintf(bf, "%c   Debug: %s\n", symbol, body.Data())
+	case *fasthttp2.WindowUpdate:
 		fmt.Fprintf(bf, "%c [WINDOW_UPDATE]\n", symbol)
-		wu := fasthttp2.AcquireWindowUpdate()
-		wu.ReadFrame(fr)
-		fmt.Fprintf(bf, "%c   Increment: %d\n", symbol, wu.Increment())
-		fasthttp2.ReleaseWindowUpdate(wu)
+		fmt.Fprintf(bf, "%c   Increment: %d\n", symbol, body.Increment())
 	}
 
 	fmt.Println(bf.String())
@@ -178,10 +195,7 @@ func debugSettings(bf *bytes.Buffer, st *fasthttp2.Settings, symbol byte) {
 	}
 }
 
-func debugHeaders(bf *bytes.Buffer, fr *fasthttp2.Headers, symbol byte) {
-	hp := fasthttp2.AcquireHPACK()
-	defer fasthttp2.ReleaseHPACK(hp)
-
+func debugHeaders(bf *bytes.Buffer, fr *fasthttp2.Headers, hp *fasthttp2.HPACK, symbol byte) {
 	hf := fasthttp2.AcquireHeaderField()
 	defer fasthttp2.ReleaseHeaderField(hf)
 
@@ -190,6 +204,7 @@ func debugHeaders(bf *bytes.Buffer, fr *fasthttp2.Headers, symbol byte) {
 	fmt.Fprintf(bf, "%c   Dependency: %d\n", symbol, fr.Stream())
 
 	var err error
+
 	b := fr.Headers()
 
 	for len(b) > 0 {
@@ -201,10 +216,6 @@ func debugHeaders(bf *bytes.Buffer, fr *fasthttp2.Headers, symbol byte) {
 
 		fmt.Fprintf(bf, "%c   %s: %s\n", symbol, hf.Key(), hf.Value())
 	}
-}
-
-func debugData(bf *bytes.Buffer, fr *fasthttp2.Data, symbol byte) {
-	fmt.Fprintf(bf, "%c   Data: %s\n", symbol, fr.Data())
 }
 
 var (
@@ -285,7 +296,7 @@ func startFastBackend() {
 	}
 	s.AppendCertEmbed(certData, priv)
 
-	fasthttp2.ConfigureServer(s)
+	fasthttp2.ConfigureServer(s, fasthttp2.ServerConfig{})
 
 	_, port, _ := net.SplitHostPort(*hostArg)
 

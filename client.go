@@ -51,6 +51,42 @@ type Ctx struct {
 	Err      chan error
 
 	streamID uint32
+
+	// Request and Response belong to whoever called RoundTrip, and that caller
+	// is free to release them the instant RoundTrip returns. The connection
+	// reads Request on the write loop and fills Response on the read loop, so
+	// both have to take ownership before touching either, and RoundTrip has to
+	// take it back before it returns. Without this a cancelled request is a use
+	// after free: the write loop reads a Request the caller has already put
+	// back in a pool.
+	lck  sync.Mutex
+	done bool
+}
+
+// acquire takes ownership of the Ctx for the connection. It reports false once
+// RoundTrip has handed Request and Response back to its caller, in which case
+// the caller of acquire must not touch either and must not unlock.
+func (ctx *Ctx) acquire() bool {
+	ctx.lck.Lock()
+
+	if ctx.done {
+		ctx.lck.Unlock()
+		return false
+	}
+
+	return true
+}
+
+func (ctx *Ctx) release() {
+	ctx.lck.Unlock()
+}
+
+// takeBack blocks until the connection is not using the Ctx and stops it from
+// using it again. After it returns, Request and Response are the caller's.
+func (ctx *Ctx) takeBack() {
+	ctx.lck.Lock()
+	ctx.done = true
+	ctx.lck.Unlock()
 }
 
 // resolve will resolve the context, meaning that provided an error,
@@ -225,6 +261,10 @@ func (cl *Client) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, res *
 	if cancelTimer != nil {
 		cancelTimer.Stop()
 	}
+
+	// Both loops may still be part way through this Ctx, and the caller is free
+	// to reuse Request and Response as soon as we return.
+	ctx.takeBack()
 
 	// ch is deliberately left open. The connection can still resolve this Ctx
 	// after we return (a late frame on the stream, or the cancel timer racing
