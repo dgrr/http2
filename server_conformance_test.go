@@ -102,3 +102,55 @@ func TestServerRejectsExtensionFrameInHeaderBlock(t *testing.T) {
 		t.Errorf("handler ran %d times for a header block that was never completed", n)
 	}
 }
+
+// TestServerAcceptsTableSizeUpdateInTrailers covers RFC 7541 4.2: a dynamic
+// table size update belongs at the start of the first header block after the
+// size changed, which is not necessarily the first block on the stream. The
+// server used to accept one only in a stream's opening block, so a peer whose
+// SETTINGS arrived while its request headers were already in flight had its
+// connection killed with COMPRESSION_ERROR when it put the update in the
+// trailers. net/http's client does exactly that, intermittently.
+func TestServerAcceptsTableSizeUpdateInTrailers(t *testing.T) {
+	addr, handled := newAttackServer(t, ServerConfig{PingInterval: -1})
+
+	a := dialAttacker(t, addr)
+	d := a.drain()
+
+	// Request headers, body, then a trailer block that opens with a dynamic
+	// table size update.
+	if err := a.writeHeaders(1, false, true, requestFields(addr)); err != nil {
+		t.Fatalf("writing the request: %v", err)
+	}
+
+	a.flush()
+
+	var block []byte
+
+	// 001xxxxx with a 5-bit integer: set the table size to 4096.
+	block = appendInt(append(block, 0x20), 5, 4096)
+
+	hf := AcquireHeaderField()
+	hf.Set("x-checksum", "abc123")
+
+	block = a.enc.AppendHeader(block, hf, false)
+
+	ReleaseHeaderField(hf)
+
+	if err := a.writeRaw(byte(FrameHeaders), byte(FlagEndStream|FlagEndHeaders), 1, block); err != nil {
+		t.Fatalf("writing the trailers: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for handled.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if handled.Load() == 0 {
+		t.Error("the request never reached the handler")
+	}
+
+	if d.gotGoAway.Load() {
+		t.Errorf("server sent GOAWAY %s for a table size update in the trailers",
+			ErrorCode(d.goaway.Load()))
+	}
+}

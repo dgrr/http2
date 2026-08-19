@@ -751,6 +751,12 @@ loop:
 // space straight back with WINDOW_UPDATE. Without it the peer's send window
 // runs down and never recovers, so a client that respects flow control stops
 // uploading for good once it has sent the initial window.
+//
+// The space is returned as soon as the bytes are buffered rather than when the
+// handler reads them, so the receive window never becomes the thing that limits
+// throughput. What bounds the memory instead is MaxRequestBodySize per stream
+// and SETTINGS_MAX_CONCURRENT_STREAMS across the connection, plus the backlog
+// on sc.reader, which stops being read once it is full and lets TCP push back.
 // https://httpwg.org/specs/rfc7540.html#rfc.section.6.9
 func (sc *serverConn) consumeRecvWindow(strm *Stream, fr *FrameHeader, n int) {
 	if n <= 0 {
@@ -1004,14 +1010,22 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 }
 
 func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
+	// A second header block on a stream whose request headers are already done
+	// is a trailer, which must carry both END_STREAM and END_HEADERS. Its
+	// fields join the request headers, which is the nearest thing fasthttp's
+	// request has to a place for them.
+	// https://httpwg.org/specs/rfc7540.html#rfc.section.8.1
 	if strm.headersFinished && !fr.Flags().Has(FlagEndStream|FlagEndHeaders) {
-		// TODO handle trailers
 		return NewGoAwayError(ProtocolError, "stream not open")
 	}
 
 	if headerFrame, ok := fr.Body().(*Headers); ok && headerFrame.Stream() == strm.ID() {
 		return NewGoAwayError(ProtocolError, "stream that depends on itself")
 	}
+
+	// Only a HEADERS or PUSH_PROMISE frame opens a header block, and only when
+	// there is nothing left over from a frame that cut a field in half.
+	blockStart := fr.Type() != FrameContinuation && len(strm.previousHeaderBytes) == 0
 
 	// Appending to the stream's own buffer and handing it back keeps the
 	// capacity across frames instead of allocating a header block every time.
@@ -1030,7 +1044,7 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 	for len(b) > 0 {
 		pb := b
 
-		b, err = sc.dec.nextField(hf, strm.headerBlockNum, fieldsProcessed, b)
+		b, err = sc.dec.nextField(hf, blockStart, fieldsProcessed, b)
 		if err != nil {
 			// ErrUnexpectedSize means a header field spills past the bytes we
 			// currently have. That is only legal when more frames are coming:
@@ -1141,8 +1155,6 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 
 		fieldsProcessed++
 	}
-
-	strm.headerBlockNum++
 
 	return err
 }

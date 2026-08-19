@@ -243,10 +243,13 @@ func releaseScratch(b *[]byte) {
 // This function returns the next byte slice that should be read.
 // `b` must be a valid payload coming from a Header frame.
 func (hp *HPACK) Next(hf *HeaderField, b []byte) ([]byte, error) {
-	return hp.nextField(hf, 0, 0, b)
+	return hp.nextField(hf, true, 0, b)
 }
 
-func (hp *HPACK) nextField(hf *HeaderField, headerBlockNum, fieldsProcessed int, b []byte) ([]byte, error) {
+// nextField decodes one header field. blockStart says whether b is the start
+// of a header block, which is the only place a dynamic table size update may
+// appear. A CONTINUATION carries on a block rather than starting one.
+func (hp *HPACK) nextField(hf *HeaderField, blockStart bool, fieldsProcessed int, b []byte) ([]byte, error) {
 	var (
 		n   uint64
 		c   byte
@@ -402,10 +405,12 @@ loop:
 		if b, n, err = readInt(5, b); err != nil {
 			return b, err
 		}
-		// Dynamic table size
-		// update MUST occur at the beginning of the first header block
-		// following the change to the dynamic table size.
-		if headerBlockNum != 0 || fieldsProcessed > 0 {
+		// A dynamic table size update must be the first thing in a header
+		// block. The peer sends it in the first block after it changed the
+		// size, which is not necessarily the first block on the stream: a
+		// trailer block can carry one when the SETTINGS frame that prompted it
+		// arrived while the request headers were already in flight.
+		if !blockStart || fieldsProcessed > 0 {
 			return nil, ErrDynamicUpdate
 		}
 

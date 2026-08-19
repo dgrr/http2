@@ -75,9 +75,6 @@ type Stream struct {
 	// being decoded, summed across the HEADERS frame and its CONTINUATIONs.
 	headerListSize int
 
-	// keeps track of the number of header blocks received
-	headerBlockNum int
-
 	// original type
 	origType        FrameType
 	startedAt       time.Time
@@ -115,7 +112,6 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.pendingEnd = false
 	strm.responded = false
 	strm.origType = 0
-	strm.headerBlockNum = 0
 	strm.headerListSize = 0
 
 	return strm

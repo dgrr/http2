@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/valyala/fasthttp"
+	xhttp2 "golang.org/x/net/http2"
 )
 
 // Conformance to h2spec says the server follows the RFC. These tests say the
@@ -299,4 +300,99 @@ func TestInteropStdlibClientAgainstServer(t *testing.T) {
 			t.Error(err)
 		}
 	})
+}
+
+// TestInteropStdlibClientSendsTrailers covers a request whose body is followed
+// by a trailing header block: gRPC does this on every call, and so does any
+// client streaming a body it can only checksum at the end. The trailer fields
+// arrive as request headers, which is the closest fasthttp's request has to a
+// place to put them.
+func TestInteropStdlibClientSendsTrailers(t *testing.T) {
+	certPEM, keyPEM := testKeyPair(t)
+
+	type seen struct {
+		body    string
+		trailer string
+	}
+
+	got := make(chan seen, 1)
+
+	server := &fasthttp.Server{
+		Handler: func(ctx *fasthttp.RequestCtx) {
+			select {
+			case got <- seen{
+				body:    string(ctx.Request.Body()),
+				trailer: string(ctx.Request.Header.Peek("X-Checksum")),
+			}:
+			default:
+			}
+
+			ctx.SetBodyString("ok")
+		},
+		Logger: discardLogger{},
+	}
+	ConfigureServer(server, ServerConfig{PingInterval: -1})
+
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() { _ = server.ServeTLSEmbed(ln, certPEM, keyPEM) }()
+
+	addr := ln.Addr().String()
+
+	tr := &xhttp2.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	client := &http.Client{Transport: tr, Timeout: 20 * time.Second}
+
+	t.Cleanup(tr.CloseIdleConnections)
+
+	pr, pw := io.Pipe()
+
+	req, err := http.NewRequest(http.MethodPost, "https://"+addr+"/", pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Declaring the trailer up front is what makes net/http send the fields
+	// after the body instead of with the headers.
+	req.Trailer = http.Header{"X-Checksum": nil}
+
+	go func() {
+		_, _ = pw.Write([]byte("payload"))
+
+		req.Trailer.Set("X-Checksum", "abc123")
+
+		_ = pw.Close()
+	}()
+
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request with trailers: %v", err)
+	}
+
+	defer func() { _ = res.Body.Close() }()
+
+	if _, err := io.ReadAll(res.Body); err != nil {
+		t.Fatalf("reading the response: %v", err)
+	}
+
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", res.StatusCode)
+	}
+
+	select {
+	case s := <-got:
+		if s.body != "payload" {
+			t.Errorf("body = %q, want %q", s.body, "payload")
+		}
+
+		if s.trailer != "abc123" {
+			t.Errorf("trailer field = %q, want %q", s.trailer, "abc123")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler never ran")
+	}
 }
