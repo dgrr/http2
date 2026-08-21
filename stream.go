@@ -77,9 +77,19 @@ type Stream struct {
 	bodySize   int64
 	bodyRead   int64
 	bodyBuf    []byte
-	// responded is set once the response has been generated and handed to the
-	// writer, so the half-closed handling does not run the handler twice.
+	// responded is set once the request has been dispatched to the handler, so
+	// the half-closed handling does not run it twice.
 	responded bool
+
+	// handlerRunning is set while the handler goroutine owns ctx. The stream
+	// cannot be recycled during that window: the pools would hand the same
+	// RequestCtx to another stream while the handler is still writing to it.
+	handlerRunning bool
+
+	// abandoned is set when the stream was closed, by a reset or a timeout,
+	// while its handler was still running. Whatever the handler produces is
+	// dropped, and the stream is recycled when it reports back.
+	abandoned bool
 
 	// headerListSize is the running RFC 7540 6.5.2 size of the header block
 	// being decoded, summed across the HEADERS frame and its CONTINUATIONs.
@@ -127,6 +137,8 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.bodySize = 0
 	strm.bodyRead = 0
 	strm.responded = false
+	strm.handlerRunning = false
+	strm.abandoned = false
 	strm.origType = 0
 	strm.headerListSize = 0
 
@@ -173,4 +185,15 @@ func (s *Stream) SetData(ctx *fasthttp.RequestCtx) {
 // either buffered or still to be pulled from a streamed body.
 func (s *Stream) hasMoreToSend() bool {
 	return len(s.pendingData) > 0 || s.bodyStream != nil
+}
+
+// continuingHeaders reports whether fr carries the rest of a header block this
+// stream has already started.
+//
+// END_STREAM on the HEADERS frame half-closes the stream, but it ends the
+// message body, not the header block: that is only over at END_HEADERS, so the
+// CONTINUATION frames that finish it are still expected even though the stream
+// is half-closed (RFC 7540 6.2, 6.10).
+func (s *Stream) continuingHeaders(fr *FrameHeader) bool {
+	return fr.Type() == FrameContinuation && !s.headersFinished
 }

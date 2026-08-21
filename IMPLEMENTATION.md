@@ -73,3 +73,40 @@ In the other direction the server hands its receive window straight back as the
 bytes are buffered, so it never becomes the thing that limits an upload. What
 bounds the memory instead is MaxRequestBodySize per stream and
 SETTINGS_MAX_CONCURRENT_STREAMS across the connection.
+
+## Server implementation
+
+A connection runs three goroutines: one reading frames off the socket, one
+writing them back, and one, the stream loop, that owns everything else. The
+stream table, the HPACK encoder and decoder, the flow-control windows and the
+closed-stream ring are all only ever touched by that loop, which is what keeps
+them free of locks.
+
+Handlers do not run there. When a request is complete the loop hands it to a
+goroutine of its own and carries straight on serving the other streams, and the
+handler reports back on a channel when it returns. The response is turned into
+frames back on the loop, so the HPACK encoder still has a single writer and the
+header blocks still reach the wire in the order they were encoded.
+
+Running the handler inline, which is what this used to do, meant a slow request
+held up every other stream on the connection. Multiplexing exists to avoid
+exactly that, so a connection was no better than an HTTP/1 one and, since the
+peer sends everything down a single socket, often worse.
+
+### What bounds the concurrency
+
+A handler goroutine holds its stream's slot until it returns, so
+SETTINGS_MAX_CONCURRENT_STREAMS is the ceiling on handlers in flight per
+connection, not just on streams the peer may have open.
+
+The distinction matters for CVE-2023-44487. An attacker sends a complete
+request and cancels it immediately: the handler is already running, and if
+cancelling gave the slot straight back, every RST_STREAM would buy another
+goroutine while the peer never appeared to exceed the limit. Holding the slot
+until the handler finishes is what makes the advertised limit the real one, and
+it needs no rate limiting or heuristics to do it.
+
+A stream cancelled while its handler runs is marked abandoned rather than
+recycled: the handler still owns the RequestCtx, and returning it to the pool
+would hand the same one to another stream mid-request. Whatever the handler
+produces is dropped when it reports back.

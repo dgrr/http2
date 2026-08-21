@@ -77,6 +77,17 @@ type serverConn struct {
 	// channel.
 	writeStop chan struct{}
 
+	// handlerDone carries a stream back to the stream loop once its handler has
+	// returned. Handlers run on their own goroutines so that a slow request
+	// does not hold up the other streams on the connection, but everything the
+	// handler produces is turned into frames back on the loop, which owns the
+	// HPACK encoder, the flow-control windows and the stream table.
+	handlerDone chan *Stream
+
+	// handlerStop is closed once the stream loop stops reading handlerDone, so
+	// a handler that outlives the connection has somewhere to give up.
+	handlerStop chan struct{}
+
 	state connState
 	// closeRef stores the last stream that was valid before sending a GOAWAY.
 	// Thus, the number stored in closeRef is used to complete all the requests that were sent before
@@ -126,6 +137,8 @@ func (sc *serverConn) Handshake() error {
 func (sc *serverConn) Serve() error {
 	sc.closer = make(chan struct{}, 1)
 	sc.writeStop = make(chan struct{})
+	sc.handlerDone = make(chan *Stream, 128)
+	sc.handlerStop = make(chan struct{})
 	// Created disarmed. time.NewTimer(0) fires at once, and with no read
 	// timeout configured every stream open at that moment looked overdue, so a
 	// request that arrived in the same instant was answered with
@@ -447,20 +460,49 @@ func (sc *serverConn) handleStreams() {
 		closedStrms[id] = struct{}{}
 	}
 
-	closeStream := func(strm *Stream) {
+	// releaseStream returns a finished stream and its context to the pools and
+	// gives its concurrency slot back.
+	releaseStream := func(strm *Stream) {
 		if strm.origType == FrameHeaders {
 			openStreams--
 		}
 
+		if strm.ctx != nil {
+			// The handler may have left a body stream behind on a response
+			// nobody will send. Whatever is behind it stays open otherwise.
+			_ = strm.ctx.Response.CloseBodyStream()
+
+			ctxPool.Put(strm.ctx)
+			strm.ctx = nil
+		}
+
+		streamPool.Put(strm)
+	}
+
+	closeStream := func(strm *Stream) {
 		strmID := strm.ID()
 
 		markClosed(strmID)
-		strms.Del(strm.ID())
+		strms.Del(strmID)
 
 		sc.closeBodyStream(strm)
 
-		ctxPool.Put(strm.ctx)
-		streamPool.Put(strm)
+		// A handler still owns ctx, so neither the memory nor the concurrency
+		// slot can be handed out yet. Holding the slot is also what keeps a
+		// rapid-reset flood bounded: if canceling a stream freed it here, every
+		// RST_STREAM would buy the peer another handler goroutine while never
+		// appearing to exceed SETTINGS_MAX_CONCURRENT_STREAMS.
+		if strm.handlerRunning {
+			strm.abandoned = true
+
+			if sc.debug {
+				sc.logger.Printf("Stream %d closed with its handler still running\n", strmID)
+			}
+
+			return
+		}
+
+		releaseStream(strm)
 
 		if sc.debug {
 			sc.logger.Printf("Stream destroyed %d. Open streams: %d\n", strmID, openStreams)
@@ -482,6 +524,34 @@ func (sc *serverConn) handleStreams() {
 
 	defer releaseHandled()
 
+	// Handlers that are still running when the loop stops have nowhere to
+	// report back to, and would otherwise park on handlerDone for good.
+	defer close(sc.handlerStop)
+
+	// canCloseAfterGoAway reports whether every stream the GOAWAY promised to
+	// finish has finished, so the connection can go.
+	//
+	// A GOAWAY that carries no reference has nothing to wait for and nothing to
+	// close on either: those paths break the loop where they send it.
+	canCloseAfterGoAway := func() bool {
+		ref := atomic.LoadUint32(&sc.closeRef)
+		if ref == 0 {
+			return false
+		}
+
+		for _, strm := range strms {
+			if strm.origType == FrameHeaders && strm.ID() <= ref {
+				return false
+			}
+		}
+
+		return true
+	}
+
+	isClosing := func() bool {
+		return atomic.LoadInt32((*int32)(&sc.state)) == int32(connStateClosed)
+	}
+
 loop:
 	for {
 		releaseHandled()
@@ -489,6 +559,28 @@ loop:
 		select {
 		case <-sc.closer:
 			break loop
+		case strm := <-sc.handlerDone:
+			strm.handlerRunning = false
+
+			if strm.abandoned {
+				// The peer reset the stream, or it timed out, while the
+				// handler was running. It is already out of the stream table.
+				releaseStream(strm)
+				continue
+			}
+
+			if sc.finishRequest(strm) {
+				strm.SetState(StreamStateClosed)
+				closeStream(strm)
+			}
+
+			// The response that just went out may have been the last one a
+			// GOAWAY was waiting for. Nothing else will arrive to notice: the
+			// check below only runs when a frame comes in, and after a GOAWAY
+			// there may be no more frames.
+			if isClosing() && canCloseAfterGoAway() {
+				break loop
+			}
 		case <-sc.maxRequestTimer.C:
 			reqTimerArmed = false
 
@@ -580,7 +672,9 @@ loop:
 				continue
 			}
 
-			isClosing := atomic.LoadInt32((*int32)(&sc.state)) == int32(connStateClosed)
+			// Snapshot taken before the frame is handled: handling it may send a
+			// GOAWAY of its own, and those paths end the loop where they are.
+			wasClosing := isClosing()
 
 			var strm *Stream
 			if fr.Stream() <= sc.lastID {
@@ -618,9 +712,9 @@ loop:
 
 				// if the client has more open streams than the maximum allowed OR
 				//   the connection is closing, then refuse the stream
-				if openStreams >= int(sc.st.maxStreams) || isClosing {
+				if openStreams >= int(sc.st.maxStreams) || wasClosing {
 					if sc.debug {
-						if isClosing {
+						if wasClosing {
 							sc.logger.Printf("Closing the connection. Rejecting stream %d\n", fr.Stream())
 						} else {
 							sc.logger.Printf("Max open streams reached: %d >= %d\n",
@@ -727,11 +821,15 @@ loop:
 
 			handleState(fr, strm)
 
-			// Generate the response once the client is done sending the
-			// request, then (re)send buffered response data. The response may
-			// not fit the flow-control window in one go, in which case the
-			// stream stays open until a WINDOW_UPDATE lets us finish.
-			if strm.State() == StreamStateHalfClosed && !strm.responded {
+			// Hand the request to the handler once the client is done sending
+			// it, then (re)send buffered response data. The response may not
+			// fit the flow-control window in one go, in which case the stream
+			// stays open until a WINDOW_UPDATE lets us finish.
+			// headersFinished matters as much as the state does. END_STREAM on
+			// a HEADERS frame half-closes the stream while the header block is
+			// still arriving in CONTINUATION frames, and dispatching there
+			// hands the handler a request whose headers are half decoded.
+			if strm.State() == StreamStateHalfClosed && strm.headersFinished && !strm.responded {
 				strm.responded = true
 
 				// The declared content-length must match the number of DATA
@@ -740,10 +838,11 @@ loop:
 				if strm.hasContentLength && strm.recvBody != strm.contentLength {
 					sc.writeReset(strm.ID(), ProtocolError)
 					strm.SetState(StreamStateClosed)
-				} else if sc.handleEndRequest(strm) {
-					strm.SetState(StreamStateClosed)
+				} else {
+					// The response comes back on handlerDone, not here.
+					sc.dispatchHandler(strm)
 				}
-			} else if strm.responded && strm.hasMoreToSend() {
+			} else if strm.responded && !strm.handlerRunning && strm.hasMoreToSend() {
 				// a stream-level WINDOW_UPDATE may have opened up space
 				if sc.sendData(strm) {
 					strm.SetState(StreamStateClosed)
@@ -754,21 +853,7 @@ loop:
 				closeStream(strm)
 			}
 
-			if isClosing {
-				ref := atomic.LoadUint32(&sc.closeRef)
-				// if there's no reference, then just close the connection
-				if ref == 0 {
-					break
-				}
-
-				// if we have a ref, then check that all streams previous to that ref are closed
-				for _, strm := range strms {
-					// if the stream is here, then it's not closed yet
-					if strm.origType == FrameHeaders && strm.ID() <= ref {
-						continue loop
-					}
-				}
-
+			if wasClosing && canCloseAfterGoAway() {
 				break loop
 			}
 		}
@@ -963,7 +1048,7 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 
 	switch fr.Type() {
 	case FrameHeaders, FrameContinuation:
-		if strm.State() >= StreamStateHalfClosed {
+		if strm.State() >= StreamStateHalfClosed && !strm.continuingHeaders(fr) {
 			return NewGoAwayError(ProtocolError, "received headers on a finished stream")
 		}
 
@@ -1211,6 +1296,10 @@ func (sc *serverConn) verifyState(strm *Stream, fr *FrameHeader) error {
 			return NewGoAwayError(ProtocolError, "wrong frame on idle stream")
 		}
 	case StreamStateHalfClosed:
+		if strm.continuingHeaders(fr) {
+			return nil
+		}
+
 		if fr.Type() != FrameWindowUpdate && fr.Type() != FramePriority && fr.Type() != FrameResetStream {
 			return NewGoAwayError(StreamClosedError, "wrong frame on half-closed stream")
 		}
@@ -1220,16 +1309,50 @@ func (sc *serverConn) verifyState(strm *Stream, fr *FrameHeader) error {
 	return nil
 }
 
-// handleEndRequest dispatches the finished request to the handler and starts
-// sending the response. It returns true when the whole response (including the
-// END_STREAM flag) has been written, meaning the stream can be closed. It
-// returns false when the response body is flow-control blocked and remains
-// buffered in strm.pendingData until a WINDOW_UPDATE resumes it.
-func (sc *serverConn) handleEndRequest(strm *Stream) bool {
+// dispatchHandler hands a finished request to the handler on a goroutine of
+// its own and returns straight away, so the stream loop stays free to serve
+// the other streams on the connection while it runs.
+//
+// The goroutine touches nothing but ctx. Everything that has to be serialized,
+// the HPACK encoder above all, waits until the stream comes back on
+// handlerDone and finishRequest runs it on the loop.
+func (sc *serverConn) dispatchHandler(strm *Stream) {
 	ctx := strm.ctx
 	ctx.Request.Header.SetProtocolBytes(StringHTTP2)
 
-	sc.h(ctx)
+	strm.handlerRunning = true
+
+	go func() {
+		defer func() {
+			// A panic here has no caller to recover it, so without this it
+			// takes the process with it. fasthttp answers a panicking handler
+			// with a 500 over HTTP/1, and so do we.
+			if err := recover(); err != nil {
+				sc.logger.Printf("panic in the handler: %s\n%s\n", err, debug.Stack())
+
+				ctx.Response.Reset()
+				ctx.Response.SetStatusCode(fasthttp.StatusInternalServerError)
+			}
+
+			select {
+			case sc.handlerDone <- strm:
+			case <-sc.handlerStop:
+			}
+		}()
+
+		sc.h(ctx)
+	}()
+}
+
+// finishRequest turns the handler's response into frames and starts sending
+// it. It returns true when the whole response (including the END_STREAM flag)
+// has been written, meaning the stream can be closed. It returns false when the
+// response body is flow-control blocked and remains buffered in
+// strm.pendingData until a WINDOW_UPDATE resumes it.
+//
+// It runs on the stream loop, never on the handler's goroutine.
+func (sc *serverConn) finishRequest(strm *Stream) bool {
+	ctx := strm.ctx
 
 	hasBody := ctx.Response.IsBodyStream() || len(ctx.Response.Body()) > 0
 
@@ -1397,7 +1520,9 @@ func (sc *serverConn) flushStreams(strms Streams, closeStream func(*Stream)) {
 	var done []*Stream
 
 	for _, s := range strms {
-		if s.responded && s.hasMoreToSend() && sc.sendData(s) {
+		// A stream whose handler is still running has nothing buffered yet, and
+		// its response is not this goroutine's to touch until it reports back.
+		if s.responded && !s.handlerRunning && s.hasMoreToSend() && sc.sendData(s) {
 			done = append(done, s)
 		}
 	}

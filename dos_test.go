@@ -116,6 +116,30 @@ func (a *attacker) writeHeaders(id uint32, endStream, endHeaders bool, fields []
 	return a.write(fr)
 }
 
+// writeContinuationFields sends a CONTINUATION frame carrying fields.
+func (a *attacker) writeContinuationFields(id uint32, endHeaders bool, fields []hdr) error {
+	fr := AcquireFrameHeader()
+	fr.SetStream(id)
+
+	cont := AcquireFrame(FrameContinuation).(*Continuation)
+	fr.SetBody(cont)
+
+	hf := AcquireHeaderField()
+	defer ReleaseHeaderField(hf)
+
+	var block []byte
+
+	for _, f := range fields {
+		hf.Set(f.key, f.value)
+		block = a.enc.AppendHeader(block, hf, false)
+	}
+
+	cont.AppendHeader(block)
+	cont.SetEndHeaders(endHeaders)
+
+	return a.write(fr)
+}
+
 // writeContinuation sends a CONTINUATION frame carrying count filler fields.
 func (a *attacker) writeContinuation(id uint32, endHeaders bool, count int) error {
 	fr := AcquireFrameHeader()
@@ -267,6 +291,11 @@ func heapDelta(fn func()) uint64 {
 type drainer struct {
 	goaway    atomic.Int32
 	gotGoAway atomic.Bool
+	// completed counts the streams the server has finished with, so a test can
+	// wait until the server is quiescent rather than until the last handler
+	// returned. Handlers run off the stream loop, so those are not the same
+	// moment: a returned handler still has a response to encode and send.
+	completed atomic.Int64
 	done      chan struct{}
 }
 
@@ -287,6 +316,11 @@ func (a *attacker) drain() *drainer {
 				d.gotGoAway.Store(true)
 			}
 
+			if fr.Stream() != 0 &&
+				(fr.Flags().Has(FlagEndStream) || fr.Type() == FrameResetStream) {
+				d.completed.Add(1)
+			}
+
 			ReleaseFrameHeader(fr)
 		}
 	}()
@@ -304,11 +338,10 @@ func (d *drainer) wait(timeout time.Duration) bool {
 }
 
 // TestRapidReset drives CVE-2023-44487: open a stream and cancel it before it
-// can become a request, over and over. The classic amplification is bypassing
-// MAX_CONCURRENT_STREAMS to get unbounded work in flight at once. This server
-// calls the handler inline from the single handleStreams goroutine, so requests
-// are serialized per connection whatever the client does. What the test checks
-// is that the churn does not accumulate state.
+// can become a request, over and over. Nothing here ever completes a request,
+// so no handler runs and what the test checks is that the churn accumulates no
+// state. TestRapidResetBoundsHandlers covers the amplification itself, where
+// the requests do complete and each cancellation tries to buy another handler.
 func TestRapidReset(t *testing.T) {
 	const attempts = 20000
 
@@ -359,17 +392,20 @@ func TestRapidReset(t *testing.T) {
 	}
 }
 
-// TestClosedStreamTableGrowth makes many ordinary requests on one connection.
-// The server remembers every closed stream id so it can tell a late frame on a
-// finished stream from a frame on an idle one, and that table must not grow
-// without bound: a long-lived connection would carry it for its whole life.
-func TestClosedStreamTableGrowth(t *testing.T) {
-	requests := 40000
-	if testing.Short() {
-		requests = 4000
-	}
+// requestChurn drives requests down one fresh connection and reports how much
+// heap the server kept once it had answered all of them.
+//
+// Concurrency is pinned low on purpose. A server that handles many streams at
+// once holds a stream and a RequestCtx for each one, and the pools settle at
+// that high-water mark, which is a fixed cost that would otherwise be read as
+// growth.
+func requestChurn(t *testing.T, requests int) uint64 {
+	t.Helper()
 
-	addr, handled := newAttackServer(t, ServerConfig{PingInterval: -1})
+	addr, _ := newAttackServer(t, ServerConfig{
+		PingInterval:         -1,
+		MaxConcurrentStreams: 16,
+	})
 
 	a := dialAttacker(t, addr)
 	d := a.drain()
@@ -393,28 +429,62 @@ func TestClosedStreamTableGrowth(t *testing.T) {
 
 		_ = a.bw.Flush()
 
-		// Let the server finish before sampling the heap.
-		deadline := time.Now().Add(20 * time.Second)
-		for handled.Load() < int64(sent) && time.Now().Before(deadline) {
+		// Wait for the responses, not for the handlers: a handler that has
+		// returned still has a stream attached to it until the stream loop has
+		// encoded and queued its response.
+		deadline := time.Now().Add(30 * time.Second)
+		for d.completed.Load() < int64(sent) && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
 		}
+
+		// Nothing is in flight now, so the pools have handed everything back
+		// and what is left is what the connection is keeping.
+		time.Sleep(100 * time.Millisecond)
 	})
-
-	_ = d
-
-	perRequest := float64(grew) / float64(max(sent, 1))
-
-	t.Logf("%d/%d requests, handler ran %d times, heap grew %.1f MiB (%.0f bytes per request)",
-		sent, requests, handled.Load(), float64(grew)/(1<<20), perRequest)
 
 	if sent != requests {
 		t.Fatalf("only %d/%d requests went through", sent, requests)
 	}
 
-	// Anything that scales with the number of requests served is a leak: an
-	// HTTP/2 connection is meant to be long lived.
-	if perRequest > 8 {
-		t.Errorf("server retains %.0f bytes per request, want it not to grow with the request count", perRequest)
+	if got := d.completed.Load(); got < int64(sent) {
+		t.Fatalf("only %d/%d requests were answered", got, sent)
+	}
+
+	return grew
+}
+
+// TestClosedStreamTableGrowth makes many ordinary requests on one connection.
+// The server remembers every closed stream id so it can tell a late frame on a
+// finished stream from a frame on an idle one, and that table must not grow
+// without bound: a long-lived connection would carry it for its whole life.
+//
+// It compares two runs an order of magnitude apart rather than dividing one run
+// by its request count. Serving a connection has a fixed cost that has nothing
+// to do with how many requests went down it, and at small counts that fixed
+// cost swamps a per-request average. What a table that grows per request looks
+// like is the second run costing ten times the first.
+func TestClosedStreamTableGrowth(t *testing.T) {
+	small, large := 4000, 40000
+	if testing.Short() {
+		small, large = 1000, 10000
+	}
+
+	// Warm the pools first, so the measured runs are a steady state rather than
+	// the cost of starting up.
+	requestChurn(t, small)
+
+	base := requestChurn(t, small)
+	grew := requestChurn(t, large)
+
+	t.Logf("%d requests kept %.2f MiB, %d requests kept %.2f MiB",
+		small, float64(base)/(1<<20), large, float64(grew)/(1<<20))
+
+	// Ten times the requests for four times the memory is already generous:
+	// anything that scales per request would be at ten.
+	if limit := base * 4; grew > limit {
+		t.Errorf("%dx the requests kept %d bytes against %d for %dx, want the "+
+			"cost not to scale with the request count",
+			large/small, grew, base, small)
 	}
 }
 

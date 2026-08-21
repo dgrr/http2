@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 	"time"
+
+	"github.com/valyala/fasthttp"
 )
 
 // h2spec covers the server against the spec text. These fill in the cases it
@@ -233,5 +235,59 @@ func TestServerDoesNotCancelAnOpenRequest(t *testing.T) {
 				}
 			}
 		}()
+	}
+}
+
+// TestServerWaitsForEndHeaders covers RFC 7540 6.2 and 6.10: a HEADERS frame
+// that sets END_STREAM but not END_HEADERS half-closes the stream while its
+// header block is still arriving in CONTINUATION frames. The request is not
+// complete until END_HEADERS, and answering at END_STREAM hands the handler a
+// request whose headers are only half decoded.
+func TestServerWaitsForEndHeaders(t *testing.T) {
+	type seen struct {
+		late string
+		ok   bool
+	}
+
+	got := make(chan seen, 4)
+
+	addr := newConcurrencyServer(t, ServerConfig{PingInterval: -1},
+		func(ctx *fasthttp.RequestCtx) {
+			got <- seen{late: string(ctx.Request.Header.Peek("x-late")), ok: true}
+			ctx.SetBodyString("ok")
+		})
+
+	a := dialAttacker(t, addr)
+
+	// END_STREAM here, END_HEADERS only on the CONTINUATION that follows.
+	if err := a.writeHeaders(1, true, false, requestFields(addr)); err != nil {
+		t.Fatal(err)
+	}
+
+	a.flush()
+
+	// Give the server every chance to answer early, which is the bug.
+	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case s := <-got:
+		t.Fatalf("the handler ran before END_HEADERS, seeing x-late=%q", s.late)
+	default:
+	}
+
+	if err := a.writeContinuationFields(1, true, []hdr{{"x-late", "present"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.flush()
+
+	select {
+	case s := <-got:
+		if s.late != "present" {
+			t.Errorf("handler saw x-late=%q, want %q: the header block was not "+
+				"fully decoded before the request was dispatched", s.late, "present")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler never ran")
 	}
 }

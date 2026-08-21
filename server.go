@@ -21,7 +21,16 @@ type ServerConfig struct {
 	// To disable pings set the PingInterval to a negative value.
 	PingInterval time.Duration
 
-	// ...
+	// MaxConcurrentStreams bounds how many streams a peer may have open on one
+	// connection, advertised as SETTINGS_MAX_CONCURRENT_STREAMS. A stream over
+	// the limit is refused with RST_STREAM.
+	//
+	// Handlers run on a goroutine each, and a stream holds its slot until its
+	// handler returns, so this is also the ceiling on handler goroutines per
+	// connection. Canceling a stream does not hand the slot back early, which
+	// is what stops a rapid-reset flood buying unbounded concurrency.
+	//
+	// Zero means 1024.
 	MaxConcurrentStreams int
 
 	// MaxHeaderListSize bounds the uncompressed size of a request header list,
