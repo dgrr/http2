@@ -2,6 +2,7 @@ package http2
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -400,3 +401,184 @@ func TestClientStreamedBodyDoesNotBuffer(t *testing.T) {
 type zeroes struct{}
 
 func (zeroes) Read(p []byte) (int, error) { return len(p), nil }
+
+// TestClientDoesNotRetryStreamedBody covers what happens when a connection
+// drops with part of a streamed body already on the wire.
+//
+// The request has to fail rather than go out again. The bytes already pulled
+// from the reader are gone, and the reader is closed once the connection is
+// done with it, so a second attempt would send a body silently short of what
+// content-length promised, which the peer cannot tell from a complete one.
+//
+// What holds this up today is the error classification, not anything about
+// streaming: a connection that dies with bytes in flight reports a transport
+// error, and retryable() covers only the errors that mean nothing was sent.
+// TestRetryableExcludesTransportErrors pins that directly, because this test
+// would keep passing for a buffered body too.
+func TestClientDoesNotRetryStreamedBody(t *testing.T) {
+	const bodyLen = 512 << 10
+
+	var attempts atomic.Int64
+
+	addr := newRawServerSettings(t, func(st *Settings) {
+		st.SetMaxWindowSize(1 << 20)
+	}, func(p *peer) {
+		attempts.Add(1)
+
+		if p.waitForRequest() == 0 {
+			return
+		}
+
+		// Take one DATA frame, then drop the connection with the rest of the
+		// body still coming.
+		_ = p.c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, _ = ReadFrameFrom(p.br)
+		_ = p.c.Close()
+	})
+
+	hc := clientFor(t, addr)
+
+	r := newCountingReader(bodyLen)
+
+	req := fasthttp.AcquireRequest()
+	res := fasthttp.AcquireResponse()
+
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(res)
+
+	req.SetRequestURI("https://" + addr + "/")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetBodyStream(r, bodyLen)
+
+	err := hc.Do(req, res)
+	if err == nil {
+		t.Fatal("the request succeeded even though the connection dropped mid-body")
+	}
+
+	if n := attempts.Load(); n != 1 {
+		t.Errorf("the client made %d attempts with a streamed body, want 1: a "+
+			"partly consumed reader cannot be replayed", n)
+	}
+}
+
+// TestRetryableExcludesTransportErrors pins the classification a partly sent
+// request depends on.
+//
+// Only errors that mean the request never left may be retried. A transport
+// error can arrive with the headers and part of the body already on the wire,
+// and sending it again would duplicate a non-idempotent request or, for a body
+// that came from a reader, truncate it: the consumed part cannot be produced
+// twice. Widening this set is what would break that, so it is worth stating.
+func TestRetryableExcludesTransportErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nothing was sent", err: ErrConnectionClosed, want: true},
+		{name: "no stream to send it on", err: ErrNotAvailableStreams, want: true},
+		{name: "no stream ids left", err: ErrNoMoreStreamIDs, want: true},
+		{name: "peer went away mid-request", err: io.EOF, want: false},
+		{name: "peer cut the connection", err: io.ErrUnexpectedEOF, want: false},
+		{name: "the write failed", err: WriteError{err: io.ErrClosedPipe}, want: false},
+		{name: "no error", err: nil, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryable(tc.err); got != tc.want {
+				t.Errorf("retryable(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClientResetsStreamOnBodyReadError covers a request body reader that fails
+// part way through. The peer is left waiting for a body that can no longer be
+// finished, so the stream has to be reset rather than left hanging.
+func TestClientResetsStreamOnBodyReadError(t *testing.T) {
+	gotReset := make(chan ErrorCode, 1)
+
+	addr := newRawServerSettings(t, func(st *Settings) {
+		st.SetMaxWindowSize(1 << 20)
+	}, func(p *peer) {
+		if p.waitForRequest() == 0 {
+			return
+		}
+
+		for {
+			_ = p.c.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+			fr, err := ReadFrameFrom(p.br)
+			if err != nil {
+				return
+			}
+
+			if fr.Type() == FrameResetStream {
+				select {
+				case gotReset <- fr.Body().(*RstStream).Code():
+				default:
+				}
+
+				ReleaseFrameHeader(fr)
+
+				return
+			}
+
+			ReleaseFrameHeader(fr)
+		}
+	})
+
+	hc := clientFor(t, addr)
+
+	req := fasthttp.AcquireRequest()
+	res := fasthttp.AcquireResponse()
+
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(res)
+
+	req.SetRequestURI("https://" + addr + "/")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetBodyStream(&failingReader{after: 4096}, 1<<20)
+
+	done := make(chan error, 1)
+	go func() { done <- hc.Do(req, res) }()
+
+	select {
+	case code := <-gotReset:
+		if code != InternalError {
+			t.Errorf("reset code = %s, want %s", code, InternalError)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the client never reset the stream")
+	}
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("the request reported success with a body that never finished")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request never returned")
+	}
+}
+
+// failingReader hands out after bytes and then fails, standing in for a file
+// that gets truncated or a pipe whose writer dies.
+type failingReader struct {
+	after int
+	sent  int
+}
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if r.sent >= r.after {
+		return 0, errors.New("body source failed")
+	}
+
+	n := len(p)
+	if rem := r.after - r.sent; rem < n {
+		n = rem
+	}
+
+	r.sent += n
+
+	return n, nil
+}
