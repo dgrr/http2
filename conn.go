@@ -76,6 +76,24 @@ type pendingBody struct {
 	ctx    *Ctx
 	body   []byte
 	window int32
+
+	// stream is a streamed request body, pulled a chunk at a time as the
+	// windows allow rather than held in memory in one go. size is the declared
+	// content length, negative when the reader runs until EOF, and buf is where
+	// each chunk lands, with body pointing into it.
+	stream io.Reader
+	size   int64
+	read   int64
+	buf    []byte
+
+	// drained is set once the reader has nothing left to give, so the last
+	// chunk can carry END_STREAM.
+	drained bool
+}
+
+// hasMore reports whether the body still owes the peer bytes.
+func (pb *pendingBody) hasMore() bool {
+	return len(pb.body) > 0 || (pb.stream != nil && !pb.drained)
 }
 
 // Conn represents a raw HTTP/2 connection over TLS + TCP.
@@ -589,11 +607,17 @@ func (c *Conn) cancel(ctx *Ctx) {
 		atomic.AddInt32(&c.openStreams, -1)
 	}
 
+	c.cancelStream(id, StreamCanceled)
+}
+
+// cancelStream resets a stream that cannot be finished. The caller has already
+// taken it off the queue.
+func (c *Conn) cancelStream(id uint32, code ErrorCode) {
 	h := AcquireFrameHeader()
 	h.SetStream(id)
 
 	fr := AcquireFrame(FrameResetStream).(*RstStream)
-	fr.SetCode(StreamCanceled)
+	fr.SetCode(code)
 
 	h.SetBody(fr)
 
@@ -861,7 +885,11 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 
 	req := ctx.Request
 
-	hasBody := len(req.Body()) != 0
+	// Request.Body() reads a streamed body into memory, which is the one thing
+	// a caller who reached for SetBodyStream asked us not to do, so the check
+	// for a stream has to come first.
+	bodyStream := req.IsBodyStream()
+	hasBody := bodyStream || len(req.Body()) != 0
 
 	// The server may have changed the header table size since the last request.
 	// The encoder is the write loop's, so this is the only safe place to apply
@@ -915,6 +943,15 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 		hf.SetBytes(k, v)
 		ToLower(hf.key)
 
+		// Connection-specific fields are forbidden in HTTP/2 and a peer that
+		// enforces the rule answers them with a stream error (RFC 7540 8.1.2.2).
+		// fasthttp sets Transfer-Encoding: chunked on a body stream of unknown
+		// length, for the benefit of its HTTP/1 writer; here END_STREAM ends
+		// the body and there is nothing to say.
+		if isConnectionSpecific(hf.key) {
+			continue
+		}
+
 		enc.AppendHeaderField(h, hf, false)
 	}
 
@@ -928,12 +965,24 @@ func (c *Conn) writeRequest(ctx *Ctx) error {
 	c.queueReq(id, ctx)
 
 	if hasBody {
-		c.sendLck.Lock()
-		c.pending[id] = &pendingBody{
+		pb := &pendingBody{
 			ctx:    ctx,
-			body:   req.Body(),
 			window: c.streamWindow,
+			size:   -1,
 		}
+
+		if bodyStream {
+			pb.stream = req.BodyStream()
+			pb.size = int64(req.Header.ContentLength())
+			// A body declared as empty has nothing to read, and calling Read
+			// on it would block on a reader that will never produce anything.
+			pb.drained = pb.size == 0
+		} else {
+			pb.body = req.Body()
+		}
+
+		c.sendLck.Lock()
+		c.pending[id] = pb
 		c.sendLck.Unlock()
 	}
 
@@ -1013,8 +1062,23 @@ func (c *Conn) signalWindow() {
 
 func (c *Conn) deletePending(id uint32) {
 	c.sendLck.Lock()
+	pb := c.pending[id]
 	delete(c.pending, id)
 	c.sendLck.Unlock()
+
+	if pb == nil || pb.stream == nil {
+		return
+	}
+
+	// Taking the Ctx is what makes this safe: a request that has already been
+	// handed back to its caller is theirs to close, and releasing it does.
+	if !pb.ctx.acquireFor(c, id) {
+		return
+	}
+
+	defer pb.ctx.release()
+
+	c.closeBodyStream(pb)
 }
 
 // pendingIDs snapshots the streams with a body still to send.
@@ -1048,54 +1112,94 @@ func (c *Conn) flushPending() error {
 
 // sendPending writes as much of one blocked body as the connection and stream
 // windows allow, and forgets the stream once the body is out.
+//
+// It loops because a streamed body only ever has one chunk buffered: an open
+// window is worth more than that, and stopping after a chunk would trickle the
+// body out one frame per WINDOW_UPDATE.
 func (c *Conn) sendPending(id uint32) error {
-	c.sendLck.Lock()
+	for {
+		c.sendLck.Lock()
 
-	pb, ok := c.pending[id]
-	if !ok {
+		pb, ok := c.pending[id]
+		if !ok {
+			c.sendLck.Unlock()
+			return nil
+		}
+
+		// Nothing buffered and more to come: pull the next chunk. Read is the
+		// caller's code and may block for as long as it likes, so it does not
+		// run under the lock the read loop needs to hand window back.
+		if len(pb.body) == 0 && pb.stream != nil && !pb.drained {
+			c.sendLck.Unlock()
+
+			if err := c.refillPending(pb); err != nil {
+				// The body cannot be finished, and the peer is part way
+				// through one it would otherwise wait for.
+				c.deletePending(id)
+				c.cancelStream(id, InternalError)
+
+				return nil
+			}
+
+			continue
+		}
+
+		n := len(pb.body)
+		if int(pb.window) < n {
+			n = int(pb.window)
+		}
+
+		if int(c.connWindow) < n {
+			n = int(c.connWindow)
+		}
+
+		if n < 0 {
+			n = 0
+		}
+
+		pb.window -= int32(n)
+		c.connWindow -= int32(n)
+
+		body := pb.body[:n]
+		pb.body = pb.body[n:]
+
+		end := !pb.hasMore()
+		if end {
+			delete(c.pending, id)
+		}
+
 		c.sendLck.Unlock()
-		return nil
+
+		if n == 0 && !end {
+			return nil
+		}
+
+		// body points into the caller's Request, which stops being ours the
+		// moment the request is canceled.
+		if !pb.ctx.acquireFor(c, id) {
+			c.deletePending(id)
+			return nil
+		}
+
+		err := c.flushData(id, body, end)
+
+		pb.ctx.release()
+
+		if err != nil {
+			return err
+		}
+
+		if end {
+			c.closeBodyStream(pb)
+			return nil
+		}
 	}
+}
 
-	n := len(pb.body)
-	if int(pb.window) < n {
-		n = int(pb.window)
-	}
-
-	if int(c.connWindow) < n {
-		n = int(c.connWindow)
-	}
-
-	if n < 0 {
-		n = 0
-	}
-
-	pb.window -= int32(n)
-	c.connWindow -= int32(n)
-
-	body := pb.body[:n]
-	pb.body = pb.body[n:]
-
-	end := len(pb.body) == 0
-	if end {
-		delete(c.pending, id)
-	}
-
-	c.sendLck.Unlock()
-
-	if n == 0 && !end {
-		return nil
-	}
-
-	// body points into the caller's Request, which stops being ours the moment
-	// the request is canceled.
-	if !pb.ctx.acquireFor(c, id) {
-		c.deletePending(id)
-		return nil
-	}
-
-	defer pb.ctx.release()
-
+// flushData writes one run of DATA frames and flushes them. It is split out so
+// that sendPending's loop does not hold bwLck across a Read on the caller's
+// body stream.
+func (c *Conn) flushData(id uint32, body []byte, end bool) error {
 	c.bwLck.Lock()
 	defer c.bwLck.Unlock()
 
@@ -1105,6 +1209,58 @@ func (c *Conn) sendPending(id uint32) error {
 	}
 
 	return err
+}
+
+// refillPending pulls the next chunk of a streamed request body into the
+// body's own buffer.
+func (c *Conn) refillPending(pb *pendingBody) error {
+	// Read straight into the buffer the frames are cut from: going via a
+	// scratch buffer would copy every byte of the body a second time.
+	if cap(pb.buf) < int(defaultDataFrameSize) {
+		pb.buf = make([]byte, defaultDataFrameSize)
+	}
+
+	buf := pb.buf[:defaultDataFrameSize]
+
+	n, err := pb.stream.Read(buf)
+	if n > 0 {
+		pb.body = buf[:n]
+		pb.read += int64(n)
+	}
+
+	switch {
+	case errors.Is(err, io.EOF):
+		pb.drained = true
+	case err != nil:
+		return err
+	case n == 0:
+		return errors.New("BUG: io.Reader returned 0, nil")
+	}
+
+	// A declared content length is the end of the body even if the reader has
+	// not said so yet.
+	if pb.size >= 0 && pb.read >= pb.size {
+		pb.drained = true
+	}
+
+	return nil
+}
+
+// closeBodyStream closes a streamed request body once the connection is done
+// with it. fasthttp closes the reader itself when its own writer sends the
+// body, so whatever is behind it, a file or a pipe, stays open unless this
+// does the same.
+//
+// The caller must hold the Ctx: the Request stops being ours the moment
+// RoundTrip returns, and a caller that releases it closes the stream anyway.
+func (c *Conn) closeBodyStream(pb *pendingBody) {
+	if pb.stream == nil {
+		return
+	}
+
+	pb.stream = nil
+
+	_ = pb.ctx.Request.CloseBodyStream()
 }
 
 // writeData splits body into DATA frames no larger than the server is willing
@@ -1122,6 +1278,23 @@ func (c *Conn) writeData(id uint32, body []byte, end bool) (err error) {
 
 	data := AcquireFrame(FrameData).(*Data)
 	fh.SetBody(data)
+
+	// The loop below writes nothing for an empty body, which would drop
+	// END_STREAM and leave the request unfinished. A streamed body that turns
+	// out to be empty, or one whose last read returned nothing, ends here.
+	if len(body) == 0 {
+		if !end {
+			return nil
+		}
+
+		data.SetEndStream(true)
+		data.SetPadding(false)
+		data.SetData(nil)
+
+		_, err = fh.WriteTo(c.bw)
+
+		return err
+	}
 
 	for i := 0; err == nil && i < len(body); i += step {
 		if i+step >= len(body) {

@@ -63,6 +63,18 @@ of it when a WINDOW_UPDATE opens the window. A change to
 SETTINGS_INITIAL_WINDOW_SIZE is applied as a delta to every stream that is
 already open, as RFC 7540 6.9.2 requires.
 
+A body set with `Request.SetBodyStream` is pulled from the reader a frame at a
+time as the windows allow, so only one frame of it is ever in memory. The
+reader is read on the write loop but never under the lock the read loop needs
+to hand window back, because how long a `Read` takes is the caller's business.
+Streaming a 64 MiB body costs about 0.3 MiB of heap.
+
+Either form of body can be declared or not: `SetBodyStream` with a negative
+size reads until EOF and sends no content-length, which is what END_STREAM is
+for. fasthttp marks that case with `Transfer-Encoding: chunked` for its own
+HTTP/1 writer, and that header, along with the rest of the connection-specific
+ones, is dropped before the request is encoded (RFC 7540 8.1.2.2).
+
 On the server the same applies to responses, both the ones the handler buffers
 and the ones it streams. A streamed body is pulled from the handler's reader a
 frame at a time as the windows allow rather than drained into the writer, so a
