@@ -106,6 +106,11 @@ func (s *Server) ServeConn(c net.Conn) error {
 	sc.enc.Reset()
 	sc.dec.Reset()
 
+	// Until the peer's SETTINGS arrives its settings are the protocol
+	// defaults. Left at the zero value, SETTINGS_MAX_FRAME_SIZE would be 0,
+	// which reads as "no limit".
+	sc.clientS.Reset()
+
 	sc.maxWindow = 1 << 22
 	sc.currentWindow = sc.maxWindow
 

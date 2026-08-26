@@ -139,7 +139,10 @@ var (
 		ProtocolError, "unknown frame type")
 	ErrMissingBytes = NewError(
 		ProtocolError, "missing payload bytes. Need more")
-	ErrPayloadExceeds = NewError(
+	// ErrPayloadExceeds is a connection error: the frame is longer than the
+	// SETTINGS_MAX_FRAME_SIZE we advertised, so the rest of the stream cannot
+	// be framed either (RFC 7540 4.2).
+	ErrPayloadExceeds = NewGoAwayError(
 		FrameSizeError, "FrameHeader payload exceeds the negotiated maximum size")
 	ErrCompression = NewGoAwayError(
 		CompressionError, "Compression error")

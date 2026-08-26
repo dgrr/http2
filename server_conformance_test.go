@@ -1,6 +1,8 @@
 package http2
 
 import (
+	"bufio"
+	"crypto/tls"
 	"encoding/binary"
 	"testing"
 	"time"
@@ -289,5 +291,108 @@ func TestServerWaitsForEndHeaders(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the handler never ran")
+	}
+}
+
+// writeSettingsWith sends a SETTINGS frame carrying st.
+func (a *attacker) writeSettingsWith(st *Settings) error {
+	fr := AcquireFrameHeader()
+
+	frSt := AcquireFrame(FrameSettings).(*Settings)
+	st.CopyTo(frSt)
+
+	fr.SetBody(frSt)
+
+	if err := a.write(fr); err != nil {
+		return err
+	}
+
+	a.flush()
+
+	return nil
+}
+
+// TestServerRejectsFrameOverItsOwnMaxFrameSize covers RFC 7540 4.2: a frame
+// larger than the SETTINGS_MAX_FRAME_SIZE the receiver advertised is an error.
+// The limit is the receiver's own, not the sender's: a peer that says it can
+// receive 1 MiB frames has said nothing about what it may send.
+func TestServerRejectsFrameOverItsOwnMaxFrameSize(t *testing.T) {
+	addr, _ := newAttackServer(t, ServerConfig{PingInterval: -1})
+
+	a := dialAttacker(t, addr)
+	d := a.drain()
+
+	// We can receive 1 MiB frames. The server still only accepts 16 KiB ones.
+	st := &Settings{}
+	st.Reset()
+	st.SetMaxFrameSize(1 << 20)
+
+	if err := a.writeSettingsWith(st); err != nil {
+		t.Fatalf("writing the settings: %v", err)
+	}
+
+	// Give the server time to apply them, so the test fails on the size check
+	// rather than on a race with it.
+	time.Sleep(100 * time.Millisecond)
+
+	if err := a.writeRaw(byte(FrameData), 0, 1, make([]byte, 256*1024)); err != nil &&
+		!isClosedConn(err) {
+		t.Fatalf("writing the oversized frame: %v", err)
+	}
+
+	if !d.wait(5 * time.Second) {
+		t.Error("server kept the connection open after an oversized frame")
+	}
+
+	if !d.gotGoAway.Load() {
+		t.Fatal("no GOAWAY for a frame over the advertised maximum size")
+	}
+
+	if code := ErrorCode(d.goaway.Load()); code != FrameSizeError {
+		t.Errorf("goaway code = %s, want %s", code, FrameSizeError)
+	}
+}
+
+// TestServerRejectsOversizedFrameBeforeSettings covers the same limit before
+// the peer has sent any SETTINGS. Until then the server has nothing to go on
+// but its own advertised value, and a connection with no limit at all lets one
+// frame allocate up to the 16 MiB the length field can express.
+func TestServerRejectsOversizedFrameBeforeSettings(t *testing.T) {
+	addr, _ := newAttackServer(t, ServerConfig{PingInterval: -1})
+
+	c, err := tls.Dial("tcp", addr, &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{H2TLSProto},
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	t.Cleanup(func() { _ = c.Close() })
+
+	if _, err := c.Write(http2Preface); err != nil {
+		t.Fatalf("writing the preface: %v", err)
+	}
+
+	a := &attacker{t: t, c: c, br: bufio.NewReader(c), bw: bufio.NewWriter(c), addr: addr}
+	d := a.drain()
+
+	// No SETTINGS of our own, straight to a frame the server never said it
+	// would accept.
+	if err := a.writeRaw(byte(FrameData), 0, 1, make([]byte, 256*1024)); err != nil &&
+		!isClosedConn(err) {
+		t.Fatalf("writing the oversized frame: %v", err)
+	}
+
+	if !d.wait(5 * time.Second) {
+		t.Error("server kept the connection open after an oversized frame")
+	}
+
+	if !d.gotGoAway.Load() {
+		t.Fatal("no GOAWAY for a frame over the advertised maximum size")
+	}
+
+	if code := ErrorCode(d.goaway.Load()); code != FrameSizeError {
+		t.Errorf("goaway code = %s, want %s", code, FrameSizeError)
 	}
 }

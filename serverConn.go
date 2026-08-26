@@ -306,7 +306,10 @@ func (sc *serverConn) readLoop() (err error) {
 	var expectContinuation uint32
 
 	for err == nil {
-		fr, err = ReadFrameFromWithSize(sc.br, sc.clientS.frameSize)
+		// Our own SETTINGS_MAX_FRAME_SIZE, not the peer's: what the peer
+		// advertises is what it is willing to receive, and says nothing about
+		// what it may send us (RFC 7540 4.2).
+		fr, err = ReadFrameFromWithSize(sc.br, sc.st.frameSize)
 		if err != nil {
 			if errors.Is(err, ErrUnknownFrameType) {
 				// Unknown frame types are discarded, not rejected (RFC 7540
