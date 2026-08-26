@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -47,6 +48,10 @@ func TestInteropClientAgainstStdlibServer(t *testing.T) {
 			_, _ = w.Write(bytes.Repeat([]byte("x"), big))
 		case "/status":
 			w.WriteHeader(http.StatusTeapot)
+		case "/bigheader":
+			// Echoed as a length rather than a value, so a mismatch reads as
+			// a number rather than 32 KiB of diff.
+			fmt.Fprintf(w, "%d", len(r.Header.Get("X-Big")))
 		default:
 			http.NotFound(w, r)
 		}
@@ -128,6 +133,21 @@ func TestInteropClientAgainstStdlibServer(t *testing.T) {
 			t.Errorf("status = %d, want %d", res.StatusCode(), http.StatusTeapot)
 		}
 	})
+
+	// A header block past the frame size goes out as a HEADERS frame and the
+	// CONTINUATION frames that finish it. This is the peer that says whether
+	// the framing is right: against ourselves a matching mistake on both ends
+	// would look like success.
+	t.Run("header block over the frame size", func(t *testing.T) {
+		res := do(fasthttp.MethodGet, "/bigheader", "", func(req *fasthttp.Request) {
+			req.Header.Set("X-Big", largeHeaderValue)
+		})
+		defer fasthttp.ReleaseResponse(res)
+
+		if got, want := string(res.Body()), strconv.Itoa(len(largeHeaderValue)); got != want {
+			t.Errorf("the server saw %s bytes of X-Big, want %s", got, want)
+		}
+	})
 }
 
 // TestInteropStdlibClientAgainstServer drives the standard library's HTTP/2
@@ -149,6 +169,8 @@ func TestInteropStdlibClientAgainstServer(t *testing.T) {
 				ctx.SetBody(bytes.Repeat([]byte("x"), big))
 			case "/status":
 				ctx.SetStatusCode(http.StatusTeapot)
+			case "/bigheader":
+				ctx.Response.Header.Set("X-Big", largeHeaderValue)
 			default:
 				ctx.SetStatusCode(http.StatusNotFound)
 			}
@@ -247,6 +269,18 @@ func TestInteropStdlibClientAgainstServer(t *testing.T) {
 
 		if res.StatusCode != http.StatusTeapot {
 			t.Errorf("status = %d, want %d", res.StatusCode, http.StatusTeapot)
+		}
+	})
+
+	// The response side of the same framing, judged by net/http rather than by
+	// this library's own decoder.
+	t.Run("header block over the frame size", func(t *testing.T) {
+		res := get(t, http.MethodGet, "/bigheader", "", nil)
+		defer res.Body.Close()
+
+		if got := res.Header.Get("X-Big"); got != largeHeaderValue {
+			t.Errorf("the client saw %d bytes of X-Big, want %d",
+				len(got), len(largeHeaderValue))
 		}
 	})
 

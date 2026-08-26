@@ -223,11 +223,26 @@ func (f *FrameHeader) readFrom(br *bufio.Reader) (int64, error) {
 	return rn, f.fr.Deserialize(f)
 }
 
+// maxHeaderBlockFragment is the largest header block fragment WriteTo puts in
+// one frame. It is the smallest SETTINGS_MAX_FRAME_SIZE the protocol allows, so
+// a fragment of this size is one every peer accepts without having been asked.
+const maxHeaderBlockFragment = 1 << 14
+
 // WriteTo writes frame to the Writer.
+//
+// A header block larger than a frame may be is written as a HEADERS or
+// PUSH_PROMISE frame carrying the first fragment followed by CONTINUATION
+// frames carrying the rest. Nothing may come between them, so the caller has to
+// hold whatever serializes writes to w for the whole call, which is already
+// what writing a single frame requires.
 //
 // This function returns FrameHeader bytes written and/or error.
 func (f *FrameHeader) WriteTo(w *bufio.Writer) (wb int64, err error) {
 	f.fr.Serialize(f)
+
+	if f.needsContinuation() {
+		return f.writeContinuations(w)
+	}
 
 	f.length = len(f.payload)
 	f.parseHeader(f.rawHeader[:])
@@ -238,6 +253,84 @@ func (f *FrameHeader) WriteTo(w *bufio.Writer) (wb int64, err error) {
 
 		n, err = w.Write(f.payload)
 		wb += int64(n)
+	}
+
+	return wb, err
+}
+
+// needsContinuation reports whether the header block this frame carries is
+// larger than one frame may be.
+//
+// A padded block is left alone. Its padding sits at the end of the payload and
+// the length of it at the front, so cutting the payload up would move the
+// padding into a CONTINUATION frame, where nothing marks it as padding. Neither
+// end of this library pads a header block.
+func (f *FrameHeader) needsContinuation() bool {
+	if f.kind != FrameHeaders && f.kind != FramePushPromise {
+		return false
+	}
+
+	if f.flags.Has(FlagPadded) {
+		return false
+	}
+
+	return len(f.payload) > maxHeaderBlockFragment
+}
+
+// writeContinuations writes an oversized header block as a HEADERS or
+// PUSH_PROMISE frame and the CONTINUATION frames that complete it.
+// https://httpwg.org/specs/rfc7540.html#rfc.section.6.10
+func (f *FrameHeader) writeContinuations(w *bufio.Writer) (wb int64, err error) {
+	payload := f.payload
+
+	// The opening frame keeps the flags that belong to the stream, END_STREAM
+	// among them, and gives up END_HEADERS: the block ends on the last
+	// CONTINUATION, not here.
+	endHeaders := f.flags.Has(FlagEndHeaders)
+
+	flags := f.flags
+	f.flags = flags &^ FlagEndHeaders
+	f.length = maxHeaderBlockFragment
+	f.parseHeader(f.rawHeader[:])
+	f.flags = flags
+
+	n, err := w.Write(f.rawHeader[:])
+	wb += int64(n)
+
+	if err == nil {
+		n, err = w.Write(payload[:maxHeaderBlockFragment])
+		wb += int64(n)
+	}
+
+	payload = payload[maxHeaderBlockFragment:]
+
+	var header [DefaultFrameSize]byte
+
+	for err == nil && len(payload) > 0 {
+		chunk := payload
+		if len(chunk) > maxHeaderBlockFragment {
+			chunk = chunk[:maxHeaderBlockFragment]
+		}
+
+		payload = payload[len(chunk):]
+
+		var contFlags FrameFlags
+		if len(payload) == 0 && endHeaders {
+			contFlags = FlagEndHeaders
+		}
+
+		http2utils.Uint24ToBytes(header[:3], uint32(len(chunk)))
+		header[3] = byte(FrameContinuation)
+		header[4] = byte(contFlags)
+		http2utils.Uint32ToBytes(header[5:], f.stream)
+
+		n, err = w.Write(header[:])
+		wb += int64(n)
+
+		if err == nil {
+			n, err = w.Write(chunk)
+			wb += int64(n)
+		}
 	}
 
 	return wb, err
