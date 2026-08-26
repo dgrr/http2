@@ -37,10 +37,36 @@ type Settings struct {
 	windowSize  uint32
 	frameSize   uint32
 	headerSize  uint32
-	// hasWindowSize reports whether SETTINGS_INITIAL_WINDOW_SIZE was present in
-	// the frame this Settings was decoded from. It lets the receiver apply the
-	// window delta to open streams only when the value actually changed.
-	hasWindowSize bool
+
+	// present records which settings were explicitly set, either by a setter or
+	// by decoding a frame that carried them. Encode emits exactly those.
+	//
+	// "Non-zero" cannot stand in for "was set": zero is a meaningful value for
+	// SETTINGS_ENABLE_PUSH, SETTINGS_HEADER_TABLE_SIZE and
+	// SETTINGS_MAX_CONCURRENT_STREAMS, and dropping it leaves the peer on a
+	// default that means the opposite.
+	present uint8
+}
+
+// settingBit maps a setting identifier to its bit in Settings.present.
+// Identifiers run from 0x1 to 0x6, and anything outside that range is a
+// setting this implementation does not know, which must be ignored.
+func settingBit(id uint16) uint8 {
+	if id < HeaderTableSize || id > MaxHeaderListSize {
+		return 0
+	}
+
+	return 1 << (id - HeaderTableSize)
+}
+
+// has reports whether the setting was explicitly set.
+func (st *Settings) has(id uint16) bool {
+	return st.present&settingBit(id) != 0
+}
+
+// set marks a setting as explicitly set.
+func (st *Settings) set(id uint16) {
+	st.present |= settingBit(id)
 }
 
 func (st *Settings) Type() FrameType {
@@ -58,7 +84,7 @@ func (st *Settings) Reset() {
 	st.headerSize = 0
 	st.rawSettings = st.rawSettings[:0]
 	st.ack = false
-	st.hasWindowSize = false
+	st.present = 0
 }
 
 // CopyTo copies st fields to st2.
@@ -71,7 +97,7 @@ func (st *Settings) CopyTo(st2 *Settings) {
 	st2.windowSize = st.windowSize
 	st2.frameSize = st.frameSize
 	st2.headerSize = st.headerSize
-	st2.hasWindowSize = st.hasWindowSize
+	st2.present = st.present
 }
 
 // SetHeaderTableSize sets the maximum size of the header
@@ -80,6 +106,7 @@ func (st *Settings) CopyTo(st2 *Settings) {
 // Default value is 4096.
 func (st *Settings) SetHeaderTableSize(size uint32) {
 	st.tableSize = size
+	st.set(HeaderTableSize)
 }
 
 // HeaderTableSize returns the maximum size of the header
@@ -96,6 +123,7 @@ func (st *Settings) HeaderTableSize() uint32 {
 // if not the Push Promise will be disabled.
 func (st *Settings) SetPush(value bool) {
 	st.enablePush = value
+	st.set(EnablePush)
 }
 
 func (st *Settings) Push() bool {
@@ -108,6 +136,7 @@ func (st *Settings) Push() bool {
 // Default value is 100. This value does not have max limit.
 func (st *Settings) SetMaxConcurrentStreams(streams uint32) {
 	st.maxStreams = streams
+	st.set(MaxConcurrentStreams)
 }
 
 // MaxConcurrentStreams returns the maximum number of
@@ -125,6 +154,7 @@ func (st *Settings) MaxConcurrentStreams() uint32 {
 // Maximum value is 1 << 31 - 1.
 func (st *Settings) SetMaxWindowSize(size uint32) {
 	st.windowSize = size
+	st.set(MaxWindowSize)
 }
 
 // MaxWindowSize returns the sender's initial window size
@@ -143,6 +173,7 @@ func (st *Settings) MaxWindowSize() uint32 {
 // Maximum value is 1 << 24 - 1.
 func (st *Settings) SetMaxFrameSize(size uint32) {
 	st.frameSize = size
+	st.set(MaxFrameSize)
 }
 
 // MaxFrameSize returns the size of the largest frame
@@ -159,6 +190,7 @@ func (st *Settings) MaxFrameSize() uint32 {
 // If this value is 0 indicates that there are no limit.
 func (st *Settings) SetMaxHeaderListSize(size uint32) {
 	st.headerSize = size
+	st.set(MaxHeaderListSize)
 }
 
 // MaxHeaderListSize returns maximum size of header list uncompressed.
@@ -196,7 +228,6 @@ func (st *Settings) Read(d []byte) error {
 				return NewGoAwayError(FlowControlError, "SETTINGS_INITIAL_WINDOW_SIZE above maximum")
 			}
 			st.windowSize = value
-			st.hasWindowSize = true
 		case MaxFrameSize:
 			if value < 1<<14 || value > 1<<24-1 {
 				return NewGoAwayError(ProtocolError, "wrong value for SETTINGS_MAX_FRAME_SIZE")
@@ -205,6 +236,10 @@ func (st *Settings) Read(d []byte) error {
 		case MaxHeaderListSize:
 			st.headerSize = value
 		}
+
+		// An identifier this implementation does not know must be ignored
+		// (RFC 7540 6.5.2), and settingBit reports 0 for it.
+		st.set(key)
 
 		last = i
 		i += 6
@@ -216,52 +251,30 @@ func (st *Settings) Read(d []byte) error {
 func (st *Settings) Encode() {
 	st.rawSettings = st.rawSettings[:0]
 
-	if st.tableSize != 0 {
+	appendSetting := func(id uint16, value uint32) {
+		if !st.has(id) {
+			return
+		}
+
 		st.rawSettings = append(st.rawSettings,
-			byte(HeaderTableSize>>8), byte(HeaderTableSize),
-			byte(st.tableSize>>24), byte(st.tableSize>>16),
-			byte(st.tableSize>>8), byte(st.tableSize),
+			byte(id>>8), byte(id),
+			byte(value>>24), byte(value>>16),
+			byte(value>>8), byte(value),
 		)
 	}
 
+	appendSetting(HeaderTableSize, st.tableSize)
+
+	var push uint32
 	if st.enablePush {
-		st.rawSettings = append(st.rawSettings,
-			byte(EnablePush>>8), byte(EnablePush),
-			0, 0, 0, 1,
-		)
+		push = 1
 	}
 
-	if st.maxStreams != 0 {
-		st.rawSettings = append(st.rawSettings,
-			byte(MaxConcurrentStreams>>8), byte(MaxConcurrentStreams),
-			byte(st.maxStreams>>24), byte(st.maxStreams>>16),
-			byte(st.maxStreams>>8), byte(st.maxStreams),
-		)
-	}
-
-	if st.windowSize != 0 {
-		st.rawSettings = append(st.rawSettings,
-			byte(MaxWindowSize>>8), byte(MaxWindowSize),
-			byte(st.windowSize>>24), byte(st.windowSize>>16),
-			byte(st.windowSize>>8), byte(st.windowSize),
-		)
-	}
-
-	if st.frameSize != 0 {
-		st.rawSettings = append(st.rawSettings,
-			byte(MaxFrameSize>>8), byte(MaxFrameSize),
-			byte(st.frameSize>>24), byte(st.frameSize>>16),
-			byte(st.frameSize>>8), byte(st.frameSize),
-		)
-	}
-
-	if st.headerSize != 0 {
-		st.rawSettings = append(st.rawSettings,
-			byte(MaxHeaderListSize>>8), byte(MaxHeaderListSize),
-			byte(st.headerSize>>24), byte(st.headerSize>>16),
-			byte(st.headerSize>>8), byte(st.headerSize),
-		)
-	}
+	appendSetting(EnablePush, push)
+	appendSetting(MaxConcurrentStreams, st.maxStreams)
+	appendSetting(MaxWindowSize, st.windowSize)
+	appendSetting(MaxFrameSize, st.frameSize)
+	appendSetting(MaxHeaderListSize, st.headerSize)
 }
 
 // IsAck returns true if settings has FlagAck set.

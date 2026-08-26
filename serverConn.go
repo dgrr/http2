@@ -645,7 +645,7 @@ loop:
 				switch fr.Type() {
 				case FrameSettings:
 					st := fr.Body().(*Settings)
-					if st.hasWindowSize {
+					if st.has(MaxWindowSize) {
 						delta := int64(int32(st.windowSize)) - int64(curInitialWindow)
 						curInitialWindow = int32(st.windowSize)
 

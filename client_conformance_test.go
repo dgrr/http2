@@ -608,3 +608,45 @@ func TestClientRejectsUnsolicitedPush(t *testing.T) {
 		t.Errorf("took %s to fail, so the push was ignored rather than rejected", elapsed)
 	}
 }
+
+// TestClientAdvertisesPushDisabled covers RFC 7540 6.5.2: SETTINGS_ENABLE_PUSH
+// defaults to 1, so a client that will not accept pushed streams has to send
+// the 0 itself. This client answers a PUSH_PROMISE by tearing the connection
+// down, which is only defensible if it said so first.
+func TestClientAdvertisesPushDisabled(t *testing.T) {
+	got := make(chan map[uint16]uint32, 1)
+
+	addr := newRawServer(t, func(p *peer) {
+		for {
+			fr := p.readFrame()
+			if fr == nil {
+				return
+			}
+
+			if fr.Type() == FrameSettings && !fr.Body().(*Settings).IsAck() {
+				select {
+				case got <- decodeSettings(fr.payload):
+				default:
+				}
+			}
+
+			ReleaseFrameHeader(fr)
+		}
+	})
+
+	clientFor(t, addr)
+
+	select {
+	case st := <-got:
+		v, ok := st[EnablePush]
+		if !ok {
+			t.Fatalf("client settings %v carry no SETTINGS_ENABLE_PUSH", st)
+		}
+
+		if v != 0 {
+			t.Errorf("SETTINGS_ENABLE_PUSH = %d, want 0", v)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the client never sent a SETTINGS frame")
+	}
+}

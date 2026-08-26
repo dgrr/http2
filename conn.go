@@ -1411,7 +1411,7 @@ func (c *Conn) handleSettings(st *Settings) {
 	// A change to SETTINGS_INITIAL_WINDOW_SIZE applies to every stream that is
 	// already open, as a delta on what it has left.
 	// https://httpwg.org/specs/rfc7540.html#rfc.section.6.9.2
-	if st.hasWindowSize {
+	if st.has(MaxWindowSize) {
 		c.applyInitialWindow(int32(st.MaxWindowSize()))
 	}
 
