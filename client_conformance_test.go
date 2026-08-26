@@ -650,3 +650,169 @@ func TestClientAdvertisesPushDisabled(t *testing.T) {
 		t.Fatal("the client never sent a SETTINGS frame")
 	}
 }
+
+// encodeResponseBlock builds a response header block, so a test can cut it
+// where it likes.
+func (p *peer) encodeResponseBlock(fields []hdr) []byte {
+	h := AcquireFrame(FrameHeaders).(*Headers)
+	defer ReleaseFrame(h)
+
+	hf := AcquireHeaderField()
+	defer ReleaseHeaderField(hf)
+
+	for _, f := range fields {
+		hf.Set(f.key, f.value)
+		h.AppendHeaderField(p.enc, hf, false)
+	}
+
+	return append([]byte(nil), h.Headers()...)
+}
+
+// writeSplitResponse sends a response whose header block is cut in two at
+// split, the second half arriving in a CONTINUATION frame. Any peer does this
+// once a block outgrows SETTINGS_MAX_FRAME_SIZE, and the cut lands wherever the
+// limit falls, in the middle of a field as often as not.
+func (p *peer) writeSplitResponse(id uint32, fields []hdr, split int, endStream bool) {
+	block := p.encodeResponseBlock(fields)
+
+	var flags byte
+	if endStream {
+		flags = byte(FlagEndStream)
+	}
+
+	p.writeRaw(byte(FrameHeaders), flags, id, block[:split])
+	p.writeRaw(byte(FrameContinuation), byte(FlagEndHeaders), id, block[split:])
+}
+
+// responseFields is a header block long enough to be worth splitting.
+func responseFields() []hdr {
+	return []hdr{
+		{":status", "200"},
+		{"content-length", "2"},
+		{"x-split", "0123456789012345678901234567890123456789"},
+	}
+}
+
+// TestClientAgainstSplitHeaderBlock covers RFC 7540 6.10: a header block is the
+// concatenation of a HEADERS frame and the CONTINUATION frames that follow it,
+// and only the whole of it is a valid HPACK block. Decoding each frame on its
+// own fails on any field the split lands inside.
+func TestClientAgainstSplitHeaderBlock(t *testing.T) {
+	addr := newRawServer(t, func(p *peer) {
+		id := p.waitForRequest()
+
+		block := p.encodeResponseBlock(responseFields())
+
+		// Cut inside the last field's value.
+		p.writeSplitResponse(id, responseFields(), len(block)-10, false)
+
+		p.writeRaw(byte(FrameData), byte(FlagEndStream), id, []byte("ok"))
+	})
+
+	hc := clientFor(t, addr)
+
+	req := fasthttp.AcquireRequest()
+	res := fasthttp.AcquireResponse()
+
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(res)
+
+	req.SetRequestURI("https://" + addr + "/")
+	req.Header.SetMethod(fasthttp.MethodGet)
+
+	done := make(chan error, 1)
+
+	go func() { done <- hc.Do(req, res) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("a header block split across a CONTINUATION frame failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("request did not return")
+	}
+
+	if res.StatusCode() != 200 {
+		t.Errorf("status = %d, want 200", res.StatusCode())
+	}
+
+	if got := string(res.Header.Peek("x-split")); got != "0123456789012345678901234567890123456789" {
+		t.Errorf("x-split = %q, want the field that straddled the split", got)
+	}
+}
+
+// TestClientAgainstSplitHeaderBlockWithEndStream covers the same split when the
+// HEADERS frame also carries END_STREAM. END_STREAM ends the message body, not
+// the header block, so the response is not complete until END_HEADERS arrives
+// on the CONTINUATION.
+func TestClientAgainstSplitHeaderBlockWithEndStream(t *testing.T) {
+	addr := newRawServer(t, func(p *peer) {
+		id := p.waitForRequest()
+
+		block := p.encodeResponseBlock(responseFields())
+
+		p.writeSplitResponse(id, responseFields(), len(block)-10, true)
+	})
+
+	hc := clientFor(t, addr)
+
+	req := fasthttp.AcquireRequest()
+	res := fasthttp.AcquireResponse()
+
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(res)
+
+	req.SetRequestURI("https://" + addr + "/")
+	req.Header.SetMethod(fasthttp.MethodGet)
+
+	done := make(chan error, 1)
+
+	go func() { done <- hc.Do(req, res) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("a split header block with END_STREAM failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("request did not return")
+	}
+
+	if got := string(res.Header.Peek("x-split")); got != "0123456789012345678901234567890123456789" {
+		t.Errorf("x-split = %q: the request finished before END_HEADERS", got)
+	}
+}
+
+// TestClientKeepsHPACKStateAfterSplitBlock is the connection-level half of the
+// same bug. The HPACK decoder is per connection, so a block decoded wrongly
+// leaves it out of step with the peer's encoder and every later response on the
+// connection decodes to nonsense.
+func TestClientKeepsHPACKStateAfterSplitBlock(t *testing.T) {
+	addr := newRawServer(t, func(p *peer) {
+		id := p.waitForRequest()
+
+		block := p.encodeResponseBlock(responseFields())
+
+		p.writeSplitResponse(id, responseFields(), len(block)-10, false)
+		p.writeRaw(byte(FrameData), byte(FlagEndStream), id, []byte("ok"))
+
+		id = p.waitForRequest()
+		p.writeResponse(id, "204")
+	})
+
+	hc := clientFor(t, addr)
+
+	if _, err := doWithin(t, hc, addr, 10*time.Second); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+
+	status, err := doWithin(t, hc, addr, 10*time.Second)
+	if err != nil {
+		t.Fatalf("second request on the same connection: %v", err)
+	}
+
+	if status != 204 {
+		t.Errorf("status = %d, want 204: the decoder lost sync on the split block", status)
+	}
+}

@@ -842,9 +842,9 @@ func (c *Conn) dispatch(fr *FrameHeader) bool {
 	// would wedge the RoundTrip that is waiting to take it back.
 	defer r.release()
 
-	err := c.readStream(fr, r.Response)
+	endStream, err := c.readStream(fr, r)
 	if err == nil {
-		if fr.Flags().Has(FlagEndStream) {
+		if endStream {
 			c.finish(r, fr.Stream(), nil)
 		}
 	} else {
@@ -1440,15 +1440,42 @@ func (c *Conn) handlePing(ping *Ping) {
 	c.writeOut(fr)
 }
 
-func (c *Conn) readStream(fr *FrameHeader, res *fasthttp.Response) (err error) {
+// readStream applies one frame to the request waiting on the stream. It reports
+// whether the response is complete.
+func (c *Conn) readStream(fr *FrameHeader, ctx *Ctx) (endStream bool, err error) {
+	res := ctx.Response
+
 	switch fr.Type() {
 	case FrameHeaders, FrameContinuation:
-		h := fr.Body().(FrameWithHeaders)
-		err = c.readHeader(h.Headers(), res)
+		// Only the whole block decodes. A field can be cut in half by the
+		// frame boundary, which is what happens to any block that outgrows
+		// SETTINGS_MAX_FRAME_SIZE, and decoding a fragment on its own leaves
+		// the connection's decoder out of step with the peer's encoder for
+		// good (RFC 7540 6.10).
+		ctx.headerBlock = append(ctx.headerBlock, fr.Body().(FrameWithHeaders).Headers()...)
+
+		if fr.Flags().Has(FlagEndStream) {
+			ctx.blockEndStream = true
+		}
+
+		if !fr.Flags().Has(FlagEndHeaders) {
+			return false, nil
+		}
+
+		err = c.readHeader(ctx.headerBlock, res)
+		ctx.headerBlock = ctx.headerBlock[:0]
+
+		if err != nil {
+			return false, err
+		}
+
+		endStream, ctx.blockEndStream = ctx.blockEndStream, false
+
+		return endStream, nil
 	case FrameResetStream:
 		// The server gave up on the stream. Without this the request would sit
 		// there until MaxResponseTime, or forever if that check is disabled.
-		err = NewResetStreamError(
+		return false, NewResetStreamError(
 			fr.Body().(*RstStream).Code(), "stream reset by the server")
 	case FrameData:
 		c.currentWindow -= int32(fr.Len())
@@ -1471,7 +1498,7 @@ func (c *Conn) readStream(fr *FrameHeader, res *fasthttp.Response) (err error) {
 		}
 	}
 
-	return err
+	return fr.Flags().Has(FlagEndStream), nil
 }
 
 func (c *Conn) updateWindow(streamID uint32, size int) {

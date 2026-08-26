@@ -76,6 +76,17 @@ type Ctx struct {
 	// mean allocating a timer and a closure per request.
 	timer *time.Timer
 	armed bool
+
+	// headerBlock accumulates the fragments of a header block that is still
+	// arriving. A block is one HEADERS frame plus the CONTINUATION frames that
+	// follow it, and only their concatenation is a valid HPACK block.
+	headerBlock []byte
+
+	// blockEndStream records END_STREAM seen on a HEADERS frame whose block is
+	// not complete yet. END_STREAM ends the message body, not the header
+	// block, so the response is only finished once END_HEADERS arrives
+	// (RFC 7540 6.2).
+	blockEndStream bool
 }
 
 // acquire takes ownership of the Ctx for the connection. It reports false once
@@ -205,6 +216,8 @@ func acquireCtx(req *fasthttp.Request, res *fasthttp.Response) *Ctx {
 	ctx.resolved = false
 	ctx.finished = false
 	ctx.armed = false
+	ctx.headerBlock = ctx.headerBlock[:0]
+	ctx.blockEndStream = false
 
 	ctx.conn.Store(nil)
 
