@@ -1183,6 +1183,14 @@ func (c *Conn) sendPending(id uint32) error {
 
 		err := c.flushData(id, body, end)
 
+		// Closing the body stream reaches into the Request, so it has to
+		// happen before the Ctx goes back to its caller. Releasing first left
+		// the write loop reading a Request that RoundTrip had already returned
+		// and releaseCtx had already cleared.
+		if err == nil && end {
+			c.closeBodyStream(pb)
+		}
+
 		pb.ctx.release()
 
 		if err != nil {
@@ -1190,7 +1198,6 @@ func (c *Conn) sendPending(id uint32) error {
 		}
 
 		if end {
-			c.closeBodyStream(pb)
 			return nil
 		}
 	}
