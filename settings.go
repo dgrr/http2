@@ -100,6 +100,39 @@ func (st *Settings) CopyTo(st2 *Settings) {
 	st2.present = st.present
 }
 
+// MergeTo applies the settings this frame carries to st2, which holds what the
+// two ends have agreed so far.
+//
+// A SETTINGS frame carries only the parameters its sender chose to change, and
+// every parameter it leaves out keeps the value it already had (RFC 7540 6.5).
+// Copying the frame over the agreed settings instead would silently put the
+// absent ones back to their defaults.
+func (st *Settings) MergeTo(st2 *Settings) {
+	if st.has(HeaderTableSize) {
+		st2.SetHeaderTableSize(st.tableSize)
+	}
+
+	if st.has(EnablePush) {
+		st2.SetPush(st.enablePush)
+	}
+
+	if st.has(MaxConcurrentStreams) {
+		st2.SetMaxConcurrentStreams(st.maxStreams)
+	}
+
+	if st.has(MaxWindowSize) {
+		st2.SetMaxWindowSize(st.windowSize)
+	}
+
+	if st.has(MaxFrameSize) {
+		st2.SetMaxFrameSize(st.frameSize)
+	}
+
+	if st.has(MaxHeaderListSize) {
+		st2.SetMaxHeaderListSize(st.headerSize)
+	}
+}
+
 // SetHeaderTableSize sets the maximum size of the header
 // compression table used to decode header blocks.
 //

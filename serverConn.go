@@ -1600,7 +1600,8 @@ func (sc *serverConn) writeLoop() {
 }
 
 func (sc *serverConn) handleSettings(st *Settings) {
-	st.CopyTo(&sc.clientS)
+	// Merged, not copied: the frame carries only what the client is changing.
+	st.MergeTo(&sc.clientS)
 	sc.enc.SetMaxTableSize(sc.clientS.HeaderTableSize())
 
 	// The per-stream send windows are adjusted in handleStreams, where the

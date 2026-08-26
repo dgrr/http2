@@ -816,3 +816,114 @@ func TestClientKeepsHPACKStateAfterSplitBlock(t *testing.T) {
 		t.Errorf("status = %d, want 204: the decoder lost sync on the split block", status)
 	}
 }
+
+// TestClientKeepsNegotiatedSettings covers RFC 7540 6.5: a SETTINGS frame
+// carries only the parameters its sender is changing. A later frame that says
+// nothing about SETTINGS_MAX_FRAME_SIZE leaves the size already agreed in
+// force, so the client must not fall back to the default and start splitting
+// what the peer agreed to receive whole.
+func TestClientKeepsNegotiatedSettings(t *testing.T) {
+	const (
+		frameSize = 1 << 15
+		bodySize  = 24 * 1024
+	)
+
+	largest := make(chan int, 1)
+
+	addr := newRawServerSettings(t,
+		func(st *Settings) {
+			st.SetMaxFrameSize(frameSize)
+			st.SetMaxWindowSize(1 << 20)
+		},
+		func(p *peer) {
+			id := p.waitForRequest()
+
+			// Nothing about MAX_FRAME_SIZE this time, so the 32 KiB agreed at
+			// handshake still stands.
+			second := &Settings{}
+			second.Reset()
+			second.SetMaxConcurrentStreams(100)
+
+			fr := AcquireFrameHeader()
+			body := AcquireFrame(FrameSettings).(*Settings)
+			second.CopyTo(body)
+			fr.SetBody(body)
+
+			_, _ = fr.WriteTo(p.bw)
+			ReleaseFrameHeader(fr)
+			_ = p.bw.Flush()
+
+			p.writeResponse(id, "200")
+
+			// The second request carries the body whose framing is the answer.
+			id = p.waitForRequest()
+
+			max, seen := 0, 0
+
+			for seen < bodySize {
+				_ = p.c.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+				f, err := ReadFrameFromWithSize(p.br, frameSize)
+				if err != nil {
+					break
+				}
+
+				if f.Type() == FrameData {
+					seen += f.Len()
+
+					if f.Len() > max {
+						max = f.Len()
+					}
+				}
+
+				ReleaseFrameHeader(f)
+			}
+
+			select {
+			case largest <- max:
+			default:
+			}
+
+			p.writeResponse(id, "200")
+		})
+
+	hc := clientFor(t, addr)
+
+	if _, err := doWithin(t, hc, addr, 10*time.Second); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+
+	req := fasthttp.AcquireRequest()
+	res := fasthttp.AcquireResponse()
+
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(res)
+
+	req.SetRequestURI("https://" + addr + "/")
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetBody(make([]byte, bodySize))
+
+	done := make(chan error, 1)
+
+	go func() { done <- hc.Do(req, res) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("second request: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("second request did not return")
+	}
+
+	select {
+	case max := <-largest:
+		if max != bodySize {
+			t.Errorf("largest DATA frame = %d, want %d: the settings agreed at "+
+				"handshake were dropped by a later frame that said nothing about them",
+				max, bodySize)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the peer never reported a frame size")
+	}
+}

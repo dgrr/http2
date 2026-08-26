@@ -1406,7 +1406,8 @@ func (c *Conn) writePing() error {
 }
 
 func (c *Conn) handleSettings(st *Settings) {
-	st.CopyTo(&c.serverS)
+	// Merged, not copied: the frame carries only what the server is changing.
+	st.MergeTo(&c.serverS)
 
 	atomic.StoreUint32(&c.maxStreams, c.serverS.MaxConcurrentStreams())
 	atomic.StoreUint32(&c.maxFrameSize, c.serverS.MaxFrameSize())

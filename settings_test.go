@@ -110,3 +110,55 @@ func TestSettingsReadRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestSettingsMergeKeepsAbsentValues covers RFC 7540 6.5: a SETTINGS frame
+// carries only the parameters the sender chose to change, and every parameter
+// it leaves out keeps the value it already had. Copying the frame over the
+// negotiated settings resets the rest to their defaults, which is not what the
+// peer said.
+func TestSettingsMergeKeepsAbsentValues(t *testing.T) {
+	var negotiated Settings
+	negotiated.Reset()
+
+	var first Settings
+	first.Reset()
+	first.SetMaxFrameSize(1 << 15)
+	first.SetHeaderTableSize(0)
+
+	first.MergeTo(&negotiated)
+
+	var second Settings
+	second.Reset()
+	second.SetMaxConcurrentStreams(5)
+
+	second.MergeTo(&negotiated)
+
+	if got := negotiated.MaxFrameSize(); got != 1<<15 {
+		t.Errorf("MaxFrameSize = %d, want the %d agreed earlier", got, 1<<15)
+	}
+
+	if got := negotiated.HeaderTableSize(); got != 0 {
+		t.Errorf("HeaderTableSize = %d, want the 0 agreed earlier", got)
+	}
+
+	if got := negotiated.MaxConcurrentStreams(); got != 5 {
+		t.Errorf("MaxConcurrentStreams = %d, want 5", got)
+	}
+}
+
+// TestSettingsMergeLeavesUntouchedDefaults checks the other half: a parameter
+// neither side has ever sent still reads as its protocol default.
+func TestSettingsMergeLeavesUntouchedDefaults(t *testing.T) {
+	var negotiated Settings
+	negotiated.Reset()
+
+	var st Settings
+	st.Reset()
+	st.SetMaxConcurrentStreams(5)
+
+	st.MergeTo(&negotiated)
+
+	if got := negotiated.MaxFrameSize(); got != defaultDataFrameSize {
+		t.Errorf("MaxFrameSize = %d, want the default %d", got, defaultDataFrameSize)
+	}
+}
