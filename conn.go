@@ -1529,12 +1529,29 @@ func (c *Conn) readHeader(b []byte, res *fasthttp.Response) error {
 
 	dec := c.dec
 
-	var regularSeen bool
+	var (
+		regularSeen bool
+		// fieldErr is the first thing wrong with the block. The response is
+		// rejected on it, but not before the whole block has been through the
+		// decoder: the server's encoder has indexed every field in it, so
+		// stopping halfway leaves our dynamic table short of the server's for
+		// the life of the connection, and from then on an indexed field
+		// decodes as whatever happens to sit at that index in our table
+		// (RFC 7541 4.1, RFC 7540 4.3).
+		fieldErr error
+	)
 
 	for len(b) > 0 {
 		b, err = dec.Next(hf, b)
 		if err != nil {
+			// A decoding error is the one thing there is no carrying on from:
+			// the table is already out of step and the rest of the block
+			// cannot be trusted to put it back.
 			return err
+		}
+
+		if fieldErr != nil {
+			continue
 		}
 
 		// A response carries exactly one pseudo-header, :status, and it must
@@ -1542,16 +1559,19 @@ func (c *Conn) readHeader(b []byte, res *fasthttp.Response) error {
 		// https://httpwg.org/specs/rfc7540.html#rfc.section.8.1.2.4
 		if hf.IsPseudo() {
 			if regularSeen {
-				return errPseudoAfterRegular
+				fieldErr = errPseudoAfterRegular
+				continue
 			}
 
 			if !bytes.Equal(hf.KeyBytes(), StringStatus) {
-				return fmt.Errorf("invalid response pseudo-header %q", hf.KeyBytes())
+				fieldErr = fmt.Errorf("invalid response pseudo-header %q", hf.KeyBytes())
+				continue
 			}
 
-			n, err := parseUint(hf.ValueBytes())
-			if err != nil || n < 100 || n > 999 {
-				return errInvalidStatus
+			n, perr := parseUint(hf.ValueBytes())
+			if perr != nil || n < 100 || n > 999 {
+				fieldErr = errInvalidStatus
+				continue
 			}
 
 			res.SetStatusCode(n)
@@ -1562,17 +1582,20 @@ func (c *Conn) readHeader(b []byte, res *fasthttp.Response) error {
 		regularSeen = true
 
 		if hasUpperCase(hf.KeyBytes()) {
-			return errUpperCaseHeader
+			fieldErr = errUpperCaseHeader
+			continue
 		}
 
 		if isConnectionSpecific(hf.KeyBytes()) {
-			return errConnectionSpecific
+			fieldErr = errConnectionSpecific
+			continue
 		}
 
 		if bytes.Equal(hf.KeyBytes(), StringContentLength) {
-			n, err := parseUint(hf.ValueBytes())
-			if err != nil {
-				return errInvalidContentLength
+			n, perr := parseUint(hf.ValueBytes())
+			if perr != nil {
+				fieldErr = errInvalidContentLength
+				continue
 			}
 
 			res.Header.SetContentLength(n)
@@ -1581,7 +1604,7 @@ func (c *Conn) readHeader(b []byte, res *fasthttp.Response) error {
 		}
 	}
 
-	return nil
+	return fieldErr
 }
 
 var (

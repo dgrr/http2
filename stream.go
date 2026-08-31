@@ -95,6 +95,10 @@ type Stream struct {
 	// being decoded, summed across the HEADERS frame and its CONTINUATIONs.
 	headerListSize int
 
+	// headerErr is a stream error found while decoding the header block, held
+	// until the block ends so the rest of it still reaches the HPACK decoder.
+	headerErr error
+
 	// original type
 	origType        FrameType
 	startedAt       time.Time
@@ -141,6 +145,7 @@ func NewStream(id uint32, win int32) *Stream {
 	strm.abandoned = false
 	strm.origType = 0
 	strm.headerListSize = 0
+	strm.headerErr = nil
 
 	return strm
 }

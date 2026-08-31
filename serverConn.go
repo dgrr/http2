@@ -1067,6 +1067,13 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 				return NewGoAwayError(ProtocolError, "END_HEADERS received on an incomplete stream")
 			}
 
+			// The whole block has been through the decoder now, so the
+			// tables are in step with the peer's and a stream error held back
+			// by applyHeaderField can safely be raised.
+			if strm.headerErr != nil {
+				return strm.headerErr
+			}
+
 			if err := validateRequestPseudoHeaders(strm); err != nil {
 				return err
 			}
@@ -1151,8 +1158,6 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 	hf := AcquireHeaderField()
 	defer ReleaseHeaderField(hf)
 
-	req := &strm.ctx.Request
-
 	var err error
 
 	fieldsProcessed := 0
@@ -1187,92 +1192,119 @@ func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
 			return NewGoAwayError(EnhanceYourCalm, "header list exceeds the maximum size")
 		}
 
-		// Header field names must not contain uppercase characters.
-		// https://httpwg.org/specs/rfc7540.html#rfc.section.8.1.2
-		if hasUpperCase(k) {
-			return NewResetStreamError(ProtocolError, "header field name contains uppercase characters")
-		}
+		fieldsProcessed++
 
-		if hf.IsPseudo() {
-			// All pseudo-header fields must appear before regular header fields.
-			// https://httpwg.org/specs/rfc7540.html#rfc.section.8.1.2.1
-			if strm.regularSeen {
-				return NewResetStreamError(ProtocolError, "pseudo-header field after regular header field")
-			}
-
-			switch {
-			case bytes.Equal(k, StringMethod):
-				if strm.pseudoMethod {
-					return NewResetStreamError(ProtocolError, "duplicate :method pseudo-header")
-				}
-				strm.pseudoMethod = true
-				req.Header.SetMethodBytes(v)
-			case bytes.Equal(k, StringPath):
-				if strm.pseudoPath {
-					return NewResetStreamError(ProtocolError, "duplicate :path pseudo-header")
-				}
-				strm.pseudoPath = true
-				strm.path = append(strm.path[:0], v...)
-				req.Header.SetRequestURIBytes(v)
-			case bytes.Equal(k, StringScheme):
-				if strm.pseudoScheme {
-					return NewResetStreamError(ProtocolError, "duplicate :scheme pseudo-header")
-				}
-				strm.pseudoScheme = true
-				strm.scheme = append(strm.scheme[:0], v...)
-			case bytes.Equal(k, StringAuthority):
-				if strm.pseudoAuthority {
-					return NewResetStreamError(ProtocolError, "duplicate :authority pseudo-header")
-				}
-				strm.pseudoAuthority = true
-				req.Header.SetHostBytes(v)
-				req.Header.AddBytesV("Host", v)
-			default:
-				// Any pseudo-header that is not a valid request pseudo-header
-				// (including response pseudo-headers such as :status) is invalid.
-				return NewResetStreamError(ProtocolError, fmt.Sprintf("invalid request pseudo-header %s", k))
-			}
-
-			fieldsProcessed++
+		// The request is already being rejected, but the block still has to be
+		// decoded to the end. See applyHeaderField for why.
+		if strm.headerErr != nil {
 			continue
 		}
 
-		// From here on it is a regular header field.
-		strm.regularSeen = true
-
-		// Connection-specific header fields are forbidden.
-		// https://httpwg.org/specs/rfc7540.html#rfc.section.8.1.2.2
-		if isConnectionSpecific(k) {
-			return NewResetStreamError(ProtocolError, "connection-specific header field")
+		if herr := sc.applyHeaderField(strm, hf); herr != nil {
+			strm.headerErr = herr
 		}
-
-		if bytes.Equal(k, StringTE) && !bytes.Equal(v, StringTrailers) {
-			return NewResetStreamError(ProtocolError, "TE header field with a value other than trailers")
-		}
-
-		switch {
-		case bytes.Equal(k, StringUserAgent):
-			req.Header.SetUserAgentBytes(v)
-		case bytes.Equal(k, StringContentType):
-			req.Header.SetContentTypeBytes(v)
-		case bytes.Equal(k, StringContentLength):
-			if n, perr := parseUint(v); perr == nil {
-				if sc.maxRequestBodySize > 0 && n > sc.maxRequestBodySize {
-					return NewResetStreamError(EnhanceYourCalm, "request body is too large")
-				}
-
-				strm.contentLength = n
-				strm.hasContentLength = true
-			}
-			req.Header.AddBytesKV(k, v)
-		default:
-			req.Header.AddBytesKV(k, v)
-		}
-
-		fieldsProcessed++
 	}
 
 	return err
+}
+
+// applyHeaderField validates one decoded header field and stores it on the
+// stream's request. The error it returns is a stream error, held on the stream
+// rather than returned to the caller: HPACK is a running conversation between
+// the peer's encoder and our decoder, so every field of every block has to go
+// through the decoder even when the request it belongs to is doomed. Stopping
+// halfway leaves our dynamic table short of the peer's for the rest of the
+// connection, and from then on an indexed field decodes as whatever happens to
+// sit at that index in our table. On a connection a reverse proxy multiplexes
+// several clients onto, that is one client's headers turning up on another
+// client's request. handleFrame raises the error once END_HEADERS arrives and
+// the tables are back in step (RFC 7541 4.1, RFC 7540 4.3).
+func (sc *serverConn) applyHeaderField(strm *Stream, hf *HeaderField) error {
+	req := &strm.ctx.Request
+	k, v := hf.KeyBytes(), hf.ValueBytes()
+
+	// Header field names must not contain uppercase characters.
+	// https://httpwg.org/specs/rfc7540.html#rfc.section.8.1.2
+	if hasUpperCase(k) {
+		return NewResetStreamError(ProtocolError, "header field name contains uppercase characters")
+	}
+
+	if hf.IsPseudo() {
+		// All pseudo-header fields must appear before regular header fields.
+		// https://httpwg.org/specs/rfc7540.html#rfc.section.8.1.2.1
+		if strm.regularSeen {
+			return NewResetStreamError(ProtocolError, "pseudo-header field after regular header field")
+		}
+
+		switch {
+		case bytes.Equal(k, StringMethod):
+			if strm.pseudoMethod {
+				return NewResetStreamError(ProtocolError, "duplicate :method pseudo-header")
+			}
+			strm.pseudoMethod = true
+			req.Header.SetMethodBytes(v)
+		case bytes.Equal(k, StringPath):
+			if strm.pseudoPath {
+				return NewResetStreamError(ProtocolError, "duplicate :path pseudo-header")
+			}
+			strm.pseudoPath = true
+			strm.path = append(strm.path[:0], v...)
+			req.Header.SetRequestURIBytes(v)
+		case bytes.Equal(k, StringScheme):
+			if strm.pseudoScheme {
+				return NewResetStreamError(ProtocolError, "duplicate :scheme pseudo-header")
+			}
+			strm.pseudoScheme = true
+			strm.scheme = append(strm.scheme[:0], v...)
+		case bytes.Equal(k, StringAuthority):
+			if strm.pseudoAuthority {
+				return NewResetStreamError(ProtocolError, "duplicate :authority pseudo-header")
+			}
+			strm.pseudoAuthority = true
+			req.Header.SetHostBytes(v)
+			req.Header.AddBytesV("Host", v)
+		default:
+			// Any pseudo-header that is not a valid request pseudo-header
+			// (including response pseudo-headers such as :status) is invalid.
+			return NewResetStreamError(ProtocolError, fmt.Sprintf("invalid request pseudo-header %s", k))
+		}
+
+		return nil
+	}
+
+	// From here on it is a regular header field.
+	strm.regularSeen = true
+
+	// Connection-specific header fields are forbidden.
+	// https://httpwg.org/specs/rfc7540.html#rfc.section.8.1.2.2
+	if isConnectionSpecific(k) {
+		return NewResetStreamError(ProtocolError, "connection-specific header field")
+	}
+
+	if bytes.Equal(k, StringTE) && !bytes.Equal(v, StringTrailers) {
+		return NewResetStreamError(ProtocolError, "TE header field with a value other than trailers")
+	}
+
+	switch {
+	case bytes.Equal(k, StringUserAgent):
+		req.Header.SetUserAgentBytes(v)
+	case bytes.Equal(k, StringContentType):
+		req.Header.SetContentTypeBytes(v)
+	case bytes.Equal(k, StringContentLength):
+		if n, perr := parseUint(v); perr == nil {
+			if sc.maxRequestBodySize > 0 && n > sc.maxRequestBodySize {
+				return NewResetStreamError(EnhanceYourCalm, "request body is too large")
+			}
+
+			strm.contentLength = n
+			strm.hasContentLength = true
+		}
+		req.Header.AddBytesKV(k, v)
+	default:
+		req.Header.AddBytesKV(k, v)
+	}
+
+	return nil
 }
 
 // validateRequestPseudoHeaders enforces that a completed request header block
