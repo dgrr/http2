@@ -41,7 +41,7 @@ func (a *attacker) writeIndexedHeaders(id uint32, endStream, endHeaders bool, fi
 
 // newCaptureServer starts a server that reports the value of one header field
 // for every request it handles.
-func newCaptureServer(t *testing.T, key string) (string, chan string) {
+func newCaptureServer(t *testing.T, key string, cnf ServerConfig) (string, chan string) {
 	t.Helper()
 
 	certPEM, keyPEM := testKeyPair(t)
@@ -59,7 +59,7 @@ func newCaptureServer(t *testing.T, key string) (string, chan string) {
 		},
 		Logger: discardLogger{},
 	}
-	ConfigureServer(server, ServerConfig{PingInterval: -1})
+	ConfigureServer(server, cnf)
 
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -86,7 +86,7 @@ func newCaptureServer(t *testing.T, key string) (string, chan string) {
 // that multiplexes clients onto one upstream connection, that is one client's
 // headers turning up on another client's request.
 func TestServerKeepsHPACKInSyncAfterStreamError(t *testing.T) {
-	addr, got := newCaptureServer(t, "x-user")
+	addr, got := newCaptureServer(t, "x-user", ServerConfig{PingInterval: -1})
 
 	a := dialAttacker(t, addr)
 	d := a.drain()
@@ -280,7 +280,7 @@ func (a *attacker) writeIndexedContinuation(id uint32, endHeaders bool, fields [
 // stream error cannot be raised until END_HEADERS without losing the rest of
 // the block.
 func TestServerKeepsHPACKInSyncAcrossContinuation(t *testing.T) {
-	addr, got := newCaptureServer(t, "x-user")
+	addr, got := newCaptureServer(t, "x-user", ServerConfig{PingInterval: -1})
 
 	a := dialAttacker(t, addr)
 	d := a.drain()
@@ -329,5 +329,165 @@ func TestServerKeepsHPACKInSyncAcrossContinuation(t *testing.T) {
 			ErrorCode(d.goaway.Load()))
 	case <-time.After(5 * time.Second):
 		t.Error("the second request never reached the handler")
+	}
+}
+
+// TestServerKeepsHPACKInSyncOnRefusedStream covers RFC 7540 5.1.1 and 8.1: a
+// stream refused over SETTINGS_MAX_CONCURRENT_STREAMS still arrived with a
+// header block, and the peer's encoder has indexed every field in it. Dropping
+// the block instead of decoding it leaves the decoder out of step for the life
+// of the connection. A client that races the limit does this without meaning
+// to, so this needs no attacker at all.
+func TestServerKeepsHPACKInSyncOnRefusedStream(t *testing.T) {
+	addr, got := newCaptureServer(t, "x-user", ServerConfig{
+		PingInterval:         -1,
+		MaxConcurrentStreams: 1,
+	})
+
+	a := dialAttacker(t, addr)
+	d := a.drain()
+
+	// Stream 1 stays open: no END_STREAM, so it holds the only slot.
+	if err := a.writeIndexedHeaders(1, false, true, []idxHdr{
+		{":method", "POST", false},
+		{":scheme", "https", false},
+		{":path", "/", false},
+		{":authority", addr, false},
+	}); err != nil {
+		t.Fatalf("writing the first request: %v", err)
+	}
+
+	a.flush()
+
+	// Stream 3 is refused, but its block still indexes a field.
+	if err := a.writeIndexedHeaders(3, true, true, []idxHdr{
+		{":method", "GET", false},
+		{":scheme", "https", false},
+		{":path", "/", false},
+		{":authority", addr, false},
+		{"x-user", "attacker", true},
+	}); err != nil {
+		t.Fatalf("writing the refused request: %v", err)
+	}
+
+	a.flush()
+
+	// Let stream 1 finish so a slot frees up.
+	if err := a.writeData(1, true, nil); err != nil {
+		t.Fatalf("ending the first request: %v", err)
+	}
+
+	a.flush()
+
+	// Drop the value the first request produced.
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first request never reached the handler")
+	}
+
+	if err := a.writeIndexedHeaders(5, true, true, []idxHdr{
+		{":method", "GET", false},
+		{":scheme", "https", false},
+		{":path", "/", false},
+		{":authority", addr, false},
+		{"x-user", "attacker", false},
+	}); err != nil {
+		t.Fatalf("writing the third request: %v", err)
+	}
+
+	a.flush()
+
+	select {
+	case v := <-got:
+		if v != "attacker" {
+			t.Errorf("handler saw x-user = %q, want %q: the decoder is out of step with the peer",
+				v, "attacker")
+		}
+	case <-d.done:
+		t.Errorf("server closed the connection instead of serving the request (goaway %s)",
+			ErrorCode(d.goaway.Load()))
+	case <-time.After(5 * time.Second):
+		t.Error("the request never reached the handler")
+	}
+}
+
+// TestServerKeepsHPACKInSyncOnRefusedContinuation is the refused-stream case
+// with the block split, so the drain has to carry a field the frame boundary
+// cut in half across to the CONTINUATION.
+func TestServerKeepsHPACKInSyncOnRefusedContinuation(t *testing.T) {
+	addr, got := newCaptureServer(t, "x-user", ServerConfig{
+		PingInterval:         -1,
+		MaxConcurrentStreams: 1,
+	})
+
+	a := dialAttacker(t, addr)
+	d := a.drain()
+
+	if err := a.writeIndexedHeaders(1, false, true, []idxHdr{
+		{":method", "POST", false},
+		{":scheme", "https", false},
+		{":path", "/", false},
+		{":authority", addr, false},
+	}); err != nil {
+		t.Fatalf("writing the first request: %v", err)
+	}
+
+	a.flush()
+
+	if err := a.writeIndexedHeaders(3, false, false, []idxHdr{
+		{":method", "GET", false},
+		{":scheme", "https", false},
+		{":path", "/", false},
+		{":authority", addr, false},
+	}); err != nil {
+		t.Fatalf("writing the refused request: %v", err)
+	}
+
+	a.flush()
+
+	if err := a.writeIndexedContinuation(3, true, []idxHdr{
+		{"x-user", "attacker", true},
+	}); err != nil {
+		t.Fatalf("writing the refused continuation: %v", err)
+	}
+
+	a.flush()
+
+	if err := a.writeData(1, true, nil); err != nil {
+		t.Fatalf("ending the first request: %v", err)
+	}
+
+	a.flush()
+
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first request never reached the handler")
+	}
+
+	if err := a.writeIndexedHeaders(5, true, true, []idxHdr{
+		{":method", "GET", false},
+		{":scheme", "https", false},
+		{":path", "/", false},
+		{":authority", addr, false},
+		{"x-user", "attacker", false},
+	}); err != nil {
+		t.Fatalf("writing the third request: %v", err)
+	}
+
+	a.flush()
+
+	select {
+	case v := <-got:
+		if v != "attacker" {
+			t.Errorf("handler saw x-user = %q, want %q: the decoder is out of step with the peer",
+				v, "attacker")
+		}
+	case <-d.done:
+		t.Errorf("server closed the connection instead of serving the request (goaway %s)",
+			ErrorCode(d.goaway.Load()))
+	case <-time.After(5 * time.Second):
+		t.Error("the request never reached the handler")
 	}
 }

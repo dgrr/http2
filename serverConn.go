@@ -59,6 +59,12 @@ type serverConn struct {
 	// last valid ID used as a reference for new IDs
 	lastID uint32
 
+	// refusedID is the stream whose header block is being decoded and thrown
+	// away, and refusedBytes holds the field its last frame cut in half.
+	// See discardHeaderBlock.
+	refusedID    uint32
+	refusedBytes []byte
+
 	// client's window
 	// should be int64 because the user can try to overflow it
 	clientWindow int64
@@ -727,6 +733,11 @@ loop:
 
 					sc.writeReset(fr.Stream(), RefusedStreamError)
 
+					if err := sc.discardHeaderBlock(fr); err != nil {
+						sc.writeError(nil, err)
+						break loop
+					}
+
 					continue
 				}
 
@@ -1130,6 +1141,70 @@ func (sc *serverConn) handleFrame(strm *Stream, fr *FrameHeader) error {
 	}
 
 	return err
+}
+
+// discardHeaderBlock feeds a refused stream's header block to the decoder and
+// keeps none of it.
+//
+// HPACK is connection state, not stream state: the peer's encoder has indexed
+// every field of the block by the time the frame arrives, so a block we never
+// decode leaves our dynamic table short of the peer's for the rest of the
+// connection, and every indexed field after it resolves against the wrong
+// entry. Refusing a stream is the ordinary answer to a peer that has more
+// streams open than SETTINGS_MAX_CONCURRENT_STREAMS allows, which a client
+// that has not yet processed our SETTINGS does without doing anything wrong,
+// so this path is reached on healthy connections (RFC 7541 4.1, RFC 7540
+// 5.1.1).
+func (sc *serverConn) discardHeaderBlock(fr *FrameHeader) error {
+	body, ok := fr.Body().(FrameWithHeaders)
+	if !ok {
+		return nil
+	}
+
+	// A block belongs to one stream from HEADERS through to END_HEADERS, so
+	// anything left over from a different stream cannot be part of this one.
+	if sc.refusedID != fr.Stream() {
+		sc.refusedID = fr.Stream()
+		sc.refusedBytes = sc.refusedBytes[:0]
+	}
+
+	blockStart := fr.Type() != FrameContinuation && len(sc.refusedBytes) == 0
+
+	b := append(sc.refusedBytes, body.Headers()...)
+	sc.refusedBytes = b[:0]
+
+	hf := AcquireHeaderField()
+	defer ReleaseHeaderField(hf)
+
+	fieldsProcessed := 0
+
+	for len(b) > 0 {
+		pb := b
+
+		var err error
+
+		b, err = sc.dec.nextField(hf, blockStart, fieldsProcessed, b)
+		if err != nil {
+			// As in handleHeaderFrame: a field that runs past the bytes in
+			// hand is only legal while more of the block is still coming.
+			if errors.Is(err, ErrUnexpectedSize) && len(pb) > 0 && !fr.Flags().Has(FlagEndHeaders) {
+				sc.refusedBytes = append(sc.refusedBytes, pb...)
+
+				return nil
+			}
+
+			return NewGoAwayError(CompressionError, err.Error())
+		}
+
+		fieldsProcessed++
+	}
+
+	if fr.Flags().Has(FlagEndHeaders) {
+		sc.refusedID = 0
+		sc.refusedBytes = sc.refusedBytes[:0]
+	}
+
+	return nil
 }
 
 func (sc *serverConn) handleHeaderFrame(strm *Stream, fr *FrameHeader) error {
